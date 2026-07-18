@@ -1,0 +1,48 @@
+{
+  "id": "tax_2026_period_4",
+  "year": 2026,
+  "valid_from": "2026-01-01",
+  "valid_to": "2026-03-31",
+  "minimum_wage_adult": 2500.00,
+  "minimum_wage_per_hour": 14.45,
+  "period_tables": {
+    "week": {
+      "period_type": "week",
+      "brackets": [
+        {"min": 0, "max": 200, "tax_amount": 25.50},
+        {"min": 200.01, "max": 400, "tax_amount": 55.75}
+      ]
+    },
+    "4-wekelijks": {
+      "period_type": "4-wekelijks",
+      "brackets": [
+        {"min": 0, "max": 800, "tax_amount": 102.00},
+        {"min": 800.01, "max": 1600, "tax_amount": 223.00}
+      ]
+    },
+    "maand": {
+      "period_type": "maand",
+      "brackets": [
+        {"min": 0, "max": 1200, "tax_amount": 153.00},
+        {"min": 1200.01, "max": 2400, "tax_amount": 334.50}
+      ]
+    }
+  },
+  "loonheffing_brackets": [
+    {"min": 0, "max": 75000, "rate": 0.3697},
+    {"min": 75001, "max": 999999, "rate": 0.4950}
+  ],
+  "bijzonder_tarief_rate": 0.4950,
+  "heffingskortingen": {
+    "algemene_heffingskorting": {
+      "max_amount": 3100,
+      "phaseout_start": 25000,
+      "phaseout_rate": 0.06
+    },
+    "arbeidskorting": {
+      "max_amount": 4500,
+      "phaseout_start": 35000,
+      "phaseout_rate": 0.065
+    }
+  }
+}

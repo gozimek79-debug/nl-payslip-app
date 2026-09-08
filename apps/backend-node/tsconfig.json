@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src/server.ts", "src/app.ts", "src/controllers/*.ts", "src/database.ts", "src/auth.ts", "src/payroll-engine/calculator.ts"]
+}

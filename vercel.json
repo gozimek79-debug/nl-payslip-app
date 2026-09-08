@@ -1,0 +1,8 @@
+{
+  "buildCommand": "npm run build --workspace @nl-payslip/frontend",
+  "outputDirectory": "apps/frontend-react/dist",
+  "installCommand": "npm install",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" }
+  ]
+}

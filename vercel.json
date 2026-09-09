@@ -4,5 +4,8 @@
   "installCommand": "npm install",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" }
+  ],
+  "crons": [
+    { "path": "/api/maintenance/cleanup-expired", "schedule": "0 3 * * *" }
   ]
 }

@@ -8,8 +8,10 @@ import { analyzeContract, resolveReferenceDate } from '../payroll-engine/contrac
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
 import { getRuleAt } from '../rules-repository.js';
+import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
+const aiRateLimit = ipRateLimit('contracts-ai', 10, 300);
 
 const imageDataUrlSchema = z.string().min(50).max(16_000_000).regex(/^data:image\/(png|jpe?g);base64,/, 'Oczekiwano obrazu PNG lub JPEG jako data URL.');
 
@@ -41,7 +43,7 @@ async function loadMinimumWagePerHour(referenceDate: Date): Promise<number> {
   return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWagePerHour();
 }
 
-router.post('/analyze', async (req, res) => {
+router.post('/analyze', aiRateLimit, async (req, res) => {
   if (!isVisionConfigured()) {
     return res.status(503).json({ error: 'Analiza umowy AI jest chwilowo niedostępna (brak modelu wizyjnego u dostawcy).' });
   }

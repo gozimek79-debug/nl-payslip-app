@@ -3,9 +3,11 @@ import { z } from 'zod';
 import { PayrollCalculator } from '../payroll-engine/calculator.js';
 import { explainCalculatorResult } from '../ai-service/ai-client.js';
 import { isGroqConfigured } from '../ai-service/groq.js';
+import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
 const calculator = new PayrollCalculator();
+const aiRateLimit = ipRateLimit('calculator-ai', 10, 300);
 
 const hoursSchema = z.object({
   normal: z.number().min(0).max(400),
@@ -60,7 +62,7 @@ router.post('/calculate', async (req, res) => {
 
 const explainSchema = calculateSchema.extend({ language: z.enum(['pl', 'en']).optional() });
 
-router.post('/explain', async (req, res) => {
+router.post('/explain', aiRateLimit, async (req, res) => {
   if (!isGroqConfigured()) {
     return res.status(503).json({ error: 'Interpretacja AI nie jest skonfigurowana (brak GROQ_API_KEY).' });
   }

@@ -8,8 +8,13 @@ import { extractPayslipFieldsFromImage, extractFullPayslip } from '../ocr-servic
 import { explainPayslipAnalysis, explainFullPayslip, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isGroqConfigured, isVisionConfigured } from '../ai-service/groq.js';
 import { validateFullPayslip } from '../payroll-engine/full-payslip.js';
+import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
+// AI-invoking endpoints (Groq inference cost): 10 requests / 5 min per IP.
+const aiRateLimit = ipRateLimit('payslips-ai', 10, 300);
+// DB-write endpoints without AI cost: looser, mainly against scripted spam.
+const writeRateLimit = ipRateLimit('payslips-write', 30, 300);
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png']);
 
@@ -61,7 +66,7 @@ const draftSchema = z.object({
   mimeType: z.enum(['application/pdf', 'image/jpeg', 'image/png']),
 });
 
-router.post('/draft', async (req, res) => {
+router.post('/draft', writeRateLimit, async (req, res) => {
   const parsed = draftSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe metadane dokumentu.' });
   const analysisId = randomUUID();
@@ -80,7 +85,7 @@ router.post('/draft', async (req, res) => {
   return res.status(201).json({ analysisId, persisted });
 });
 
-router.post('/upload', upload.single('payslip'), async (req, res) => {
+router.post('/upload', writeRateLimit, upload.single('payslip'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Dodaj plik PDF, JPG lub PNG o rozmiarze do 10 MB.' });
   }
@@ -124,7 +129,7 @@ router.post('/upload', upload.single('payslip'), async (req, res) => {
   });
 });
 
-router.post('/analyze', async (req, res) => {
+router.post('/analyze', writeRateLimit, async (req, res) => {
   const parsed = analysisSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -193,7 +198,7 @@ router.post('/analyze', async (req, res) => {
   });
 });
 
-router.post('/ai-ocr', async (req, res) => {
+router.post('/ai-ocr', aiRateLimit, async (req, res) => {
   if (!isVisionConfigured()) {
     return res.status(503).json({ error: 'Odczyt dokumentu przez AI jest chwilowo niedostępny (brak modelu wizyjnego u dostawcy).' });
   }
@@ -208,7 +213,7 @@ router.post('/ai-ocr', async (req, res) => {
   }
 });
 
-router.post('/explain', async (req, res) => {
+router.post('/explain', aiRateLimit, async (req, res) => {
   if (!isGroqConfigured()) {
     return res.status(503).json({ error: 'Interpretacja AI nie jest skonfigurowana (brak GROQ_API_KEY).' });
   }
@@ -224,7 +229,7 @@ router.post('/explain', async (req, res) => {
   }
 });
 
-router.post('/analyze-full', async (req, res) => {
+router.post('/analyze-full', aiRateLimit, async (req, res) => {
   if (!isVisionConfigured()) {
     return res.status(503).json({ error: 'Pełna analiza AI jest chwilowo niedostępna (brak modelu wizyjnego u dostawcy).' });
   }

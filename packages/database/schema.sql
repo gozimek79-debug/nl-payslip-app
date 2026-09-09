@@ -74,6 +74,12 @@ CREATE TABLE user_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE rate_limits (
+  key text PRIMARY KEY,
+  window_start timestamptz NOT NULL,
+  count integer NOT NULL DEFAULT 0
+);
+
 CREATE INDEX payslips_user_created_idx ON payslips (user_id, created_at DESC);
 CREATE INDEX auth_sessions_user_idx ON auth_sessions (user_id, expires_at DESC);
 CREATE INDEX legal_rule_versions_validity_idx ON legal_rule_versions (valid_from, valid_to);

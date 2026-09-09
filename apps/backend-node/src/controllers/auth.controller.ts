@@ -109,4 +109,13 @@ router.get('/history', requireUser, async (_req, res) => {
   return res.json({ items });
 });
 
+// Audit finding E4: only reaches rows with a user_id, since deletion has to be requested by
+// someone the row is attributably owned by. Anonymous uploads have no owner who could call this;
+// they are instead covered by the scheduled retention_until cleanup (maintenance.controller.ts).
+router.delete('/me/data', requireUser, async (_req, res) => {
+  const user = res.locals.user as AuthUser;
+  const deleted = await query<{ id: string }>(`DELETE FROM payslips WHERE user_id = $1 RETURNING id`, [user.id]);
+  return res.json({ deletedCount: deleted.length });
+});
+
 export default router;

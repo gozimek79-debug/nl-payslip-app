@@ -1,7 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { extractContract } from '../ocr-service/contract-client.js';
-import { analyzeContract, resolveReferenceDate } from '../payroll-engine/contract.js';
+import { analyzeContract } from '../payroll-engine/contract.js';
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
 import { getMinimumWageAt } from '../rules-repository.js';
@@ -27,8 +27,13 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   const language = parsed.data.language ?? 'pl';
   try {
     const extraction = await extractContract(parsed.data.images);
-    const referenceDate = resolveReferenceDate(extraction);
-    const analysis = await analyzeContract(extraction, await getMinimumWageAt(referenceDate));
+    // Two different questions need two different reference dates (audit R2, a regression from
+    // last round's B2 fix): proeftijd/opzegtermijn ask "was this contract term legal when signed"
+    // -> the contract's own start date (analyzeContract still resolves that internally, unchanged).
+    // Minimum wage asks "does today's pay meet today's statutory minimum" -> today, regardless of
+    // when the contract started. Using startDate for both meant a 2021 contract at EUR 10.50/h (now
+    // roughly a third below the 2026 minimum) would be checked against the 2021 WML and pass.
+    const analysis = await analyzeContract(extraction, await getMinimumWageAt(new Date()));
 
     const uniqueTerms = Array.from(new Set(
       [extraction.contractType, extraction.functionTitle, extraction.caoName, extraction.pensionFund].filter(

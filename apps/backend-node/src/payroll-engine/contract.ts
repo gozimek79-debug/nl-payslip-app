@@ -94,14 +94,18 @@ export function resolveReferenceDate(extraction: Pick<ContractExtraction, 'start
  * rules-repository.ts — z bezpiecznym fallbackiem na stałe w kodzie, gdyby baza była niedostępna.
  * Reguły są odczytywane na dzień rozpoczęcia umowy (resolveReferenceDate), nie na dziś.
  */
-export async function analyzeContract(extraction: ContractExtraction, minimumWagePerHour: number): Promise<ContractAnalysis> {
+export async function analyzeContract(extraction: ContractExtraction, minimumWagePerHour: number | null): Promise<ContractAnalysis> {
   const referenceDate = resolveReferenceDate(extraction);
   const flags: ContractFlag[] = [];
 
+  // `minimumWagePerHour` is null when getMinimumWageAt() itself couldn't answer for today (audit
+  // S1: rules DB unreachable AND the static fallback's period file doesn't cover today either) -
+  // distinct from "the contract has no derivable rate" below, but both collapse to the same
+  // unverifiable result, since a comparison needs both sides.
   let isBelowMinimumWage: boolean | null = null;
   const effectiveHourlyRate = estimateHourlyRate(extraction);
-  const minimumWageVerifiable = effectiveHourlyRate !== null;
-  if (effectiveHourlyRate !== null) {
+  const minimumWageVerifiable = effectiveHourlyRate !== null && minimumWagePerHour !== null;
+  if (effectiveHourlyRate !== null && minimumWagePerHour !== null) {
     isBelowMinimumWage = effectiveHourlyRate < minimumWagePerHour;
     if (isBelowMinimumWage) {
       const rateDescription = extraction.hourlyRate !== null
@@ -109,8 +113,10 @@ export async function analyzeContract(extraction: ContractExtraction, minimumWag
         : `ok. €${effectiveHourlyRate.toFixed(2)} (przeliczone z wynagrodzenia miesięcznego)`;
       flags.push({ level: 'warning', message: `Stawka godzinowa (${rateDescription}) jest poniżej wettelijk minimumloon (€${minimumWagePerHour}).` });
     }
-  } else {
+  } else if (effectiveHourlyRate === null) {
     flags.push({ level: 'warning', message: 'Nie można zweryfikować zgodności z płacą minimalną — w umowie brak stawki godzinowej, a przy wynagrodzeniu miesięcznym brak liczby godzin w tygodniu potrzebnej do przeliczenia.' });
+  } else {
+    flags.push({ level: 'warning', message: 'Nie można zweryfikować zgodności z płacą minimalną — aktualna stawka ustawowa jest chwilowo niedostępna (baza reguł i plik zapasowy). Spróbuj ponownie później.' });
   }
 
   let durationMonths: number | null = null;

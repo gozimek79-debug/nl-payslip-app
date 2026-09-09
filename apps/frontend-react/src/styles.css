@@ -277,6 +277,13 @@ h1 em{color:var(--loonto-primary);font-style:normal}
 .account-avatar{width:56px;height:56px;border-radius:16px;display:grid;place-items:center;background:var(--loonto-primary);color:#fff;font:800 22px 'Manrope';margin-bottom:6px}
 .account-page-email{font-size:16px;word-break:break-word}
 .account-logout-button{display:flex;align-items:center;gap:8px;width:100%;justify-content:center}
+.account-delete-button{display:flex;align-items:center;gap:8px;width:100%;justify-content:center;margin-top:10px}
+.account-delete-confirm{margin-top:10px;padding:14px;border-radius:13px;background:var(--status-warning-bg);border:1px solid var(--status-warning-border)}
+.account-delete-confirm p{margin:0 0 12px;font-size:.9rem;color:var(--text-primary)}
+.account-delete-confirm-actions{display:flex;gap:10px}
+.account-delete-confirm-actions button{flex:1;margin-top:0;padding:10px 14px;min-height:38px}
+button.danger{border:0;border-radius:13px;font-weight:700;cursor:pointer;color:#fff;background:var(--status-error)}
+button.danger:disabled{opacity:.6;cursor:not-allowed}
 .account-history-card{padding:30px}
 .account-history-card h2{font:700 22px 'Manrope';margin:0 0 20px;color:var(--text-primary)}
 .history-list-wide li{align-items:center}

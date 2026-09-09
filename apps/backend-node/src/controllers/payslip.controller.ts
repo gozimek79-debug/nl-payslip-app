@@ -23,9 +23,10 @@ function resolvePayslipReferenceDate(periodEndDate: string | null): Date {
 
 const router = express.Router();
 // AI-invoking endpoints (Groq inference cost): 10 requests / 5 min per IP.
-const aiRateLimit = ipRateLimit('payslips-ai', 10, 300);
-// DB-write endpoints without AI cost: looser, mainly against scripted spam.
-const writeRateLimit = ipRateLimit('payslips-write', 30, 300);
+const aiRateLimit = ipRateLimit('payslips-ai', 10, 300, 'deny');
+// DB-write endpoints without AI cost: looser, mainly against scripted spam. Fails open (audit
+// R5/J1) - an unenforceable limit here costs nothing more than a few extra rows, not real money.
+const writeRateLimit = ipRateLimit('payslips-write', 30, 300, 'allow');
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png']);
 
@@ -77,6 +78,15 @@ const draftSchema = z.object({
   mimeType: z.enum(['application/pdf', 'image/jpeg', 'image/png']),
 });
 
+// Audit R3/I1: retention_until was 24h for every row regardless of ownership, which meant the
+// scheduled cleanup job (maintenance.controller.ts) would delete a LOGGED-IN user's history a day
+// after upload - making GET /api/auth/history and the account dashboard non-functional past that
+// window. Anonymous uploads (no account, nobody who could ever request deletion) keep the short
+// 24h window; logged-in users get 1 year, long enough to be a genuinely useful history across a
+// full tax year, disclosed in the account UI, with the delete-my-data endpoint available for anyone
+// who wants theirs gone sooner.
+const RETENTION_SQL = `CASE WHEN $2::uuid IS NULL THEN now() + interval '24 hours' ELSE now() + interval '1 year' END`;
+
 router.post('/draft', writeRateLimit, async (req, res) => {
   const parsed = draftSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe metadane dokumentu.' });
@@ -86,7 +96,7 @@ router.post('/draft', writeRateLimit, async (req, res) => {
     const user = await currentUser(req);
     const rows = await query<{ id: string }>(
       `INSERT INTO payslips (id, user_id, original_name, mime_type, status, retention_until)
-       VALUES ($1, $2, $3, $4, 'manual_review', now() + interval '24 hours') RETURNING id`,
+       VALUES ($1, $2, $3, $4, 'manual_review', ${RETENTION_SQL}) RETURNING id`,
       [analysisId, user?.id ?? null, parsed.data.fileName, parsed.data.mimeType],
     );
     persisted = rows.length === 1;
@@ -107,7 +117,7 @@ router.post('/upload', writeRateLimit, upload.single('payslip'), async (req, res
     const user = await currentUser(req);
     const rows = await query<{ id: string }>(
       `INSERT INTO payslips (id, user_id, original_name, mime_type, status, retention_until)
-       VALUES ($1, $2, $3, $4, 'manual_review', now() + interval '24 hours')
+       VALUES ($1, $2, $3, $4, 'manual_review', ${RETENTION_SQL})
        RETURNING id`,
       [analysisId, user?.id ?? null, req.file.originalname, req.file.mimetype],
     );

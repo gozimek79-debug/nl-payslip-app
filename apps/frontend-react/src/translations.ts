@@ -13,6 +13,9 @@ const pl = {
     noticeInvalid: 'Nieprawidłowy link logowania.', noticeError: 'Coś poszło nie tak podczas logowania. Spróbuj ponownie.',
     back: 'Wróć', pageTitle: 'Moje konto', memberSince: 'Adres e-mail', historyTitle: 'Historia analiz',
     historyEmptyTitle: 'Brak zapisanych analiz', historyEmptyBody: 'Kiedy przeanalizujesz pasek wypłaty jako zalogowany użytkownik, pojawi się tutaj.',
+    historyRetentionNote: 'Historia jest przechowywana przez 12 miesięcy od daty analizy. Możesz w każdej chwili usunąć wszystkie swoje dane przyciskiem „Usuń moje dane" w panelu konta.',
+    deleteData: 'Usuń moje dane', deleteDataConfirm: 'Czy na pewno chcesz trwale usunąć całą historię analiz? Tej operacji nie można cofnąć.',
+    deleteDataCancel: 'Anuluj', deleteDataConfirmButton: 'Tak, usuń trwale', deleteDataInProgress: 'Usuwanie…',
     startAnalysis: 'Zacznij nową analizę',
   },
   hero: {
@@ -141,6 +144,9 @@ const en: typeof pl = {
     noticeInvalid: 'Invalid sign-in link.', noticeError: 'Something went wrong while signing in. Please try again.',
     back: 'Back', pageTitle: 'My account', memberSince: 'Email address', historyTitle: 'Analysis history',
     historyEmptyTitle: 'No saved analyses yet', historyEmptyBody: "Once you analyze a payslip while signed in, it will show up here.",
+    historyRetentionNote: 'History is kept for 12 months from the date of analysis. You can delete all your data at any time using the "Delete my data" button in your account panel.',
+    deleteData: 'Delete my data', deleteDataConfirm: 'Are you sure you want to permanently delete all your analysis history? This cannot be undone.',
+    deleteDataCancel: 'Cancel', deleteDataConfirmButton: 'Yes, delete permanently', deleteDataInProgress: 'Deleting…',
     startAnalysis: 'Start a new analysis',
   },
   hero: {

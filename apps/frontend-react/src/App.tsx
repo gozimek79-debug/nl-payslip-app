@@ -135,6 +135,11 @@ export function App() {
     setUser(null); setHistory([]); setAccountOpen(false); setMode('analyze');
   }
 
+  async function deleteMyData() {
+    await fetch('/api/auth/me/data', { method: 'DELETE' });
+    setHistory([]);
+  }
+
   async function runFullAnalysis(file: File) {
     setUploadState('uploading'); setMessage(t.fullResult.analyzing);
     try {
@@ -241,7 +246,7 @@ export function App() {
     <main id="top">
       {mode === 'calculator' && <Calculator lang={lang}/>}
       {mode === 'contract' && <ContractAnalysis lang={lang}/>}
-      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => setMode('analyze')} onLogout={() => void logout()} onStartAnalysis={() => { setMode('analyze'); startOver(); }}/>}
+      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => setMode('analyze')} onLogout={() => void logout()} onStartAnalysis={() => { setMode('analyze'); startOver(); }} onDeleteData={deleteMyData}/>}
       {mode === 'analyze' && <>
 
       {step === 'upload' && <>

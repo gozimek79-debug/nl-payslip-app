@@ -7,7 +7,7 @@ import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
 const calculator = new PayrollCalculator();
-const aiRateLimit = ipRateLimit('calculator-ai', 10, 300);
+const aiRateLimit = ipRateLimit('calculator-ai', 10, 300, 'deny');
 
 const hoursSchema = z.object({
   normal: z.number().min(0).max(400),

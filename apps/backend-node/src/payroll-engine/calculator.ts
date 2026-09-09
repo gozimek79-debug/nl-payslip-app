@@ -320,7 +320,12 @@ export class PayrollCalculator {
     const bracket = brackets.find((item) => annualizedRegularIncome <= item.max) ?? brackets[brackets.length - 1];
     const base = (bracket?.rate ?? 0) * 100;
     if (!applyLoonheffingskorting) return base;
-    const tiers = rates.bijzonder_tarief_loonheffingskorting_addon_tiers;
+    // Defensive fallback: a legal_rule_versions row written before this field existed (or any
+    // future row missing it) must not crash the calculator. Fall back to the static file's tiers
+    // per-field, rather than trusting the unchecked cast of the whole DB row.
+    const tiers = rates.bijzonder_tarief_loonheffingskorting_addon_tiers?.length
+      ? rates.bijzonder_tarief_loonheffingskorting_addon_tiers
+      : loadStaticTaxRates().bijzonder_tarief_loonheffingskorting_addon_tiers;
     const tier = tiers.find((item) => annualizedRegularIncome <= item.max) ?? tiers[tiers.length - 1];
     return base + (tier?.addon ?? 0) * 100;
   }

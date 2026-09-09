@@ -6,7 +6,8 @@
   "sources": [
     "https://www.rijksoverheid.nl/onderwerpen/minimumloon/bedragen-minimumloon/bedragen-minimumloon-2026",
     "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/boxen_en_tarieven/box_1/box_1",
-    "https://download.belastingdienst.nl/belastingdienst/dl/rekenhulpen/loonheffing/2026/v01/pdf/wit_bb_nl_std_20260101.pdf"
+    "https://download.belastingdienst.nl/belastingdienst/dl/rekenhulpen/loonheffing/2026/v01/pdf/wit_bb_nl_std_20260101.pdf",
+    "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/heffingskortingen/arbeidskorting/tabel-arbeidskorting-2026"
   ],
   "_source_correction_note": "De eerder aangehaalde bron voor de tabel bijzondere beloningen verwees per abuis naar de tabel van Belastingdienst/Caribisch Nederland (BES-eilanden, tarieven 29,4%/38,4%) in plaats van de tabel voor het Europese deel van Nederland. Vervangen door de juiste bron: witte tabel bijzondere beloning Nederland, standaard, uitgave januari 2026.",
   "last_verified": "2026-09-08",
@@ -39,14 +40,15 @@
       "phaseout_start": 29736,
       "phaseout_rate": 0.06398
     },
+    "_arbeidskorting_verification_note": "max_amount, phaseout_start and phaseout_rate independently confirmed (2026-09-08) against belastingdienst.nl and a Grant Thornton NL advisory summary. buildup_tiers corrected from a previously-approximated set (11491/24820, rates 8.425/31.433/2.537%) to the confirmed official boundaries and rates below; sum of tiers = 5685.08, matching max_amount to rounding.",
     "arbeidskorting": {
       "max_amount": 5685,
       "phaseout_start": 45592,
       "phaseout_rate": 0.0651,
       "buildup_tiers": [
-        { "max": 11491, "rate": 0.08425 },
-        { "max": 24820, "rate": 0.31433 },
-        { "max": 45592, "rate": 0.02537 }
+        { "max": 11965, "rate": 0.08324 },
+        { "max": 25845, "rate": 0.31009 },
+        { "max": 45592, "rate": 0.0195 }
       ]
     }
   }

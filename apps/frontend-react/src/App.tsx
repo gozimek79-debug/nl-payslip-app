@@ -20,13 +20,14 @@ type AnalysisResult = {
 };
 type FullPayslipLineItem = { section: string; description: string; quantity: number | null; rate: number | null; payment: number | null; deduction: number | null };
 type FullPayslipExtraction = {
-  period: string | null; hourlyRate: number | null; minimumWage: number | null; hoursPerWeek: number | null;
+  period: string | null; periodEndDate: string | null; hourlyRate: number | null; minimumWage: number | null; hoursPerWeek: number | null;
   contractType: string | null; thirtyPercentRuling: boolean; lineItems: FullPayslipLineItem[];
   reportedTotalGross: number | null; reportedTotalNet: number | null; reportedNetPaid: number | null; truncated: boolean;
 };
 type FullPayslipValidation = {
   totalPayments: number; totalDeductions: number; computedNet: number; reportedNet: number | null; variance: number | null;
-  isConsistent: boolean; wmlViolation: boolean; discrepancies: string[]; incomplete: boolean;
+  isConsistent: boolean; wmlViolation: boolean; minimumWageApplicable: number | null; minimumWageNote: string | null;
+  discrepancies: string[]; incomplete: boolean;
 };
 type FullAnalysisResponse = { extraction: FullPayslipExtraction; validation: FullPayslipValidation; explanation: string };
 type User = { id: string; email: string };
@@ -292,6 +293,7 @@ export function App() {
         <StepProgress current={3} labels={[t.progress.document, t.progress.data, t.progress.analysis]}/>
         <div className="flow-heading"><span className="step">{t.fullResult.step3}</span><h1>{t.fullResult.title}</h1><p>{t.fullResult.lead}</p></div>
         {fullResult.extraction.truncated && <div className="status error calc-wml-warning"><AlertTriangle size={16}/> {t.fullResult.incompleteWarning}</div>}
+        {fullResult.validation.minimumWageNote && <div className="status info calc-wml-warning">{fullResult.validation.minimumWageNote}</div>}
         <div className={`result-hero ${fullResult.validation.isConsistent ? 'consistent' : 'attention'}`}>
           <div className="result-icon">{fullResult.validation.isConsistent ? <Check/> : '!'}</div>
           <div><span>{t.result.check}</span><h2>{fullResult.validation.isConsistent ? t.fullResult.consistentTitle : t.fullResult.inconsistentTitle}</h2></div>
@@ -311,6 +313,7 @@ export function App() {
           {fullResult.extraction.period && <span><b>{t.fullResult.period}:</b> {fullResult.extraction.period}</span>}
           {fullResult.extraction.hourlyRate !== null && <span><b>{t.fullResult.hourlyRate}:</b> {money(fullResult.extraction.hourlyRate)}</span>}
           {fullResult.extraction.minimumWage !== null && <span><b>{t.fullResult.minimumWage}:</b> {money(fullResult.extraction.minimumWage)}</span>}
+          {fullResult.validation.minimumWageApplicable !== null && <span><b>{t.fullResult.minimumWageApplicable}:</b> {money(fullResult.validation.minimumWageApplicable)}</span>}
           {fullResult.extraction.contractType && <span><b>{t.fullResult.contractType}:</b> {fullResult.extraction.contractType}</span>}
           {fullResult.extraction.thirtyPercentRuling && <span><b>{t.fullResult.thirtyPercentRuling}:</b> ✓</span>}
         </div>

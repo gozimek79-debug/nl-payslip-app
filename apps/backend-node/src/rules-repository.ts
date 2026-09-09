@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { databaseConfigured, query } from './database.js';
 
 interface RuleRow {
@@ -63,6 +66,39 @@ export async function getRuleAt<T>(code: string, date: Date): Promise<T | null> 
     console.error(`Could not load rule "${code}" at ${date.toISOString().slice(0, 10)}`, error);
     return null;
   }
+}
+
+interface MinimalRatesFile {
+  minimum_wage_per_hour: number;
+}
+
+let cachedStaticMinimumWage: number | null = null;
+
+/**
+ * KNOWN GAP (flagged, not fixed, this round): the static fallback file is a single snapshot
+ * (currently the 2026-H2 row). If the database is unreachable AND the reference date falls in a
+ * different period than that snapshot (e.g. 2026-H1, before the SQL adding that row has been
+ * applied), this returns the wrong period's rate instead of failing loudly. Low-probability
+ * (requires DB down + wrong period simultaneously) but real; the fix is either a static file per
+ * period or an explicit "static fallback is date-blind" warning surfaced to the caller.
+ */
+function loadStaticMinimumWagePerHour(): number {
+  if (cachedStaticMinimumWage !== null) return cachedStaticMinimumWage;
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const filePath = path.resolve(dir, '../../../packages/tax-tables/2026-Q1-rates.json');
+  const rates = JSON.parse(readFileSync(filePath, 'utf-8')) as MinimalRatesFile;
+  cachedStaticMinimumWage = rates.minimum_wage_per_hour;
+  return cachedStaticMinimumWage;
+}
+
+/**
+ * Shared by the calculator, contract analysis and payslip analysis: the statutory minimum wage in
+ * force on `date`, from the rules DB with a static fallback (see the gap noted above). Always uses
+ * the document/period's own reference date, never "today" — audit requirements B2 and N4.
+ */
+export async function getMinimumWageAt(date: Date): Promise<number> {
+  const dbRates = await getRuleAt<MinimalRatesFile>('loonheffing_nl', date);
+  return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWagePerHour();
 }
 
 export async function listRuleFreshness(): Promise<Array<{ code: string; title: string; validTo: string | null; sourceUrl: string }>> {

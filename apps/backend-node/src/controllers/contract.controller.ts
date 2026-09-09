@@ -1,13 +1,10 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { z } from 'zod';
 import { extractContract } from '../ocr-service/contract-client.js';
 import { analyzeContract, resolveReferenceDate } from '../payroll-engine/contract.js';
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
-import { getRuleAt } from '../rules-repository.js';
+import { getMinimumWageAt } from '../rules-repository.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
@@ -20,29 +17,6 @@ const analyzeSchema = z.object({
   language: z.enum(['pl', 'en']).optional(),
 });
 
-interface MinimalRatesFile {
-  minimum_wage_per_hour: number;
-}
-
-let cachedStaticMinimumWage: number | null = null;
-
-function loadStaticMinimumWagePerHour(): number {
-  if (cachedStaticMinimumWage !== null) return cachedStaticMinimumWage;
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  const filePath = path.resolve(dir, '../../../../packages/tax-tables/2026-Q1-rates.json');
-  const rates = JSON.parse(readFileSync(filePath, 'utf-8')) as MinimalRatesFile;
-  cachedStaticMinimumWage = rates.minimum_wage_per_hour;
-  return cachedStaticMinimumWage;
-}
-
-// Uses the contract's own start date, not today (audit requirement B2) — the minimum wage a
-// contract must be checked against is the one in force when it started, not whichever of the two
-// yearly rates happens to be current when the user uploads it.
-async function loadMinimumWagePerHour(referenceDate: Date): Promise<number> {
-  const dbRates = await getRuleAt<MinimalRatesFile>('loonheffing_nl', referenceDate);
-  return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWagePerHour();
-}
-
 router.post('/analyze', aiRateLimit, async (req, res) => {
   if (!isVisionConfigured()) {
     return res.status(503).json({ error: 'Analiza umowy AI jest chwilowo niedostępna (brak modelu wizyjnego u dostawcy).' });
@@ -54,7 +28,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   try {
     const extraction = await extractContract(parsed.data.images);
     const referenceDate = resolveReferenceDate(extraction);
-    const analysis = await analyzeContract(extraction, await loadMinimumWagePerHour(referenceDate));
+    const analysis = await analyzeContract(extraction, await getMinimumWageAt(referenceDate));
 
     const uniqueTerms = Array.from(new Set(
       [extraction.contractType, extraction.functionTitle, extraction.caoName, extraction.pensionFund].filter(

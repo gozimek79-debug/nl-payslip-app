@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PayrollCalculator } from './calculator.js';
 
 /**
  * Golden tests for the bijzonder tarief lookup table (audit round 2, C1).
@@ -69,4 +70,47 @@ test('arbeidskorting buildup tiers sum to max_amount at the phaseout threshold',
   }
   // Published percentages are rounded, so this can be off by a few cents on 5685 - not to the euro.
   assert.ok(Math.abs(total - max_amount) < 1, `buildup tiers sum to ${total.toFixed(2)}, expected close to ${max_amount}`);
+});
+
+test('arbeidskorting buildup tiers match Olympia 2026-W36 payslip exactly (audit N1)', () => {
+  // The payslip's own cumulative block prints arbeidskorting: 108.71 for one week, on a base of
+  // 844.92 (annualised 43,935.84) - a direct measurement, not a secondary source. Confirms the A3
+  // correction (11,965 / 25,845 @ 8.324/31.009/1.95%) reproduces it to the cent; the previously
+  // audited tiers (11,491 / 24,820 @ 8.425/31.433/2.537%) give 108.52 - 0.19/week off.
+  const rates = loadRates() as unknown as {
+    heffingskortingen: { arbeidskorting: { buildup_tiers: Array<{ max: number; rate: number }> } };
+  };
+  const { buildup_tiers } = rates.heffingskortingen.arbeidskorting;
+  const annualized = 844.92 * 52;
+  let arbeidskorting = 0;
+  let previousMax = 0;
+  for (const tier of buildup_tiers) {
+    if (annualized <= previousMax) break;
+    const upper = Math.min(annualized, tier.max);
+    arbeidskorting += (upper - previousMax) * tier.rate;
+    previousMax = tier.max;
+  }
+  const weekly = arbeidskorting / 52;
+  assert.equal(weekly.toFixed(2), '108.71');
+});
+
+test('StiPP pension premium matches Olympia 2026-W36 payslip exactly (audit N3)', async () => {
+  // Confirmed against StiPP's own "definitieve cijfers 2026" page: franchise EUR 9.24/h, max
+  // pensionable wage EUR 42.42/h, employee rate exactly 7.5% are all correct as coded - the bug
+  // was the pensionable BASE, not any of those three parameters. StiPP's base nets out the other
+  // two pre-tax premiums (PAWW, sickness) deducted in the same step, even though the payslip
+  // presents all three as parallel deductions from "Loon in geld":
+  //   (885.50 loon in geld - 0.89 PAWW - 4.90 AZW - 9.24x45 franchise) x 7.5% = 34.79 (exact)
+  // Calls the real private computePension() via a plain-property cast (TS `private` has no runtime
+  // effect - this is not `#private`), rather than re-deriving the formula, since the bug was in
+  // call-site ordering (what gets netted out before StiPP sees it), not in an isolable pure function.
+  const calculator = new PayrollCalculator() as unknown as {
+    computePension: (adv: unknown, pensionableBase: number, totalHours: number, totalGross: number) => Promise<number>;
+  };
+  const loonInGeld = 885.50;
+  const pawwAmount = 0.89;
+  const azwAmount = 4.90;
+  const pensionableBase = loonInGeld - pawwAmount - azwAmount;
+  const result = await calculator.computePension({ pensionMode: 'stipp' }, pensionableBase, 45, loonInGeld);
+  assert.equal(result.toFixed(2), '34.79');
 });

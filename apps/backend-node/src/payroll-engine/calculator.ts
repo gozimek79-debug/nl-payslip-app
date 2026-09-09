@@ -169,8 +169,13 @@ export class PayrollCalculator {
 
     // Składki pracownicze odliczane od brutto PRZED podatkiem (kolejność zgodna z realnymi paskami wypłaty).
     const pawwAmount = adv.enabled ? totalGross * (adv.pawwPercent / 100) : 0;
-    const pensionAmount = adv.enabled ? await this.computePension(adv, base, totalHours, totalGross) : 0;
     const sicknessAmount = adv.enabled ? totalGross * (adv.sicknessInsurancePercent / 100) : 0;
+    // StiPP's pensionable wage nets out the OTHER simultaneous pre-tax premiums first (audit N3) —
+    // even though a real payslip presents PAWW/AZW/STIPP as three parallel deductions from the same
+    // "Loon in geld" line, StiPP's own base is that line minus PAWW and the sickness-fund premium.
+    // Confirmed against the Olympia payslip to the cent: (885.50 - 0.89 - 4.90 - 9.24*45) * 7.5% = 34.79.
+    const pensionableBase = totalGross - pawwAmount - sicknessAmount;
+    const pensionAmount = adv.enabled ? await this.computePension(adv, pensionableBase, totalHours, totalGross) : 0;
     const afterFirstPremiums = totalGross - pawwAmount - pensionAmount - sicknessAmount;
     const wgaAmount = adv.enabled ? afterFirstPremiums * (adv.wgaPremiumPercent / 100) : 0;
     const loonVoorHeffingen = afterFirstPremiums - wgaAmount;
@@ -259,14 +264,22 @@ export class PayrollCalculator {
     };
   }
 
-  private async computePension(adv: AdvancedInput, baseHourlyRate: number, totalHours: number, totalGross: number): Promise<number> {
+  /**
+   * `pensionableBase` is totalGross MINUS the other pre-tax premiums (PAWW, sickness) already
+   * deducted in this same step — see the audit N3 comment at the call site. Franchise and the
+   * pensionable-wage cap are still expressed per hour by StiPP, so they're converted to period
+   * totals here (franchise_per_hour * totalHours) rather than reducing to a per-hour average first,
+   * which would silently blend in irregular-hours surcharges at the wrong point in the calculation.
+   */
+  private async computePension(adv: AdvancedInput, pensionableBase: number, totalHours: number, totalGross: number): Promise<number> {
     if (adv.pensionMode === 'percent') return totalGross * (adv.pensionPremiumPercent / 100);
     if (adv.pensionMode === 'stipp') {
       const dbStipp = await getCurrentRule<StippRates>('pensioenfonds_stipp');
       const stipp = dbStipp ?? STATIC_STIPP_RATES;
-      const maxGrondslagPerHour = stipp.max_pensionable_hourly_wage - stipp.franchise_per_hour;
-      const grondslagPerHour = Math.min(Math.max(baseHourlyRate - stipp.franchise_per_hour, 0), maxGrondslagPerHour);
-      return grondslagPerHour * totalHours * stipp.employee_rate;
+      const franchiseTotal = stipp.franchise_per_hour * totalHours;
+      const maxGrondslagTotal = (stipp.max_pensionable_hourly_wage - stipp.franchise_per_hour) * totalHours;
+      const grondslag = Math.min(Math.max(pensionableBase - franchiseTotal, 0), maxGrondslagTotal);
+      return grondslag * stipp.employee_rate;
     }
     return 0;
   }

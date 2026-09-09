@@ -9,6 +9,17 @@ import { explainPayslipAnalysis, explainFullPayslip, translatePayslipTerms } fro
 import { isGroqConfigured, isVisionConfigured } from '../ai-service/groq.js';
 import { validateFullPayslip } from '../payroll-engine/full-payslip.js';
 import { ipRateLimit } from '../rate-limiter.js';
+import { getMinimumWageAt } from '../rules-repository.js';
+
+// Resolves the payslip's own reference date for rules-DB lookups (audit N4). Falls back to today
+// only when the AI could not read a usable period-end date - a stated date always wins.
+function resolvePayslipReferenceDate(periodEndDate: string | null): Date {
+  if (periodEndDate) {
+    const parsed = new Date(periodEndDate);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return new Date();
+}
 
 const router = express.Router();
 // AI-invoking endpoints (Groq inference cost): 10 requests / 5 min per IP.
@@ -238,7 +249,9 @@ router.post('/analyze-full', aiRateLimit, async (req, res) => {
   const language = parsed.data.language ?? 'pl';
   try {
     const extraction = await extractFullPayslip(parsed.data.images);
-    const validation = validateFullPayslip(extraction);
+    const referenceDate = resolvePayslipReferenceDate(extraction.periodEndDate);
+    const applicableMinimumWage = await getMinimumWageAt(referenceDate);
+    const validation = validateFullPayslip(extraction, applicableMinimumWage);
 
     const uniqueTerms = Array.from(new Set([
       ...extraction.lineItems.flatMap((item) => [item.section, item.description]),

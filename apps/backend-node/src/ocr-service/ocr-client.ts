@@ -124,11 +124,15 @@ Pomijaj wyłącznie wiersze będące czystymi podsumowaniami/subtotalami sekcji 
 wiersz z liczbami bez nazwy).
 
 Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown, bez komentarzy, KRÓTKIE klucze) o strukturze:
-{"per":string|null,"hr":number|null,"mw":number|null,"hpw":number|null,"ct":string|null,"tpr":boolean,
+{"per":string|null,"ped":string|null,"hr":number|null,"mw":number|null,"hpw":number|null,"ct":string|null,"tpr":boolean,
 "li":[{"s":string,"d":string,"q":number|null,"r":number|null,"p":number|null,"x":number|null}],
 "rtg":number|null,"rtn":number|null,"rnp":number|null}
 
-Znaczenie kluczy: per=okres, hr=stawka godzinowa, mw=minimumloon, hpw=godziny/tydzień, ct=typ umowy,
+Znaczenie kluczy: per=okres jako opisany na dokumencie (np. "week 36" albo "2026-8"), ped=OSTATNI dzień
+okresu rozliczeniowego jako data ISO YYYY-MM-DD (np. dla "week 36 2026" to 2026-09-06; dla miesiąca
+sierpień 2026 to 2026-08-31) — wywnioskuj z numeru tygodnia/miesiąca i roku widocznych na dokumencie,
+hr=stawka godzinowa, mw=minimumloon WYDRUKOWANE na dokumencie (do celów informacyjnych — może być
+nieaktualne, nie licz z tego żadnej zgodności), hpw=godziny/tydzień, ct=typ umowy,
 tpr=aktywna ulga 30% (true tylko jeśli wyraźnie widoczna), li=lista pozycji, s=sekcja, d=opis pozycji,
 q=ilość/liczba godzin, r=stawka za jednostkę, p=kwota Betaling (zawsze dodatnia), x=kwota Inhouding (zawsze dodatnia),
 rtg=wydrukowana suma brutto, rtn=wydrukowana suma netto, rnp=faktycznie wypłacona kwota (Betalen/Per Bank).
@@ -171,6 +175,7 @@ export async function extractFullPayslip(imageDataUrls: string[]): Promise<FullP
     employer: null,
     employeeName: null,
     period: typeof parsed.per === 'string' ? parsed.per : null,
+    periodEndDate: typeof parsed.ped === 'string' ? parsed.ped : null,
     hourlyRate: toNullableNumber(parsed.hr),
     minimumWage: toNullableNumber(parsed.mw),
     hoursPerWeek: toNullableNumber(parsed.hpw),

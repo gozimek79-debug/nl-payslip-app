@@ -11,7 +11,16 @@ export interface FullPayslipExtraction {
   employer: string | null;
   employeeName: string | null;
   period: string | null;
+  /** ISO date (YYYY-MM-DD) for the last day of the period, inferred by the AI from the period
+   * label - used to pick the statutory minimum wage that actually applied on that date (audit N4),
+   * since the printed period label alone ("week 36", "2026-8") isn't a date the rules DB can use. */
+  periodEndDate: string | null;
   hourlyRate: number | null;
+  /** Minimum wage as PRINTED on the document - informational only. Audit N4: a real payslip can
+   * print a stale figure (e.g. the January rate still showing in a September payslip); comparing
+   * the employee's rate against this instead of the statutory rate for the period would clear an
+   * underpaid employee as compliant. Never used for the actual violation check - see
+   * `minimumWageApplicable` in FullPayslipValidation, resolved from the rules DB by the caller. */
   minimumWage: number | null;
   hoursPerWeek: number | null;
   contractType: string | null;
@@ -32,6 +41,13 @@ export interface FullPayslipValidation {
   variance: number | null;
   isConsistent: boolean;
   wmlViolation: boolean;
+  /** The statutory minimum wage actually applied for the check, resolved by the caller from the
+   * rules DB for the payslip's period (audit N4) - never the value printed on the document. */
+  minimumWageApplicable: number | null;
+  /** Set only when the document's printed minimum-wage figure differs from minimumWageApplicable.
+   * Informational - a mismatch here is a staleness signal about the payslip's own printout, never
+   * itself a violation and never mixed into `discrepancies`. */
+  minimumWageNote: string | null;
   discrepancies: string[];
   incomplete: boolean;
 }
@@ -42,7 +58,13 @@ function round(value: number): number {
   return Number(value.toFixed(2));
 }
 
-export function validateFullPayslip(extraction: FullPayslipExtraction): FullPayslipValidation {
+/**
+ * `applicableMinimumWage` must come from the rules DB for the payslip's own period (audit N4) -
+ * never from `extraction.minimumWage`, which is whatever figure happens to be printed on the
+ * document and can be stale (a payslip issued after a 1 January/1 July WML increase sometimes
+ * still shows the old rate, confirmed on a real September 2026 payslip printing the January value).
+ */
+export function validateFullPayslip(extraction: FullPayslipExtraction, applicableMinimumWage: number | null): FullPayslipValidation {
   const discrepancies: string[] = [];
   let hasHardIssue = false;
 
@@ -50,24 +72,41 @@ export function validateFullPayslip(extraction: FullPayslipExtraction): FullPays
   const totalDeductions = round(extraction.lineItems.reduce((sum, item) => sum + (item.deduction ?? 0), 0));
   const computedNet = round(totalPayments - totalDeductions);
 
+  // Three-tier tolerance (audit N2), calibrated against the Olympia and Randstad reference
+  // payslips: reconstructing Belastingdienst's stepwise period tax tables from an annual model
+  // reproduces the printed tax to within ~0.21-0.35 EUR/week, which is expected table-rounding
+  // noise, not a discrepancy. A flat cutoff either flags that noise (too tight) or hides a real
+  // multi-euro mismatch (too loose) - this doesn't try to pick one number for both.
+  const NET_MATCH_EUR = 1;
+  const NET_REVIEW_EUR = 10;
+
   const reportedNet = extraction.reportedTotalNet ?? extraction.reportedNetPaid ?? null;
   let variance: number | null = null;
   if (reportedNet !== null) {
     variance = round(computedNet - reportedNet);
-    const netMismatch = Math.abs(variance) > 1;
-    if (netMismatch && extraction.truncated) {
+    const absVariance = Math.abs(variance);
+    if (absVariance <= NET_MATCH_EUR) {
+      // Within table-rounding noise - not worth a discrepancy line at all.
+    } else if (extraction.truncated) {
       discrepancies.push(`Odczyt AI mógł zostać obcięty (limit modelu) i pominąć część pozycji — suma pozycji (${computedNet}) różni się od podanej kwoty netto (${reportedNet}), ale to może wynikać z niepełnego odczytu, nie z błędu na pasku.`);
-    } else if (netMismatch) {
+    } else if (absVariance <= NET_REVIEW_EUR) {
+      discrepancies.push(`Suma pozycji (${computedNet}) różni się od podanej kwoty netto (${reportedNet}) o ${variance} — niewielka różnica, możliwe zaokrąglenie tabeli podatkowej. Warto zweryfikować ręcznie, to jeszcze nie jest twarda niezgodność.`);
+    } else {
       discrepancies.push(`Suma pozycji (${computedNet}) różni się od podanej kwoty netto (${reportedNet}) o ${variance}.`);
       hasHardIssue = true;
     }
   }
 
   let wmlViolation = false;
-  if (extraction.hourlyRate !== null && extraction.minimumWage !== null && extraction.hourlyRate < extraction.minimumWage) {
+  if (extraction.hourlyRate !== null && applicableMinimumWage !== null && extraction.hourlyRate < applicableMinimumWage) {
     wmlViolation = true;
     hasHardIssue = true;
-    discrepancies.push(`Stawka godzinowa (${extraction.hourlyRate}) jest poniżej wettelijk minimumloon (${extraction.minimumWage}).`);
+    discrepancies.push(`Stawka godzinowa (${extraction.hourlyRate}) jest poniżej wettelijk minimumloon (€${applicableMinimumWage}).`);
+  }
+
+  let minimumWageNote: string | null = null;
+  if (extraction.minimumWage !== null && applicableMinimumWage !== null && Math.abs(extraction.minimumWage - applicableMinimumWage) > 0.005) {
+    minimumWageNote = `Minimumloon wydrukowane na pasku (€${extraction.minimumWage}) różni się od stawki obowiązującej w tym okresie (€${applicableMinimumWage}) — informacja, nie naruszenie. Może oznaczać, że system kadrowy nie zaktualizował jeszcze stawki po zmianie ustawowej.`;
   }
 
   if (extraction.hourlyRate !== null) {
@@ -98,6 +137,8 @@ export function validateFullPayslip(extraction: FullPayslipExtraction): FullPays
     variance,
     isConsistent: !hasHardIssue,
     wmlViolation,
+    minimumWageApplicable: applicableMinimumWage,
+    minimumWageNote,
     discrepancies,
     incomplete: extraction.truncated,
   };

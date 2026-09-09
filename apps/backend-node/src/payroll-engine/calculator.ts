@@ -101,6 +101,8 @@ interface BijzonderTariefAddonTier {
 }
 
 interface TaxRatesFile {
+  valid_from: string;
+  valid_to: string;
   year: number;
   minimum_wage_per_hour: number;
   loonheffing_brackets: TaxBracket[];
@@ -120,14 +122,28 @@ interface StippRates {
 
 const PERIOD_MULTIPLIERS: Record<PeriodType, number> = { week: 52, '4-wekelijks': 13, maand: 12 };
 
-let cachedStaticRates: TaxRatesFile | null = null;
+let cachedStaticPeriods: TaxRatesFile[] | null = null;
 
-function loadStaticTaxRates(): TaxRatesFile {
-  if (cachedStaticRates) return cachedStaticRates;
+function loadStaticPeriods(): TaxRatesFile[] {
+  if (cachedStaticPeriods) return cachedStaticPeriods;
   const dir = path.dirname(fileURLToPath(import.meta.url));
-  const filePath = path.resolve(dir, '../../../../packages/tax-tables/2026-Q1-rates.json');
-  cachedStaticRates = JSON.parse(readFileSync(filePath, 'utf-8')) as TaxRatesFile;
-  return cachedStaticRates;
+  const filePath = path.resolve(dir, '../../../../packages/tax-tables/2026-rates.json');
+  const file = JSON.parse(readFileSync(filePath, 'utf-8')) as { periods: TaxRatesFile[] };
+  cachedStaticPeriods = file.periods;
+  return cachedStaticPeriods;
+}
+
+/**
+ * Audit S1: the static fallback used to be a single undated snapshot, so it silently returned
+ * whichever period it happened to hold even for a date outside that period - e.g. the 2026-H2 rate
+ * for an H1 date, if the DB were down. The file now holds every period explicitly, and this refuses
+ * (returns null) for any date none of them cover, rather than guessing. The calculator has nowhere
+ * good to propagate "cannot compute" today (see the comment at its one call site below) - fixed
+ * where it matters most, the minimum-wage check, via rules-repository.ts's getMinimumWageAt.
+ */
+function loadStaticTaxRatesAt(date: Date): TaxRatesFile | null {
+  const iso = date.toISOString().slice(0, 10);
+  return loadStaticPeriods().find((period) => iso >= period.valid_from && iso <= period.valid_to) ?? null;
 }
 
 const STATIC_STIPP_RATES: StippRates = { franchise_per_hour: 9.24, max_pensionable_hourly_wage: 42.42, employee_rate: 0.075 };
@@ -139,7 +155,16 @@ function round(value: number): number {
 export class PayrollCalculator {
   async calculate(input: CalculatorInput): Promise<CalculatorResult> {
     const dbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
-    const rates = dbRates ?? loadStaticTaxRates();
+    const staticRates = dbRates ? null : loadStaticTaxRatesAt(new Date());
+    if (!dbRates && !staticRates) {
+      // Genuinely out of range for the static fallback (e.g. running past the file's last covered
+      // period with the DB also down) - refuse rather than silently compute with the wrong year's
+      // rates. Left as a thrown error (not a typed "cannot verify" result like getMinimumWageAt)
+      // because every CalculatorResult field depends on having rates at all - there's no partial
+      // result to return, unlike a single minimum-wage check.
+      throw new Error('Brak dostępnych stawek podatkowych dla bieżącej daty (baza niedostępna, a plik statyczny jej nie obejmuje).');
+    }
+    const rates = dbRates ?? staticRates!;
     const ratesSource: 'database' | 'static' = dbRates ? 'database' : 'static';
 
     const multiplier = PERIOD_MULTIPLIERS[input.periodType];
@@ -170,12 +195,19 @@ export class PayrollCalculator {
     // Składki pracownicze odliczane od brutto PRZED podatkiem (kolejność zgodna z realnymi paskami wypłaty).
     const pawwAmount = adv.enabled ? totalGross * (adv.pawwPercent / 100) : 0;
     const sicknessAmount = adv.enabled ? totalGross * (adv.sicknessInsurancePercent / 100) : 0;
-    // StiPP's pensionable wage nets out the OTHER simultaneous pre-tax premiums first (audit N3) —
-    // even though a real payslip presents PAWW/AZW/STIPP as three parallel deductions from the same
-    // "Loon in geld" line, StiPP's own base is that line minus PAWW and the sickness-fund premium.
-    // Confirmed against the Olympia payslip to the cent: (885.50 - 0.89 - 4.90 - 9.24*45) * 7.5% = 34.79.
-    const pensionableBase = totalGross - pawwAmount - sicknessAmount;
-    const pensionAmount = adv.enabled ? await this.computePension(adv, pensionableBase, totalHours, totalGross) : 0;
+    // PROVISIONAL (audit P4, reopened after N3): StiPP's own definition ("pensioengevend loon" =
+    // SV-loon, the wage reported to the Belastingdienst for employee insurance — see
+    // stippensioen.nl/werkgever/pensioenadministratie/pensioengevend-loon-en-pensioengrondslag-berekenen)
+    // does not net out PAWW or the sickness premium, so `totalGross` (not `totalGross - pawwAmount
+    // - sicknessAmount`, tried last round) is used here. This does NOT reproduce either reference
+    // payslip exactly: Olympia computes 35.23 vs printed 34.79 (+0.44), Randstad computes 38.69 vs
+    // printed 38.35 (+0.34) - both off by a similar relative amount in the same direction, which
+    // looks more like a cumulative/voortschrijdend computation method neither payslip's single
+    // period can be checked against without full year-to-date history, than a wrong parameter here.
+    // Tested and ruled out: both variants that net out exactly one of PAWW/sickness each reproduce
+    // one payslip exactly while missing the other by 6-7 cents - see calculator.test.ts for all four
+    // combinations tried against both fixtures. Do not treat this formula as settled.
+    const pensionAmount = adv.enabled ? await this.computePension(adv, totalGross, totalHours) : 0;
     const afterFirstPremiums = totalGross - pawwAmount - pensionAmount - sicknessAmount;
     const wgaAmount = adv.enabled ? afterFirstPremiums * (adv.wgaPremiumPercent / 100) : 0;
     const loonVoorHeffingen = afterFirstPremiums - wgaAmount;
@@ -265,20 +297,21 @@ export class PayrollCalculator {
   }
 
   /**
-   * `pensionableBase` is totalGross MINUS the other pre-tax premiums (PAWW, sickness) already
-   * deducted in this same step — see the audit N3 comment at the call site. Franchise and the
+   * StiPP's own definition of "pensioengevend loon" is SV-loon (the wage reported to the
+   * Belastingdienst for employee insurance) — i.e. `totalGross`, unreduced by PAWW or sickness
+   * premiums; see the PROVISIONAL note at the call site (audit P4). Franchise and the
    * pensionable-wage cap are still expressed per hour by StiPP, so they're converted to period
-   * totals here (franchise_per_hour * totalHours) rather than reducing to a per-hour average first,
+   * totals here (franchise_per_hour * totalHours) rather than reduced to a per-hour average first,
    * which would silently blend in irregular-hours surcharges at the wrong point in the calculation.
    */
-  private async computePension(adv: AdvancedInput, pensionableBase: number, totalHours: number, totalGross: number): Promise<number> {
+  private async computePension(adv: AdvancedInput, totalGross: number, totalHours: number): Promise<number> {
     if (adv.pensionMode === 'percent') return totalGross * (adv.pensionPremiumPercent / 100);
     if (adv.pensionMode === 'stipp') {
       const dbStipp = await getCurrentRule<StippRates>('pensioenfonds_stipp');
       const stipp = dbStipp ?? STATIC_STIPP_RATES;
       const franchiseTotal = stipp.franchise_per_hour * totalHours;
       const maxGrondslagTotal = (stipp.max_pensionable_hourly_wage - stipp.franchise_per_hour) * totalHours;
-      const grondslag = Math.min(Math.max(pensionableBase - franchiseTotal, 0), maxGrondslagTotal);
+      const grondslag = Math.min(Math.max(totalGross - franchiseTotal, 0), maxGrondslagTotal);
       return grondslag * stipp.employee_rate;
     }
     return 0;
@@ -335,10 +368,15 @@ export class PayrollCalculator {
     if (!applyLoonheffingskorting) return base;
     // Defensive fallback: a legal_rule_versions row written before this field existed (or any
     // future row missing it) must not crash the calculator. Fall back to the static file's tiers
-    // per-field, rather than trusting the unchecked cast of the whole DB row.
+    // per-field, rather than trusting the unchecked cast of the whole DB row. If even that fails
+    // (static file doesn't cover today either - the double-fallback edge case S1 is about), return
+    // the plain bracket rate with no addon rather than crash; this one field degrading to a less
+    // precise number is preferable to failing the whole calculation over a missing addon table.
+    const staticTiers = loadStaticTaxRatesAt(new Date())?.bijzonder_tarief_loonheffingskorting_addon_tiers;
     const tiers = rates.bijzonder_tarief_loonheffingskorting_addon_tiers?.length
       ? rates.bijzonder_tarief_loonheffingskorting_addon_tiers
-      : loadStaticTaxRates().bijzonder_tarief_loonheffingskorting_addon_tiers;
+      : staticTiers;
+    if (!tiers?.length) return base;
     const tier = tiers.find((item) => annualizedRegularIncome <= item.max) ?? tiers[tiers.length - 1];
     return base + (tier?.addon ?? 0) * 100;
   }

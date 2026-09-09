@@ -69,36 +69,47 @@ export async function getRuleAt<T>(code: string, date: Date): Promise<T | null> 
 }
 
 interface MinimalRatesFile {
+  valid_from: string;
+  valid_to: string;
   minimum_wage_per_hour: number;
 }
 
-let cachedStaticMinimumWage: number | null = null;
+let cachedStaticPeriods: MinimalRatesFile[] | null = null;
+
+function loadStaticPeriods(): MinimalRatesFile[] {
+  if (cachedStaticPeriods) return cachedStaticPeriods;
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const filePath = path.resolve(dir, '../../../packages/tax-tables/2026-rates.json');
+  const file = JSON.parse(readFileSync(filePath, 'utf-8')) as { periods: MinimalRatesFile[] };
+  cachedStaticPeriods = file.periods;
+  return cachedStaticPeriods;
+}
 
 /**
- * KNOWN GAP (flagged, not fixed, this round): the static fallback file is a single snapshot
- * (currently the 2026-H2 row). If the database is unreachable AND the reference date falls in a
- * different period than that snapshot (e.g. 2026-H1, before the SQL adding that row has been
- * applied), this returns the wrong period's rate instead of failing loudly. Low-probability
- * (requires DB down + wrong period simultaneously) but real; the fix is either a static file per
- * period or an explicit "static fallback is date-blind" warning surfaced to the caller.
+ * Audit S1: this used to read a single undated snapshot and return its rate regardless of whether
+ * `date` actually fell within it - for a 2026-H1 date, with the DB down, it would have returned the
+ * H2 rate (14.99 instead of 14.71). The file now holds every period explicitly (see 2026-rates.json);
+ * this picks the one covering `date` and returns null - never a guess - for any date none of them
+ * cover. "Database unreachable" is routine, not exotic, so this path is exercised for real.
  */
-function loadStaticMinimumWagePerHour(): number {
-  if (cachedStaticMinimumWage !== null) return cachedStaticMinimumWage;
-  const dir = path.dirname(fileURLToPath(import.meta.url));
-  const filePath = path.resolve(dir, '../../../packages/tax-tables/2026-Q1-rates.json');
-  const rates = JSON.parse(readFileSync(filePath, 'utf-8')) as MinimalRatesFile;
-  cachedStaticMinimumWage = rates.minimum_wage_per_hour;
-  return cachedStaticMinimumWage;
+function loadStaticMinimumWageAt(date: Date): number | null {
+  const iso = date.toISOString().slice(0, 10);
+  const period = loadStaticPeriods().find((p) => iso >= p.valid_from && iso <= p.valid_to);
+  return period?.minimum_wage_per_hour ?? null;
 }
 
 /**
  * Shared by the calculator, contract analysis and payslip analysis: the statutory minimum wage in
- * force on `date`, from the rules DB with a static fallback (see the gap noted above). Always uses
- * the document/period's own reference date, never "today" — audit requirements B2 and N4.
+ * force on `date`, from the rules DB with a date-matched static fallback. Always uses the
+ * document/period's own reference date, never "today" for a historical document (audit B2, N4) —
+ * except the contract minimum-wage check specifically, which the CALLER must pass today's date for
+ * (audit R2: the question there is "does today's pay meet today's minimum", not the contract's
+ * signing date). Returns null when neither source can answer for that date — the caller must treat
+ * that as "cannot verify", never default to a number (audit S1).
  */
-export async function getMinimumWageAt(date: Date): Promise<number> {
+export async function getMinimumWageAt(date: Date): Promise<number | null> {
   const dbRates = await getRuleAt<MinimalRatesFile>('loonheffing_nl', date);
-  return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWagePerHour();
+  return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWageAt(date);
 }
 
 export async function listRuleFreshness(): Promise<Array<{ code: string; title: string; validTo: string | null; sourceUrl: string }>> {

@@ -1,0 +1,112 @@
+{
+  "_file_note": "Static fallback only, used when the legal_rules database is unreachable (see rules-repository.ts). Holds ALL of 2026 as an array of periods, not one snapshot - a caller must pick the period matching its own reference date and refuse (never guess) if none matches. Box 1 brackets, bijzonder tarief and heffingskortingen are set per calendar year and are identical across both 2026 periods; only minimum_wage_per_hour changes, on 1 January and 1 July.",
+  "periods": [
+    {
+      "id": "tax_2026_h1",
+      "year": 2026,
+      "valid_from": "2026-01-01",
+      "valid_to": "2026-06-30",
+      "sources": [
+        "https://www.rijksoverheid.nl/onderwerpen/minimumloon/bedragen-minimumloon/bedragen-minimumloon-2026",
+        "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/boxen_en_tarieven/box_1/box_1",
+        "https://download.belastingdienst.nl/belastingdienst/dl/rekenhulpen/loonheffing/2026/v01/pdf/wit_bb_nl_std_20260101.pdf",
+        "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/heffingskortingen/arbeidskorting/tabel-arbeidskorting-2026"
+      ],
+      "last_verified": "2026-09-09",
+      "minimum_wage_per_hour": 14.71,
+      "loonheffing_brackets": [
+        { "min": 0, "max": 38883, "rate": 0.3575 },
+        { "min": 38883, "max": 78426, "rate": 0.3756 },
+        { "min": 78426, "max": 999999999, "rate": 0.4950 }
+      ],
+      "bijzonder_tarief_brackets": [
+        { "min": 0, "max": 38883, "rate": 0.3575 },
+        { "min": 38883, "max": 78426, "rate": 0.3756 },
+        { "min": 78426, "max": 999999999, "rate": 0.4950 }
+      ],
+      "_bijzonder_tarief_addon_note": "Verrekeningspercentage loonheffingskorting per jaarloon-schijf, uit de officiele 'witte tabel bijzondere beloning Nederland' (kolom 'Jonger dan AOW-leeftijd'), uitgave januari 2026. Wordt bij het standaardtarief opgeteld (kan negatief zijn bij lage inkomens).",
+      "bijzonder_tarief_loonheffingskorting_addon_tiers": [
+        { "max": 11358, "addon": 0.0000 },
+        { "max": 12923, "addon": -0.0832 },
+        { "max": 23931, "addon": -0.3101 },
+        { "max": 29737, "addon": -0.0195 },
+        { "max": 45593, "addon": 0.0445 },
+        { "max": 78427, "addon": 0.1291 },
+        { "max": 143555, "addon": 0.0651 },
+        { "max": 999999999, "addon": 0.0000 }
+      ],
+      "heffingskortingen": {
+        "algemene_heffingskorting": {
+          "max_amount": 3115,
+          "phaseout_start": 29736,
+          "phaseout_rate": 0.06398
+        },
+        "_arbeidskorting_verification_note": "max_amount, phaseout_start and phaseout_rate confirmed against belastingdienst.nl's own 2026 arbeidskorting table page (zero point EUR 132,921, matching these three parameters - see audit round 3, R1/G2). buildup_tiers confirmed against the same page and independently against the Olympia 2026-W36 payslip's printed arbeidskorting figure (108.71/week, see calculator.test.ts).",
+        "arbeidskorting": {
+          "max_amount": 5685,
+          "phaseout_start": 45592,
+          "phaseout_rate": 0.0651,
+          "buildup_tiers": [
+            { "max": 11965, "rate": 0.08324 },
+            { "max": 25845, "rate": 0.31009 },
+            { "max": 45592, "rate": 0.0195 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "tax_2026_h2",
+      "year": 2026,
+      "valid_from": "2026-07-01",
+      "valid_to": "2026-12-31",
+      "sources": [
+        "https://www.rijksoverheid.nl/onderwerpen/minimumloon/bedragen-minimumloon/bedragen-minimumloon-2026",
+        "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/boxen_en_tarieven/box_1/box_1",
+        "https://download.belastingdienst.nl/belastingdienst/dl/rekenhulpen/loonheffing/2026/v01/pdf/wit_bb_nl_std_20260101.pdf",
+        "https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/heffingskortingen/arbeidskorting/tabel-arbeidskorting-2026"
+      ],
+      "_source_correction_note": "De eerder aangehaalde bron voor de tabel bijzondere beloningen verwees per abuis naar de tabel van Belastingdienst/Caribisch Nederland (BES-eilanden, tarieven 29,4%/38,4%) in plaats van de tabel voor het Europese deel van Nederland. Vervangen door de juiste bron: witte tabel bijzondere beloning Nederland, standaard, uitgave januari 2026.",
+      "last_verified": "2026-09-09",
+      "minimum_wage_per_hour": 14.99,
+      "loonheffing_brackets": [
+        { "min": 0, "max": 38883, "rate": 0.3575 },
+        { "min": 38883, "max": 78426, "rate": 0.3756 },
+        { "min": 78426, "max": 999999999, "rate": 0.4950 }
+      ],
+      "bijzonder_tarief_brackets": [
+        { "min": 0, "max": 38883, "rate": 0.3575 },
+        { "min": 38883, "max": 78426, "rate": 0.3756 },
+        { "min": 78426, "max": 999999999, "rate": 0.4950 }
+      ],
+      "_bijzonder_tarief_addon_note": "Verrekeningspercentage loonheffingskorting per jaarloon-schijf, uit de officiele 'witte tabel bijzondere beloning Nederland' (kolom 'Jonger dan AOW-leeftijd'). Dit percentage wordt bij het standaardtarief opgeteld (kan negatief zijn bij lage inkomens). Zie bron hierboven.",
+      "bijzonder_tarief_loonheffingskorting_addon_tiers": [
+        { "max": 11358, "addon": 0.0000 },
+        { "max": 12923, "addon": -0.0832 },
+        { "max": 23931, "addon": -0.3101 },
+        { "max": 29737, "addon": -0.0195 },
+        { "max": 45593, "addon": 0.0445 },
+        { "max": 78427, "addon": 0.1291 },
+        { "max": 143555, "addon": 0.0651 },
+        { "max": 999999999, "addon": 0.0000 }
+      ],
+      "heffingskortingen": {
+        "algemene_heffingskorting": {
+          "max_amount": 3115,
+          "phaseout_start": 29736,
+          "phaseout_rate": 0.06398
+        },
+        "_arbeidskorting_verification_note": "max_amount, phaseout_start and phaseout_rate confirmed against belastingdienst.nl's own 2026 arbeidskorting table page (zero point EUR 132,921, matching these three parameters - see audit round 3, R1/G2). buildup_tiers confirmed against the same page and independently against the Olympia 2026-W36 payslip's printed arbeidskorting figure (108.71/week, see calculator.test.ts).",
+        "arbeidskorting": {
+          "max_amount": 5685,
+          "phaseout_start": 45592,
+          "phaseout_rate": 0.0651,
+          "buildup_tiers": [
+            { "max": 11965, "rate": 0.08324 },
+            { "max": 25845, "rate": 0.31009 },
+            { "max": 45592, "rate": 0.0195 }
+          ]
+        }
+      }
+    }
+  ]
+}

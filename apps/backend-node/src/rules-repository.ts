@@ -40,6 +40,31 @@ export async function getCurrentRule<T>(code: string): Promise<T | null> {
   }
 }
 
+/**
+ * Same as getCurrentRule, but resolves the rule version valid on a given date instead of today.
+ * Use this for anything that analyses a historical document (a payslip period, a contract's start
+ * date) — getCurrentRule would silently apply today's rates to a document from a different period.
+ * Deliberately NOT cached by (code, date) pair: unlike getCurrentRule this is not called at a high,
+ * uniform rate for a single "now", so a cache would mostly add memory pressure for little reuse.
+ */
+export async function getRuleAt<T>(code: string, date: Date): Promise<T | null> {
+  if (!databaseConfigured) return null;
+  try {
+    const rows = await query<RuleRow>(
+      `SELECT v.parameters, v.valid_from, v.valid_to, v.source_url
+       FROM legal_rule_versions v
+       JOIN legal_rules r ON r.id = v.legal_rule_id
+       WHERE r.code = $1 AND v.valid_from <= $2 AND (v.valid_to IS NULL OR v.valid_to >= $2)
+       ORDER BY v.version DESC LIMIT 1`,
+      [code, date.toISOString().slice(0, 10)],
+    );
+    return (rows[0]?.parameters as T) ?? null;
+  } catch (error) {
+    console.error(`Could not load rule "${code}" at ${date.toISOString().slice(0, 10)}`, error);
+    return null;
+  }
+}
+
 export async function listRuleFreshness(): Promise<Array<{ code: string; title: string; validTo: string | null; sourceUrl: string }>> {
   if (!databaseConfigured) return [];
   const rows = await query<{ code: string; title: string; valid_to: string | null; source_url: string }>(

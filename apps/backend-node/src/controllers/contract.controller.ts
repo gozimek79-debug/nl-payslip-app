@@ -4,10 +4,10 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { z } from 'zod';
 import { extractContract } from '../ocr-service/contract-client.js';
-import { analyzeContract } from '../payroll-engine/contract.js';
+import { analyzeContract, resolveReferenceDate } from '../payroll-engine/contract.js';
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
-import { getCurrentRule } from '../rules-repository.js';
+import { getRuleAt } from '../rules-repository.js';
 
 const router = express.Router();
 
@@ -33,8 +33,11 @@ function loadStaticMinimumWagePerHour(): number {
   return cachedStaticMinimumWage;
 }
 
-async function loadMinimumWagePerHour(): Promise<number> {
-  const dbRates = await getCurrentRule<MinimalRatesFile>('loonheffing_nl');
+// Uses the contract's own start date, not today (audit requirement B2) — the minimum wage a
+// contract must be checked against is the one in force when it started, not whichever of the two
+// yearly rates happens to be current when the user uploads it.
+async function loadMinimumWagePerHour(referenceDate: Date): Promise<number> {
+  const dbRates = await getRuleAt<MinimalRatesFile>('loonheffing_nl', referenceDate);
   return dbRates?.minimum_wage_per_hour ?? loadStaticMinimumWagePerHour();
 }
 
@@ -48,7 +51,8 @@ router.post('/analyze', async (req, res) => {
   const language = parsed.data.language ?? 'pl';
   try {
     const extraction = await extractContract(parsed.data.images);
-    const analysis = await analyzeContract(extraction, await loadMinimumWagePerHour());
+    const referenceDate = resolveReferenceDate(extraction);
+    const analysis = await analyzeContract(extraction, await loadMinimumWagePerHour(referenceDate));
 
     const uniqueTerms = Array.from(new Set(
       [extraction.contractType, extraction.functionTitle, extraction.caoName, extraction.pensionFund].filter(

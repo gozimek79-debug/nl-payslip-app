@@ -11,5 +11,5 @@
     "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src/server.ts", "src/app.ts", "src/controllers/*.ts", "src/database.ts", "src/auth.ts", "src/payroll-engine/calculator.ts"]
+  "include": ["src/server.ts", "src/app.ts", "src/controllers/*.ts", "src/database.ts", "src/auth.ts", "src/payroll-engine/calculator.ts", "src/payroll-engine/calculator.test.ts"]
 }

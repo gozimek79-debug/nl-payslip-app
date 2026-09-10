@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PayrollCalculator } from './calculator.js';
+import { PayrollCalculator, isCompleteTaxRatesFile, isCompleteStippRates } from './calculator.js';
 
 /**
  * Golden tests for the bijzonder tarief lookup table (audit round 2, C1).
@@ -54,6 +54,50 @@ function bijzonderTariefRate(rates: TaxRatesFile, annualizedRegularIncome: numbe
  * and values already matched what was coded - this test exists so a future edit can't silently
  * drift from the source without a failing test to catch it.
  */
+/**
+ * AF2 (audit round 6/7): confirms the whole-row completeness check actually rejects a row that's
+ * missing just ONE field, rather than partially trusting it - this is the exact shape of the round-6
+ * production bug (a DB row with the old flat `bijzonder_tarief_loonheffingskorting_addon` number
+ * instead of the tiers array, and `heffingskortingen.arbeidskorting` present but missing
+ * `buildup_tiers`, silently used as-is because nothing checked the row as a whole).
+ */
+test('AF2: the actual round-1 production row shape (confirmed via live DB dump) is rejected whole', () => {
+  // This is not a hypothetical - it's the literal shape returned by the production dump in this
+  // round's report, before this round's re-seed: old flat addon field, no buildup_tiers array.
+  const staleProductionRow = {
+    year: 2026,
+    minimum_wage_per_hour: 14.99,
+    loonheffing_brackets: [{ min: 0, max: 38883, rate: 0.3575 }, { min: 38883, max: 78426, rate: 0.3756 }, { min: 78426, max: 999999999, rate: 0.495 }],
+    bijzonder_tarief_brackets: [{ min: 0, max: 38883, rate: 0.3575 }, { min: 38883, max: 78426, rate: 0.3756 }, { min: 78426, max: 999999999, rate: 0.495 }],
+    bijzonder_tarief_loonheffingskorting_addon: 0.0445,
+    heffingskortingen: {
+      algemene_heffingskorting: { max_amount: 3115, phaseout_start: 29736, phaseout_rate: 0.06398 },
+      arbeidskorting: { max_amount: 5685, phaseout_start: 45592, phaseout_rate: 0.0651 },
+    },
+  };
+  assert.equal(isCompleteTaxRatesFile(staleProductionRow), false);
+});
+
+test('AF2: a complete rates row (matching the current re-seeded shape) passes', () => {
+  const completeRow = {
+    year: 2026,
+    minimum_wage_per_hour: 14.99,
+    loonheffing_brackets: [{ min: 0, max: 999999999, rate: 0.3575 }],
+    bijzonder_tarief_brackets: [{ min: 0, max: 999999999, rate: 0.3575 }],
+    bijzonder_tarief_loonheffingskorting_addon_tiers: [{ max: 999999999, addon: 0 }],
+    heffingskortingen: {
+      algemene_heffingskorting: { max_amount: 3115, phaseout_start: 29736, phaseout_rate: 0.06398 },
+      arbeidskorting: { max_amount: 5685, phaseout_start: 45592, phaseout_rate: 0.0651, buildup_tiers: [{ max: 45592, rate: 0.01 }] },
+    },
+  };
+  assert.equal(isCompleteTaxRatesFile(completeRow), true);
+});
+
+test('AF2: StiPP row missing a field is rejected whole, same principle', () => {
+  assert.equal(isCompleteStippRates({ franchise_per_hour: 9.24, employee_rate: 0.075 }), false); // missing max_pensionable_hourly_wage
+  assert.equal(isCompleteStippRates({ franchise_per_hour: 9.24, max_pensionable_hourly_wage: 42.42, employee_rate: 0.075 }), true);
+});
+
 test('U3: full addon table matches the primary source PDF exactly, boundary by boundary', () => {
   const rates = loadRates();
   const expected = [
@@ -195,18 +239,18 @@ test('arbeidskorting buildup tiers match Olympia 2026-W36 payslip exactly (audit
  */
 test('StiPP: netting reproduces Olympia 2026-W36 exactly', async () => {
   const calculator = new PayrollCalculator() as unknown as {
-    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<number>;
+    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<{ amount: number; source: string }>;
   };
   const result = await calculator.computePension({ pensionMode: 'stipp' }, 885.50, 885.50 - 0.89 - 4.90, 45);
-  assert.equal(result.toFixed(2), '34.79');
+  assert.equal(result.amount.toFixed(2), '34.79');
 });
 
 test('StiPP: netting reproduces Randstad 2026-W11 within the correction-artifact margin', async () => {
   const calculator = new PayrollCalculator() as unknown as {
-    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<number>;
+    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<{ amount: number; source: string }>;
   };
   const result = await calculator.computePension({ pensionMode: 'stipp' }, 970.89, 970.89 - 0.74 - 4.55, 49.25);
-  assert.ok(Math.abs(result - 38.35) <= 0.1, `expected within 0.10 of 38.35, got ${result.toFixed(2)}`);
+  assert.ok(Math.abs(result.amount - 38.35) <= 0.1, `expected within 0.10 of 38.35, got ${result.amount.toFixed(2)}`);
 });
 
 test('StiPP: neither hypothesis reproduces OTTO 2025-W33 (audit T3, documented failure)', async () => {

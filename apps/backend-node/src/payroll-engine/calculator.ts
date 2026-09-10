@@ -80,7 +80,20 @@ export interface CalculatorResult {
     net: number;
   };
   taxYear: number;
-  ratesSource: 'database' | 'static';
+  /**
+   * Per-rule source attribution (audit AF2) — replaces the old single top-level `ratesSource`.
+   * `taxRates` covers everything from the loonheffing_nl rule (brackets, heffingskortingen,
+   * minimum wage, bijzonder tarief addon table) as ONE unit: either the whole DB row passed its
+   * completeness check and every one of those numbers came from it, or it didn't and every one of
+   * them came from the static file — never a mix (audit AF2, option (b): a rule that fails
+   * completeness is rejected whole, not patched field-by-field). `pension` covers
+   * pensioenfonds_stipp separately, since it's a different rule with its own independent
+   * DB-or-static outcome; 'not_applicable' when pensionMode isn't 'stipp'.
+   */
+  sources: {
+    taxRates: 'database' | 'static';
+    pension: 'database' | 'static' | 'not_applicable';
+  };
   disclaimer: string;
 }
 
@@ -148,13 +161,48 @@ function loadStaticTaxRatesAt(date: Date): TaxRatesFile | null {
 
 const STATIC_STIPP_RATES: StippRates = { franchise_per_hour: 9.24, max_pensionable_hourly_wage: 42.42, employee_rate: 0.075 };
 
+/**
+ * Audit AF2, option (b) — adopted over per-field fallback after that pattern (A2, round 2) let a
+ * stale DB row serve one CORRECT number (bijzonder tarief, protected by a field-level fallback)
+ * and one WRONG number (arbeidskorting buildup tiers, not protected) side by side, undetectable
+ * from the response alone. Confirmed live in round 6: production served arbeidskorting computed
+ * from a round-1 row missing the tier-array field entirely (it had the old flat
+ * `bijzonder_tarief_loonheffingskorting_addon` single number, not the array) while silently
+ * "passing" for bijzonder tarief only because that one field happened to have its own fallback.
+ * A row that fails ANY of these checks is rejected WHOLE — every number in the result then comes
+ * from the static file, never a mix — per the same "decline rather than guess" principle as S1.
+ */
+export function isCompleteTaxRatesFile(value: unknown): value is TaxRatesFile {
+  const r = value as Partial<TaxRatesFile> | null | undefined;
+  if (!r || typeof r.minimum_wage_per_hour !== 'number') return false;
+  if (!Array.isArray(r.loonheffing_brackets) || r.loonheffing_brackets.length === 0) return false;
+  if (!Array.isArray(r.bijzonder_tarief_brackets) || r.bijzonder_tarief_brackets.length === 0) return false;
+  if (!Array.isArray(r.bijzonder_tarief_loonheffingskorting_addon_tiers) || r.bijzonder_tarief_loonheffingskorting_addon_tiers.length === 0) return false;
+  const hk = r.heffingskortingen;
+  if (!hk) return false;
+  const ahk = hk.algemene_heffingskorting;
+  if (!ahk || typeof ahk.max_amount !== 'number' || typeof ahk.phaseout_start !== 'number' || typeof ahk.phaseout_rate !== 'number') return false;
+  const ak = hk.arbeidskorting;
+  if (!ak || typeof ak.max_amount !== 'number' || typeof ak.phaseout_start !== 'number' || typeof ak.phaseout_rate !== 'number') return false;
+  if (!Array.isArray(ak.buildup_tiers) || ak.buildup_tiers.length === 0) return false;
+  return true;
+}
+
+export function isCompleteStippRates(value: unknown): value is StippRates {
+  const r = value as Partial<StippRates> | null | undefined;
+  return !!r && typeof r.franchise_per_hour === 'number' && typeof r.max_pensionable_hourly_wage === 'number' && typeof r.employee_rate === 'number';
+}
+
 function round(value: number): number {
   return Number(value.toFixed(2));
 }
 
 export class PayrollCalculator {
   async calculate(input: CalculatorInput): Promise<CalculatorResult> {
-    const dbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
+    const rawDbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
+    // Whole-row completeness check (audit AF2) - a DB row missing or malforming any field is
+    // treated exactly as if it weren't there, not partially trusted.
+    const dbRates = rawDbRates && isCompleteTaxRatesFile(rawDbRates) ? rawDbRates : null;
     const staticRates = dbRates ? null : loadStaticTaxRatesAt(new Date());
     if (!dbRates && !staticRates) {
       // Genuinely out of range for the static fallback (e.g. running past the file's last covered
@@ -165,7 +213,7 @@ export class PayrollCalculator {
       throw new Error('Brak dostępnych stawek podatkowych dla bieżącej daty (baza niedostępna, a plik statyczny jej nie obejmuje).');
     }
     const rates = dbRates ?? staticRates!;
-    const ratesSource: 'database' | 'static' = dbRates ? 'database' : 'static';
+    const taxRatesSource: 'database' | 'static' = dbRates ? 'database' : 'static';
 
     const multiplier = PERIOD_MULTIPLIERS[input.periodType];
     const base = input.baseHourlyRate;
@@ -213,7 +261,10 @@ export class PayrollCalculator {
     // attempt found: 14.79, using "Suma z pracy" 752.37 over 43h at 2025 Plusregeling rates -
     // franchise 8.90, rate 4%). Still marked PROVISIONAL: two documents support netting, a third
     // fails both variants for reasons not yet understood, and this is not a closed question.
-    const pensionAmount = adv.enabled ? await this.computePension(adv, totalGross, totalGross - pawwAmount - sicknessAmount, totalHours) : 0;
+    const pensionResult = adv.enabled
+      ? await this.computePension(adv, totalGross, totalGross - pawwAmount - sicknessAmount, totalHours)
+      : { amount: 0, source: 'not_applicable' as const };
+    const pensionAmount = pensionResult.amount;
     const afterFirstPremiums = totalGross - pawwAmount - pensionAmount - sicknessAmount;
     const wgaAmount = adv.enabled ? afterFirstPremiums * (adv.wgaPremiumPercent / 100) : 0;
     const loonVoorHeffingen = afterFirstPremiums - wgaAmount;
@@ -296,7 +347,7 @@ export class PayrollCalculator {
         net: round(netTotal * multiplier),
       },
       taxYear: rates.year,
-      ratesSource,
+      sources: { taxRates: taxRatesSource, pension: pensionResult.source },
       disclaimer:
         'Kalkulacja ma charakter orientacyjny i wykorzystuje uproszczone tabele podatkowe. Ostateczne rozliczenie zależy od pracodawcy i Belastingdienst.',
     };
@@ -312,17 +363,26 @@ export class PayrollCalculator {
    * per-hour average first, which would silently blend in irregular-hours surcharges at the wrong
    * point in the calculation.
    */
-  private async computePension(adv: AdvancedInput, totalGross: number, pensionableBase: number, totalHours: number): Promise<number> {
-    if (adv.pensionMode === 'percent') return totalGross * (adv.pensionPremiumPercent / 100);
+  private async computePension(
+    adv: AdvancedInput,
+    totalGross: number,
+    pensionableBase: number,
+    totalHours: number,
+  ): Promise<{ amount: number; source: 'database' | 'static' | 'not_applicable' }> {
+    if (adv.pensionMode === 'percent') return { amount: totalGross * (adv.pensionPremiumPercent / 100), source: 'not_applicable' };
     if (adv.pensionMode === 'stipp') {
-      const dbStipp = await getCurrentRule<StippRates>('pensioenfonds_stipp');
+      const rawDbStipp = await getCurrentRule<StippRates>('pensioenfonds_stipp');
+      // Same whole-row completeness principle as loonheffing_nl (audit AF2) - not split out into a
+      // shared helper since there are only two rule shapes in this file; would be worth generalising
+      // if a third DB-backed rule shape shows up here.
+      const dbStipp = rawDbStipp && isCompleteStippRates(rawDbStipp) ? rawDbStipp : null;
       const stipp = dbStipp ?? STATIC_STIPP_RATES;
       const franchiseTotal = stipp.franchise_per_hour * totalHours;
       const maxGrondslagTotal = (stipp.max_pensionable_hourly_wage - stipp.franchise_per_hour) * totalHours;
       const grondslag = Math.min(Math.max(pensionableBase - franchiseTotal, 0), maxGrondslagTotal);
-      return grondslag * stipp.employee_rate;
+      return { amount: grondslag * stipp.employee_rate, source: dbStipp ? 'database' : 'static' };
     }
-    return 0;
+    return { amount: 0, source: 'not_applicable' };
   }
 
   private progressiveTax(annualAmount: number, brackets: TaxBracket[]): number {
@@ -374,17 +434,13 @@ export class PayrollCalculator {
     const bracket = brackets.find((item) => annualizedRegularIncome <= item.max) ?? brackets[brackets.length - 1];
     const base = (bracket?.rate ?? 0) * 100;
     if (!applyLoonheffingskorting) return base;
-    // Defensive fallback: a legal_rule_versions row written before this field existed (or any
-    // future row missing it) must not crash the calculator. Fall back to the static file's tiers
-    // per-field, rather than trusting the unchecked cast of the whole DB row. If even that fails
-    // (static file doesn't cover today either - the double-fallback edge case S1 is about), return
-    // the plain bracket rate with no addon rather than crash; this one field degrading to a less
-    // precise number is preferable to failing the whole calculation over a missing addon table.
-    const staticTiers = loadStaticTaxRatesAt(new Date())?.bijzonder_tarief_loonheffingskorting_addon_tiers;
-    const tiers = rates.bijzonder_tarief_loonheffingskorting_addon_tiers?.length
-      ? rates.bijzonder_tarief_loonheffingskorting_addon_tiers
-      : staticTiers;
-    if (!tiers?.length) return base;
+    // No per-field fallback here (audit AF2, option (b)): `rates` is guaranteed complete by
+    // isCompleteTaxRatesFile() before it ever reaches this method - either it's the DB row (fully
+    // valid) or the static file (always fully valid), never a stale DB row missing just this field.
+    // The old per-field fallback (round 2's A2 fix) was the exact mechanism that let a stale DB row
+    // silently serve a correct bijzonder tarief while its arbeidskorting was wrong (round 6) -
+    // removed rather than extended to every field individually.
+    const tiers = rates.bijzonder_tarief_loonheffingskorting_addon_tiers;
     const tier = tiers.find((item) => annualizedRegularIncome <= item.max) ?? tiers[tiers.length - 1];
     return base + (tier?.addon ?? 0) * 100;
   }

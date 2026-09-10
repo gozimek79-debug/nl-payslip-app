@@ -186,17 +186,27 @@ async function upsertRule(rule) {
   }
 
   for (const version of rule.versions) {
-    const { rows: current } = await pool.query(
+    // Bug fixed round 7: the unique constraint is (legal_rule_id, version) GLOBALLY, not per
+    // valid_from - a rule with two simultaneous non-overlapping periods (e.g. loonheffing_nl's
+    // H1/H2) still shares one incrementing version sequence across both. The previous version of
+    // this script computed "next version for this valid_from", which collided with an existing
+    // row's version number the first time a genuinely new valid_from was added - confirmed live,
+    // see the round 7 audit reply for the exact error.
+    const { rows: forThisPeriod } = await pool.query(
       `SELECT version, parameters FROM legal_rule_versions WHERE legal_rule_id = $1 AND valid_from = $2 ORDER BY version DESC LIMIT 1`,
       [ruleId, version.valid_from],
     );
-    const currentParams = current[0]?.parameters ? JSON.stringify(current[0].parameters) : null;
+    const currentParams = forThisPeriod[0]?.parameters ? JSON.stringify(forThisPeriod[0].parameters) : null;
     const newParams = JSON.stringify(version.parameters);
     if (currentParams === newParams) {
       console.log(`  ${rule.code} @ ${version.valid_from}: unchanged, skipping`);
       continue;
     }
-    const nextVersion = (current[0]?.version ?? 0) + 1;
+    const { rows: maxVersionRow } = await pool.query(
+      `SELECT COALESCE(MAX(version), 0) AS max_version FROM legal_rule_versions WHERE legal_rule_id = $1`,
+      [ruleId],
+    );
+    const nextVersion = maxVersionRow[0].max_version + 1;
     await pool.query(
       `INSERT INTO legal_rule_versions (legal_rule_id, version, valid_from, valid_to, parameters, source_url, published_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())`,

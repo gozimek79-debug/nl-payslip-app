@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/payroll-engine/calculator.test.js dist/payroll-engine/full-payslip.test.js dist/payroll-engine/contract.test.js dist/ocr-service/pii-patterns.test.js"
+    "test": "npm run build && node --test dist/payroll-engine/calculator.test.js dist/payroll-engine/full-payslip.test.js dist/payroll-engine/contract.test.js dist/payroll-engine/payslip-model.test.js dist/ocr-service/pii-patterns.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

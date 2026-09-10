@@ -1,5 +1,6 @@
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
 import type { ContractExtraction } from '../payroll-engine/contract.js';
+import { sanitizeText } from './pii-patterns.js';
 
 // Klucze skrócone celowo — ten sam powód co przy pełnej analizie paska wypłaty: limit tokenów
 // wyjściowych modelu wizyjnego na darmowym planie Groq.
@@ -49,19 +50,7 @@ function toNullableNumber(value: unknown): number | null {
 }
 
 // Siatka bezpieczeństwa: nawet gdyby model złamał instrukcję, te wzorce nie trafią do odpowiedzi.
-const BSN_PATTERN = /\b\d{9}\b/;
-const IBAN_PATTERN = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/i;
-const EMAIL_PATTERN = /[^\s@]+@[^\s@]+\.[^\s@]+/;
-const PHONE_PATTERN = /\b(?:\+?31|0)[\s-]?6[\s-]?\d{2}[\s-]?\d{2}[\s-]?\d{2}[\s-]?\d{2}\b/;
-
-function sanitizeText(value: unknown, fieldName: string, redacted: string[]): string | null {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  if (BSN_PATTERN.test(value) || IBAN_PATTERN.test(value) || EMAIL_PATTERN.test(value) || PHONE_PATTERN.test(value)) {
-    redacted.push(fieldName);
-    return null;
-  }
-  return value.trim();
-}
+// Shared with the payslip extraction path (audit R7/J3) — see pii-patterns.ts.
 
 export async function extractContract(imageDataUrls: string[]): Promise<ContractExtraction> {
   const completion = await groqClient().chat.completions.create({

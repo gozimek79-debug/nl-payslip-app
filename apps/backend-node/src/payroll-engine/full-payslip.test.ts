@@ -4,8 +4,6 @@ import { validateFullPayslip, type FullPayslipExtraction } from './full-payslip.
 
 function baseExtraction(overrides: Partial<FullPayslipExtraction> = {}): FullPayslipExtraction {
   return {
-    employer: null,
-    employeeName: null,
     period: 'week 36/2026',
     periodEndDate: '2026-09-06',
     hourlyRate: 15.55,
@@ -20,6 +18,7 @@ function baseExtraction(overrides: Partial<FullPayslipExtraction> = {}): FullPay
     reportedTotalNet: 686.09,
     reportedNetPaid: 776.09,
     truncated: false,
+    redactedFields: [],
     ...overrides,
   };
 }

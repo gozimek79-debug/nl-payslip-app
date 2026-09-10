@@ -1,5 +1,6 @@
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
 import type { FullPayslipExtraction } from '../payroll-engine/full-payslip.js';
+import { sanitizeText } from './pii-patterns.js';
 
 export interface AiOcrFields {
   hours: number;
@@ -169,11 +170,13 @@ export async function extractFullPayslip(imageDataUrls: string[]): Promise<FullP
   const { value, truncated: parseNeededRepair } = extractJsonWithTruncationFlag(raw);
   const parsed = value as Record<string, unknown>;
   const rawLineItems = Array.isArray(parsed.li) ? parsed.li : [];
+  // Audit R7/J3: the extraction schema deliberately has no employee-name/address fields, but a
+  // free-text line description has no such schema-level protection - the same regex safety net
+  // used on the contract path catches it here too, independent of prompt compliance.
+  const redactedFields: string[] = [];
 
   return {
     truncated: hitLengthLimit || parseNeededRepair,
-    employer: null,
-    employeeName: null,
     period: typeof parsed.per === 'string' ? parsed.per : null,
     periodEndDate: typeof parsed.ped === 'string' ? parsed.ped : null,
     hourlyRate: toNullableNumber(parsed.hr),
@@ -181,17 +184,18 @@ export async function extractFullPayslip(imageDataUrls: string[]): Promise<FullP
     hoursPerWeek: toNullableNumber(parsed.hpw),
     contractType: typeof parsed.ct === 'string' ? parsed.ct : null,
     thirtyPercentRuling: parsed.tpr === true,
-    lineItems: rawLineItems.map((item) => {
+    lineItems: rawLineItems.map((item, index) => {
       const record = item as Record<string, unknown>;
       return {
-        section: typeof record.s === 'string' ? record.s : 'Inne',
-        description: typeof record.d === 'string' ? record.d : '',
+        section: sanitizeText(record.s, `lineItems[${index}].section`, redactedFields) ?? 'Inne',
+        description: sanitizeText(record.d, `lineItems[${index}].description`, redactedFields) ?? '',
         quantity: toNullableNumber(record.q),
         rate: toNullableNumber(record.r),
         payment: toNullableNumber(record.p),
         deduction: toNullableNumber(record.x),
       };
     }),
+    redactedFields,
     reportedTotalGross: toNullableNumber(parsed.rtg),
     reportedTotalNet: toNullableNumber(parsed.rtn),
     reportedNetPaid: toNullableNumber(parsed.rnp),

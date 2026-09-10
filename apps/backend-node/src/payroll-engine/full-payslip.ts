@@ -8,8 +8,6 @@ export interface PayslipLineItem {
 }
 
 export interface FullPayslipExtraction {
-  employer: string | null;
-  employeeName: string | null;
   period: string | null;
   /** ISO date (YYYY-MM-DD) for the last day of the period, inferred by the AI from the period
    * label - used to pick the statutory minimum wage that actually applied on that date (audit N4),
@@ -31,6 +29,13 @@ export interface FullPayslipExtraction {
   reportedNetPaid: number | null;
   /** true, gdy odpowiedź modelu została obcięta przez limit tokenów i mogła pominąć pozycje. */
   truncated: boolean;
+  /** Line-item text fields (section/description) blanked by the server-side regex safety net
+   * because they matched a BSN/IBAN/email/phone pattern - audit R7/J3. Mirrors the same mechanism
+   * already used on the contract path (contract-client.ts's sanitizeText); the payslip extraction
+   * schema never asks for employee name/address in the first place (no such fields exist here), but
+   * free-text line descriptions have no schema-level protection, so this is the only safety net for
+   * those specifically. Format: "lineItems[<index>].description" or "...section". */
+  redactedFields: string[];
 }
 
 export interface FullPayslipValidation {

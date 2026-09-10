@@ -23,6 +23,7 @@ type FullPayslipExtraction = {
   period: string | null; periodEndDate: string | null; hourlyRate: number | null; minimumWage: number | null; hoursPerWeek: number | null;
   contractType: string | null; thirtyPercentRuling: boolean; lineItems: FullPayslipLineItem[];
   reportedTotalGross: number | null; reportedTotalNet: number | null; reportedNetPaid: number | null; truncated: boolean;
+  redactedFields: string[];
 };
 type FullPayslipValidation = {
   totalPayments: number; totalDeductions: number; computedNet: number; reportedNet: number | null; variance: number | null;
@@ -298,6 +299,7 @@ export function App() {
         <StepProgress current={3} labels={[t.progress.document, t.progress.data, t.progress.analysis]}/>
         <div className="flow-heading"><span className="step">{t.fullResult.step3}</span><h1>{t.fullResult.title}</h1><p>{t.fullResult.lead}</p></div>
         {fullResult.extraction.truncated && <div className="status error calc-wml-warning"><AlertTriangle size={16}/> {t.fullResult.incompleteWarning}</div>}
+        {fullResult.extraction.redactedFields.length > 0 && <div className="status error calc-wml-warning"><AlertTriangle size={16}/> {t.fullResult.redactedNotice}</div>}
         {fullResult.validation.minimumWageNote && <div className="status info calc-wml-warning">{fullResult.validation.minimumWageNote}</div>}
         <div className={`result-hero ${fullResult.validation.isConsistent ? 'consistent' : 'attention'}`}>
           <div className="result-icon">{fullResult.validation.isConsistent ? <Check/> : '!'}</div>

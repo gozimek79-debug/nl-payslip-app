@@ -195,19 +195,25 @@ export class PayrollCalculator {
     // Składki pracownicze odliczane od brutto PRZED podatkiem (kolejność zgodna z realnymi paskami wypłaty).
     const pawwAmount = adv.enabled ? totalGross * (adv.pawwPercent / 100) : 0;
     const sicknessAmount = adv.enabled ? totalGross * (adv.sicknessInsurancePercent / 100) : 0;
-    // PROVISIONAL (audit P4, reopened after N3): StiPP's own definition ("pensioengevend loon" =
-    // SV-loon, the wage reported to the Belastingdienst for employee insurance — see
-    // stippensioen.nl/werkgever/pensioenadministratie/pensioengevend-loon-en-pensioengrondslag-berekenen)
-    // does not net out PAWW or the sickness premium, so `totalGross` (not `totalGross - pawwAmount
-    // - sicknessAmount`, tried last round) is used here. This does NOT reproduce either reference
-    // payslip exactly: Olympia computes 35.23 vs printed 34.79 (+0.44), Randstad computes 38.69 vs
-    // printed 38.35 (+0.34) - both off by a similar relative amount in the same direction, which
-    // looks more like a cumulative/voortschrijdend computation method neither payslip's single
-    // period can be checked against without full year-to-date history, than a wrong parameter here.
-    // Tested and ruled out: both variants that net out exactly one of PAWW/sickness each reproduce
-    // one payslip exactly while missing the other by 6-7 cents - see calculator.test.ts for all four
-    // combinations tried against both fixtures. Do not treat this formula as settled.
-    const pensionAmount = adv.enabled ? await this.computePension(adv, totalGross, totalHours) : 0;
+    // PROVISIONAL, REINSTATED (audit T1, after briefly reverting under P4). Netting out PAWW and
+    // the sickness premium before StiPP's franchise/rate apply is the LEADING hypothesis again:
+    //   Olympia (885.50 - 0.89 - 4.90 - 9.24*45)  * 7.5% = 34.79   printed 34.79   diff  0.00 (exact)
+    //   Randstad(970.89 - 0.74 - 4.55 - 9.24*49.25)* 7.5% = 38.29   printed 38.35   diff -0.06
+    // vs. the no-netting variant tried in between (totalGross, unreduced):
+    //   Olympia:  35.23 vs 34.79 (+0.44)   Randstad: 38.69 vs 38.35 (+0.34)
+    // Netting fits BOTH documents better, not just the one it was derived from - the objection to
+    // HOW it was found (reverse-solved from one payslip, one degree of freedom) stood, but the
+    // conclusion it produced turned out to generalise, and the no-netting alternative doesn't.
+    // Randstad is itself a correction (version 2, issued 30-04-2026) - its pension line may carry an
+    // adjustment from the original run, which alone could explain a 0.06/38.35 = 0.16% residual, so
+    // that gap is weak evidence against netting, not strong evidence for the alternative.
+    // A THIRD document (OTTO, 2025, fase C/Plusregeling - different scheme, different rates)
+    // does NOT confirm this either way: its own PAWW lines cancel to zero net effect, so netting
+    // and not-netting predict the SAME number there, and neither reaches the printed 21.65 (best
+    // attempt found: 14.79, using "Suma z pracy" 752.37 over 43h at 2025 Plusregeling rates -
+    // franchise 8.90, rate 4%). Still marked PROVISIONAL: two documents support netting, a third
+    // fails both variants for reasons not yet understood, and this is not a closed question.
+    const pensionAmount = adv.enabled ? await this.computePension(adv, totalGross, totalGross - pawwAmount - sicknessAmount, totalHours) : 0;
     const afterFirstPremiums = totalGross - pawwAmount - pensionAmount - sicknessAmount;
     const wgaAmount = adv.enabled ? afterFirstPremiums * (adv.wgaPremiumPercent / 100) : 0;
     const loonVoorHeffingen = afterFirstPremiums - wgaAmount;
@@ -297,21 +303,23 @@ export class PayrollCalculator {
   }
 
   /**
-   * StiPP's own definition of "pensioengevend loon" is SV-loon (the wage reported to the
-   * Belastingdienst for employee insurance) — i.e. `totalGross`, unreduced by PAWW or sickness
-   * premiums; see the PROVISIONAL note at the call site (audit P4). Franchise and the
-   * pensionable-wage cap are still expressed per hour by StiPP, so they're converted to period
-   * totals here (franchise_per_hour * totalHours) rather than reduced to a per-hour average first,
-   * which would silently blend in irregular-hours surcharges at the wrong point in the calculation.
+   * `percent` mode is keyed to `totalGross` (unreduced) — a plain user-entered "% of gross", never
+   * disputed, not affected by the StiPP question. `stipp` mode uses `pensionableBase` (totalGross
+   * minus PAWW and sickness, per the PROVISIONAL T1/N3 note at the call site) — the two must stay
+   * separate parameters, not one reused value, or a fix to one mode silently changes the other.
+   * Franchise and the pensionable-wage cap are still expressed per hour by StiPP, so they're
+   * converted to period totals here (franchise_per_hour * totalHours) rather than reduced to a
+   * per-hour average first, which would silently blend in irregular-hours surcharges at the wrong
+   * point in the calculation.
    */
-  private async computePension(adv: AdvancedInput, totalGross: number, totalHours: number): Promise<number> {
+  private async computePension(adv: AdvancedInput, totalGross: number, pensionableBase: number, totalHours: number): Promise<number> {
     if (adv.pensionMode === 'percent') return totalGross * (adv.pensionPremiumPercent / 100);
     if (adv.pensionMode === 'stipp') {
       const dbStipp = await getCurrentRule<StippRates>('pensioenfonds_stipp');
       const stipp = dbStipp ?? STATIC_STIPP_RATES;
       const franchiseTotal = stipp.franchise_per_hour * totalHours;
       const maxGrondslagTotal = (stipp.max_pensionable_hourly_wage - stipp.franchise_per_hour) * totalHours;
-      const grondslag = Math.min(Math.max(totalGross - franchiseTotal, 0), maxGrondslagTotal);
+      const grondslag = Math.min(Math.max(pensionableBase - franchiseTotal, 0), maxGrondslagTotal);
       return grondslag * stipp.employee_rate;
     }
     return 0;

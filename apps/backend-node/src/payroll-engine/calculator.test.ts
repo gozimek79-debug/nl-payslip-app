@@ -47,6 +47,28 @@ function bijzonderTariefRate(rates: TaxRatesFile, annualizedRegularIncome: numbe
   return base + (tier?.addon ?? 0) * 100;
 }
 
+/**
+ * U3 (audit round 5): pins the full addon table against the actual primary source PDF
+ * (wit_bb_nl_std_20260101.pdf, "Jonger dan AOW-leeftijd" column), read directly this round after
+ * two earlier attempts failed (wrong jurisdiction, then an unparseable fetch). All eight boundaries
+ * and values already matched what was coded - this test exists so a future edit can't silently
+ * drift from the source without a failing test to catch it.
+ */
+test('U3: full addon table matches the primary source PDF exactly, boundary by boundary', () => {
+  const rates = loadRates();
+  const expected = [
+    { max: 11358, addon: 0.0 },
+    { max: 12923, addon: -0.0832 },
+    { max: 23931, addon: -0.3101 },
+    { max: 29737, addon: -0.0195 },
+    { max: 45593, addon: 0.0445 },
+    { max: 78427, addon: 0.1291 },
+    { max: 143555, addon: 0.0651 },
+    { max: 999999999, addon: 0.0 },
+  ];
+  assert.deepEqual(rates.bijzonder_tarief_loonheffingskorting_addon_tiers, expected);
+});
+
 test('bijzonder tarief matches PKF 2026-08 payslip (jaarloon 38000 -> 40.20%)', () => {
   const rates = loadRates();
   assert.equal(bijzonderTariefRate(rates, 38000, true).toFixed(2), '40.20');
@@ -147,39 +169,57 @@ test('arbeidskorting buildup tiers match Olympia 2026-W36 payslip exactly (audit
 });
 
 /**
- * PROVISIONAL, per audit P4 (reopened N3). Franchise (9.24), max pensionable wage (42.42) and
- * employee rate (7.5%) are all confirmed correct against StiPP's own primary source - not in
- * dispute. What's provisional is the BASIS. Two hypotheses were tested against BOTH reference
- * payslips (Olympia, Randstad); neither reproduces both exactly:
+ * PROVISIONAL, per audit T1 (reinstated after a brief revert under P4). Franchise (9.24), max
+ * pensionable wage (42.42) and employee rate (7.5%, 2026) are all confirmed correct against StiPP's
+ * own primary source - not in dispute. What's provisional is the BASIS: does StiPP's own "SV-loon,
+ * no netting" definition apply literally, or does it net out PAWW and the sickness premium first?
  *
- *   basis = totalGross (StiPP's own stated definition: SV-loon, no netting)
- *     Olympia:  (885.50 - 9.24*45)  * 7.5% = 35.23   printed 34.79   diff +0.44
- *     Randstad: (970.89 - 9.24*49.25)*7.5% = 38.69   printed 38.35   diff +0.34
+ *   NETTING (leading hypothesis, coded): basis = totalGross - pawwAmount - sicknessAmount
+ *     Olympia:  (885.50 - 0.89 - 4.90 - 9.24*45)  * 7.5% = 34.79   printed 34.79   diff  0.00 (exact)
+ *     Randstad: (970.89 - 0.74 - 4.55 - 9.24*49.25)*7.5% = 38.29   printed 38.35   diff -0.06
  *
- *   basis = totalGross - sicknessAmount only (reverse-solved last round, NOT the coded formula)
- *     Olympia:  (885.50 - 4.90 - 9.24*45) * 7.5% = 34.86   printed 34.79   diff +0.07
- *     Randstad: (970.89 - 4.55 - 9.24*49.25)*7.5%= 38.35   printed 38.35   diff  0.00 (exact)
+ *   NO NETTING (StiPP's literal text, tried and reverted last round): basis = totalGross
+ *     Olympia:  35.23 vs 34.79 (+0.44)     Randstad: 38.69 vs 38.35 (+0.34)
  *
- * The two residuals under the FIRST (coded) hypothesis are same-direction and similar relative
- * size (1.26% / 0.89%) across two independently-sourced payslips - the best available signal this
- * session has that it's the right definition and something outside a single period's printout
- * (most likely a cumulative/voortschrijdend computation neither payslip's YTD history is available
- * to check) explains the residual, rather than a wrong parameter. This is not confirmed. Do not
- * report either fixture's StiPP line as "exact" - both are asserted below only within their known
- * residual, deliberately not to the cent.
+ * Netting fits BOTH fixtures better, not just the one it was first derived from - that's the reason
+ * it's reinstated as the LEADING hypothesis rather than "the textbook one." The 0.06 Randstad
+ * residual is weak disconfirmation on its own: that document is a correction (version 2, issued
+ * 30-04-2026), whose pension line may carry an adjustment from the original run.
+ *
+ * A THIRD, independent document (OTTO, 2025-W33, fase C/Plusregeling - a different scheme, 8.90
+ * franchise, 4% employee rate) does NOT confirm this further: its own PAWW lines net to exactly
+ * zero, so both hypotheses predict the identical number there, and NEITHER reaches the printed
+ * 21.65 - the best base found ("Suma z pracy" 752.37, 43h) gives 14.79, a 32% shortfall not
+ * explained by any component identified in the fixture. See the OTTO test below - it is expected
+ * to fail, and documents that failure rather than hiding it.
  */
-test('StiPP: current (provisional) formula is within its known residual on Olympia 2026-W36', async () => {
+test('StiPP: netting reproduces Olympia 2026-W36 exactly', async () => {
   const calculator = new PayrollCalculator() as unknown as {
-    computePension: (adv: unknown, totalGross: number, totalHours: number) => Promise<number>;
+    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<number>;
   };
-  const result = await calculator.computePension({ pensionMode: 'stipp' }, 885.50, 45);
-  assert.ok(Math.abs(result - 34.79) <= 0.45, `expected within 0.45 of 34.79, got ${result.toFixed(2)}`);
+  const result = await calculator.computePension({ pensionMode: 'stipp' }, 885.50, 885.50 - 0.89 - 4.90, 45);
+  assert.equal(result.toFixed(2), '34.79');
 });
 
-test('StiPP: current (provisional) formula is within its known residual on Randstad 2026-W11', async () => {
+test('StiPP: netting reproduces Randstad 2026-W11 within the correction-artifact margin', async () => {
   const calculator = new PayrollCalculator() as unknown as {
-    computePension: (adv: unknown, totalGross: number, totalHours: number) => Promise<number>;
+    computePension: (adv: unknown, totalGross: number, pensionableBase: number, totalHours: number) => Promise<number>;
   };
-  const result = await calculator.computePension({ pensionMode: 'stipp' }, 970.89, 49.25);
-  assert.ok(Math.abs(result - 38.35) <= 0.35, `expected within 0.35 of 38.35, got ${result.toFixed(2)}`);
+  const result = await calculator.computePension({ pensionMode: 'stipp' }, 970.89, 970.89 - 0.74 - 4.55, 49.25);
+  assert.ok(Math.abs(result - 38.35) <= 0.1, `expected within 0.10 of 38.35, got ${result.toFixed(2)}`);
+});
+
+test('StiPP: neither hypothesis reproduces OTTO 2025-W33 (audit T3, documented failure)', async () => {
+  // 2025 Plusregeling (fase C): franchise 8.90, employee rate 4% - confirmed via StiPP's own
+  // "definitieve cijfers 2025" page. OTTO's PAWW Rekompensata (+0.51) and PAWW Opłata (-0.51) net to
+  // exactly zero, so this uses the (identical either way) unnetted base directly.
+  const franchise2025 = 8.90;
+  const rate2025 = 0.04;
+  const hours = 43;
+  const base = 752.37; // "Suma z pracy" - DHL + KF gross, before Krok 2's additions/deductions
+  const grondslag = Math.max(base - franchise2025 * hours, 0);
+  const computed = grondslag * rate2025;
+  const printed = 21.65;
+  assert.ok(Math.abs(computed - printed) > 5, `expected a large, documented mismatch, got ${computed.toFixed(2)} vs printed ${printed}`);
+  assert.equal(computed.toFixed(2), '14.79');
 });

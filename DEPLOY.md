@@ -4,12 +4,25 @@
 - `DATABASE_URL` for the production Neon database, available locally.
 - Push access to `origin/main` (GitHub-connected Vercel project).
 
-## 1. Apply the database migration (rate limiting)
+## Ordering note (audit Y3, round 6)
+Step 1 (migration) is no longer a hard prerequisite for step... 4 (deploy): the rate limiter
+(`rate-limiter.ts`) now self-heals a missing `rate_limits` table on first use, after this
+exact ordering (code deployed before the migration ran) took every AI route offline in
+production for one deploy. Running the migration is still fine and idempotent — do it whenever —
+it just isn't something the app silently depends on anymore. Step 2 (seed) has **no such
+self-healing** and matters more than it looks: as of round 6, production is confirmed serving
+**stale arbeidskorting buildup tiers** from the original round-1 seed (verified live: a
+calculator call at annualized income ~20,000 returns the old, wrong figure, ~13 EUR/year high on
+every user in the roughly EUR 12k-45k income band) because `heffingskortingen()` has no per-field
+fallback the way `bijzonderTariefRate()` does. **Run step 2 as soon as possible — this is a live
+correctness bug affecting ordinary users, not a hypothetical.**
+
+## 1. Apply the database migration (rate limiting) — no longer urgent, self-healing
 ```bash
 psql "$DATABASE_URL" -f packages/database/migrations/004-rate-limits.sql
 ```
 
-## 2. Seed / update the legal_rules reference data
+## 2. Seed / update the legal_rules reference data — URGENT, see note above
 ```bash
 DATABASE_URL="$DATABASE_URL" node scripts/seed-legal-rules.mjs
 ```

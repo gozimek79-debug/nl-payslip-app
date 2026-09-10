@@ -14,15 +14,18 @@
 //     VERIFIED this session (round 4), against primary sources, not carried over:
 //       - loonheffing_brackets, bijzonder_tarief_brackets: rijksoverheid.nl / belastingdienst.nl
 //       - bijzonder_tarief_loonheffingskorting_addon_tiers: belastingdienst.nl's own 2026 witte
-//         tabel bijzondere beloning (see packages/tax-tables/2026-rates.json for the full URL)
+//         tabel bijzondere beloning, re-verified boundary-by-boundary in round 5 (audit U3) against
+//         the actual primary source PDF (wit_bb_nl_std_20260101.pdf) - no correction was needed,
+//         every boundary already matched.
 //       - heffingskortingen.algemene_heffingskorting, .arbeidskorting (all fields including the
 //         corrected buildup_tiers): belastingdienst.nl's own arbeidskorting table page, AND
 //         independently confirmed against the Olympia 2026-W36 payslip's printed arbeidskorting
 //         figure (108.71/week) - see calculator.test.ts
 //       - minimum_wage_per_hour: rijksoverheid.nl (14.71 for H1, 14.99 for H2)
-//     Parameters here are copied directly from packages/tax-tables/2026-rates.json, which is the
-//     single source of truth for both the static fallback AND this seed - do not let the two drift;
-//     if you edit one, edit both or extract a shared JSON import (not done here, kept simple).
+//     Audit W1: this now IMPORTS packages/tax-tables/2026-rates.json directly instead of restating
+//     the values inline - closing the JSON-vs-seed duplication flagged as NEW FINDING 3 last round,
+//     before it could drift the way the static-vs-DB duplication did earlier in this engagement.
+//     There is exactly one place these numbers live; both the static fallback and this seed read it.
 //
 //   pensioenfonds_stipp
 //     VERIFIED this session (round 4), against stippensioen.nl's own "definitieve cijfers 2026"
@@ -42,26 +45,44 @@
 //     this seed as authoritative.
 //
 //   cao_abu_uitzendkrachten
-//     LARGELY UNKNOWN. This session could not recover what was originally seeded for this rule -
-//     it is not referenced anywhere in the current codebase (confirmed via grep: zero usages), so
-//     there was nothing to reverse-engineer it from. The values below (Saturday 25% / Sunday 50%)
-//     are commonly-cited defaults from secondary sources, offered here only as a placeholder - and
-//     even the ABU CAO's own text (abu.nl) says these percentages are NOT fixed CAO-wide, but
-//     depend on "equivalence with the hirer's own regular employees," i.e. the actual applicable
-//     percentage varies per assignment. Do not treat this row as authoritative for any real
-//     calculation; it is seeded only so the rule exists with SOME value rather than none, and is
-//     flagged here so nobody mistakes it for a verified figure the way this session was told to
-//     stop doing. Recommend either removing this rule entirely (nothing consumes it) or properly
-//     scoping what it should represent before trusting it.
+//     AUDIT V3 (round 5): this rule previously carried placeholder Saturday/Sunday percentages
+//     (25%/50%) explicitly flagged as unverified. Per your own NEW FINDING 2 from round 4: the ABU
+//     CAO does not fix a CAO-wide toeslag percentage at all — it requires equivalence with whatever
+//     the hirer's own regular employees receive, which varies per assignment. A default number here
+//     was never going to be correct for a real assignment; it was the same failure shape as the
+//     monthly minimum-wage default from round 1 (a wrong default is worse than an absent one). The
+//     parameters below now say exactly that — no percentages, an explicit "no default exists" state
+//     — rather than a plausible-looking number nothing actually backs. Still not consumed by any
+//     code path (confirmed via grep): kept only so the rule exists as a documented non-answer,
+//     pending the data-model rewrite (audit V1) that would let this be sourced from the document or
+//     the user instead of a table row.
 //
 // USAGE: run against the production database with a real DATABASE_URL in the environment:
 //   DATABASE_URL="postgresql://..." node scripts/seed-legal-rules.mjs
 // Idempotent: re-running creates a new version row only if the parameters differ from the current
 // one for that (code, valid_from) pair; running it twice with no changes is a no-op.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
 const { Pool } = pg;
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const taxRatesFile = JSON.parse(readFileSync(path.resolve(scriptDir, '../packages/tax-tables/2026-rates.json'), 'utf-8'));
+function loonheffingParamsFor(periodId) {
+  const period = taxRatesFile.periods.find((p) => p.id === periodId);
+  if (!period) throw new Error(`Period "${periodId}" not found in 2026-rates.json`);
+  // Strip the file's own documentation-only fields (id, sources, _*_note) - legal_rule_versions
+  // rows carry their source via the dedicated source_url column, not an in-JSON array.
+  const { id, sources, last_verified, _source_correction_note, _bijzonder_tarief_addon_note, ...params } = period;
+  if (params.heffingskortingen) {
+    const { _arbeidskorting_verification_note, ...heffingskortingen } = params.heffingskortingen;
+    params.heffingskortingen = heffingskortingen;
+  }
+  return params;
+}
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -71,46 +92,6 @@ if (!connectionString) {
 
 const pool = new Pool({ connectionString });
 
-const LOONHEFFING_H1 = {
-  year: 2026,
-  minimum_wage_per_hour: 14.71,
-  loonheffing_brackets: [
-    { min: 0, max: 38883, rate: 0.3575 },
-    { min: 38883, max: 78426, rate: 0.3756 },
-    { min: 78426, max: 999999999, rate: 0.495 },
-  ],
-  bijzonder_tarief_brackets: [
-    { min: 0, max: 38883, rate: 0.3575 },
-    { min: 38883, max: 78426, rate: 0.3756 },
-    { min: 78426, max: 999999999, rate: 0.495 },
-  ],
-  bijzonder_tarief_loonheffingskorting_addon_tiers: [
-    { max: 11358, addon: 0.0 },
-    { max: 12923, addon: -0.0832 },
-    { max: 23931, addon: -0.3101 },
-    { max: 29737, addon: -0.0195 },
-    { max: 45593, addon: 0.0445 },
-    { max: 78427, addon: 0.1291 },
-    { max: 143555, addon: 0.0651 },
-    { max: 999999999, addon: 0.0 },
-  ],
-  heffingskortingen: {
-    algemene_heffingskorting: { max_amount: 3115, phaseout_start: 29736, phaseout_rate: 0.06398 },
-    arbeidskorting: {
-      max_amount: 5685,
-      phaseout_start: 45592,
-      phaseout_rate: 0.0651,
-      buildup_tiers: [
-        { max: 11965, rate: 0.08324 },
-        { max: 25845, rate: 0.31009 },
-        { max: 45592, rate: 0.0195 },
-      ],
-    },
-  },
-};
-
-const LOONHEFFING_H2 = { ...LOONHEFFING_H1, minimum_wage_per_hour: 14.99 };
-
 const RULES = [
   {
     code: 'loonheffing_nl',
@@ -119,13 +100,13 @@ const RULES = [
       {
         valid_from: '2026-01-01',
         valid_to: '2026-06-30',
-        parameters: LOONHEFFING_H1,
+        parameters: loonheffingParamsFor('tax_2026_h1'),
         source_url: 'https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/heffingskortingen/arbeidskorting/tabel-arbeidskorting-2026',
       },
       {
         valid_from: '2026-07-01',
         valid_to: '2026-12-31',
-        parameters: LOONHEFFING_H2,
+        parameters: loonheffingParamsFor('tax_2026_h2'),
         source_url: 'https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/belastingdienst/prive/inkomstenbelasting/heffingskortingen_boxen_tarieven/heffingskortingen/arbeidskorting/tabel-arbeidskorting-2026',
       },
     ],
@@ -175,15 +156,14 @@ const RULES = [
   },
   {
     code: 'cao_abu_uitzendkrachten',
-    title: 'CAO ABU uitzendkrachten — indicatieve toeslagen (ONGEVERIFIEERD, niet gebruikt in code)',
+    title: 'CAO ABU uitzendkrachten — geen vast CAO-breed toeslagpercentage (audit V3)',
     versions: [
       {
         valid_from: '2026-01-01',
         valid_to: '2026-12-31',
         parameters: {
-          _warning: 'Placeholder only - see the file-level comment above. Not consumed by any code path. The ABU CAO itself does not fix these as flat percentages; they depend on equivalence with the hirer\'s own employees.',
-          saturday_percent: 25,
-          sunday_percent: 50,
+          has_default_toeslag: false,
+          reason: 'De CAO ABU voor Uitzendkrachten stelt geen vast Saturday/Sunday-toeslagpercentage CAO-breed vast - de uitzendkracht heeft recht op dezelfde onregelmatigheidstoeslag-regeling als een vergelijkbare werknemer bij de inlener, wat per opdracht verschilt. Een vaste standaardwaarde hier zou dezelfde fout zijn als het maandelijkse minimumloon-defect uit ronde 1: een verkeerde standaardwaarde is erger dan geen standaardwaarde. De daadwerkelijke waarde moet uit het document (pasklip/CAO van de inlener) of van de gebruiker komen, niet uit deze tabel.',
         },
         source_url: 'https://www.abu.nl/app/uploads/2026/01/CAO-voor-Uitzendkrachten-2026-2028.pdf',
       },

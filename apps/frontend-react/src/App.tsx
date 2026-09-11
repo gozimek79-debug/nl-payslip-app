@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, Calculator as CalculatorIcon, Check, FileText, LockKeyhole, Sparkles, ShieldCheck, Upload } from 'lucide-react';
 import { recognizePayslip, renderPageImages } from './local-ocr.ts';
-import { Calculator } from './Calculator.tsx';
+import { TierACalculator } from './TierACalculator.tsx';
 import { StepProgress } from './StepProgress.tsx';
 import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
@@ -245,7 +245,7 @@ export function App() {
     {authNotice && !accountOpen && <div className={`status ${authNotice === 'success' ? '' : 'error'} auth-notice`} role="status">{authNotice === 'success' ? t.account.noticeSuccess : authNotice === 'expired' ? t.account.noticeExpired : authNotice === 'invalid' ? t.account.noticeInvalid : t.account.noticeError}</div>}
     {accountOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => setAccountOpen(false)}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => { setAccountOpen(false); setMagicLinkSent(false); setAuthNotice(null); }} aria-label={t.account.close}>×</button>{magicLinkSent ? <><span className="step">{t.account.title}</span><h2 id="account-title">{t.account.sentTitle}</h2><p>{t.account.sentBody(email)}</p><button className="secondary" onClick={() => void login()}>{t.account.resend}</button></> : <form onSubmit={event => { event.preventDefault(); void login(); }}><span className="step">{t.account.title}</span><h2 id="account-title">{t.account.heading}</h2><p>{t.account.intro}</p><label className="email-label">{t.account.email}<input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com"/></label>{message && <div className="status error">{message}</div>}<button className="primary" type="submit">{t.account.continue}</button></form>}</section></div>}
     <main id="top">
-      {mode === 'calculator' && <Calculator lang={lang}/>}
+      {mode === 'calculator' && <TierACalculator lang={lang}/>}
       {mode === 'contract' && <ContractAnalysis lang={lang}/>}
       {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => setMode('analyze')} onLogout={() => void logout()} onStartAnalysis={() => { setMode('analyze'); startOver(); }} onDeleteData={deleteMyData}/>}
       {mode === 'analyze' && <>

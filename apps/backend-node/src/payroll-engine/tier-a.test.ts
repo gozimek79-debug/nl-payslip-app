@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computePayslipPeriod, type PayslipComputationRates } from './payslip-model.js';
-import { buildTierAPeriod, checkTierASanity, type TierAInput } from './tier-a.js';
+import { buildTierAPeriod, checkTierASanity, computeTierAResult, type TierAInput } from './tier-a.js';
 
 /**
  * Acceptance tests for Tier A (SPEC-loonto-architecture.md §10, "Tier A ships when:"), checked
@@ -110,23 +110,52 @@ test('Tier A acceptance: the same inputs with deductions skipped produce no net 
   assert.ok(outcome.taxable_base > 0, 'taxable_base should still be computable (as an upper bound) even with deductions skipped');
 });
 
-test('Tier A acceptance: "estimate" marks pension/PAWW as estimated and leaves sector premium unknown', () => {
+test('Tier A acceptance: "estimate" marks pension/PAWW as estimated, and does NOT block on the sector premium', () => {
+  // Owner's decision (audit AZ1-AZ4): "estimate" now produces a net RANGE using an observed
+  // sector-premium range, rather than blocking entirely on that one line. Pension/PAWW are still
+  // per-line Field<number> estimates; the sector premium is deliberately NOT a pre_tax_deductions
+  // row at all any more (see estimateSectorPremiumRange()) - it is a range, applied to net directly.
   const input = olympiaTierAInput({ deductions: { mode: 'estimate' } });
   const period = buildTierAPeriod(input);
   const pension = period.pre_tax_deductions.find((d) => d.category === 'pension')!;
   const paww = period.pre_tax_deductions.find((d) => d.category === 'paww')!;
-  const sector = period.pre_tax_deductions.find((d) => d.category === 'ziektewet')!;
   assert.equal(pension.amount.provenance, 'estimated');
   assert.equal(paww.amount.provenance, 'estimated');
-  // Deliberately NOT defaulted (audit round, point 4) - no reliable population-level figure found
-  // for the employee-deducted sector premium, unlike StiPP and PAWW which are both sourced and
-  // uniform. Estimating it anyway would repeat exactly the failure this architecture change targets.
-  assert.equal(sector.amount.provenance, 'unknown');
+  assert.equal(period.pre_tax_deductions.some((d) => d.category === 'ziektewet'), false);
 
-  // A partial estimate (2 of 3 known, 1 genuinely unknown) still blocks the final net figure -
-  // "estimated" does not mean "good enough to proceed," it means "labelled, not fabricated."
   const outcome = computePayslipPeriod(period, RATES_2026, true);
-  assert.equal(outcome.status, 'incomplete');
+  assert.equal(outcome.status, 'complete', 'estimate mode should reach a complete computation now that the sector premium is a range, not a blocking unknown');
+});
+
+test('AZ1/AZ5: "estimate" mode produces a net RANGE from the sector-premium range, leaving gross/taxable_base/tax as single, unaffected figures', () => {
+  const input = olympiaTierAInput({ deductions: { mode: 'estimate' } });
+  const result = computeTierAResult(input, RATES_2026);
+  assert.equal(result.outcome.status, 'complete');
+  if (result.outcome.status !== 'complete') return;
+
+  assert.ok(result.sector_premium_estimate, 'expected a sector_premium_estimate for "estimate" mode');
+  assert.ok(result.net_range, 'expected a net_range for "estimate" mode');
+  assert.ok(result.payout_range, 'expected a payout_range for "estimate" mode');
+  const spe = result.sector_premium_estimate!;
+  assert.equal(spe.low_percent, 0.18);
+  assert.equal(spe.high_percent, 0.7);
+  assert.equal(spe.provenance, 'estimated');
+  // AZ3: the basis must state its actual grounding (observed range across real payslips), not read
+  // as a statutory figure.
+  assert.match(spe.basis, /loonstro/i);
+
+  const netRange = result.net_range!;
+  // A higher assumed premium means a lower net - the range's low bound must be <= its high bound,
+  // and neither equals the base wage_net exactly (both bounds are genuinely offset from it).
+  assert.ok(netRange.low < netRange.high, `expected net_range.low (${netRange.low}) < net_range.high (${netRange.high})`);
+  assert.ok(netRange.high < result.outcome.result.wage_net, 'the high end of the net range must still be below wage_net before ANY sector premium is deducted');
+
+  // AZ5: gross_total/taxable_base/table_tax_after_korting/bt_tax are single figures, not ranges -
+  // confirmed simply by their being plain numbers on `result.outcome.result`, unaffected by
+  // sector_premium_estimate/net_range existing alongside them.
+  assert.equal(typeof result.outcome.result.gross_total, 'number');
+  assert.equal(typeof result.outcome.result.taxable_base, 'number');
+  assert.equal(typeof result.outcome.result.table_tax_after_korting, 'number');
 });
 
 test('Tier A: vakantiegeld accruing stays outside gross and net, shown only as a reservation', () => {
@@ -155,15 +184,12 @@ test('Tier A: vakantiegeld paid now enters gross at BT, and the unknown BT rate 
   assert.ok(outcome.missing_fields.includes('bijzonder_tarief_percentage'));
 });
 
-test('Tier A: the net-exceeds-gross sanity check fires', () => {
-  // Dutch loonheffingskortingen only ever reduce total_tax, floored at 0 (Math.max(0, ...)) - they
-  // can never make wage_net exceed taxable_base on their own, so a low-rate/high-credit case alone
-  // does not trigger this. What DOES, realistically: a small number of worked hours (small taxed
-  // gross) combined with a large UNTAXED reimbursement (travel_allowance, added after tax as
-  // net_additions) - exactly the shape the spec's own example describes (a small period where the
-  // reconstructed net-per-hour comfortably exceeds the entered gross-per-hour, unflagged in the old
-  // build). Here: 2h x 10 EUR/h = 20 EUR gross, but a 200 EUR travel allowance pushes the final
-  // payout well above gross_total.
+test('Tier A: a real travel allowance does NOT falsely trigger the sanity check', () => {
+  // Found while wiring this into the actual API route (this round): checking payout_amount (which
+  // includes travel_allowance, one of Tier A's own listed inputs) fired on ANY worker with a modest
+  // travel allowance relative to their hours - a real, legitimate, everyday case, not a bug. This
+  // confirms the fix: 2h x 10 EUR/h = 20 EUR gross, plus a genuine 200 EUR travel allowance, produces
+  // no warning at all now that the check is based on wage_net (before that allowance is added).
   const input: TierAInput = {
     period_type: 'week',
     hours_worked: 2,
@@ -176,6 +202,35 @@ test('Tier A: the net-exceeds-gross sanity check fires', () => {
   };
   const period = buildTierAPeriod(input);
   const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const warnings = checkTierASanity(outcome, input);
+  assert.deepEqual(warnings, [], `expected no sanity warnings for a legitimate travel allowance, got: ${JSON.stringify(warnings)}`);
+});
+
+test('Tier A: the net-exceeds-gross sanity check fires on a genuine wage-math impossibility', () => {
+  // Dutch loonheffingskortingen only ever reduce total_tax, floored at 0 (Math.max(0, ...)) - under
+  // normal deductions wage_net can never exceed gross_total. The one real way it can: a NEGATIVE
+  // pre-tax deduction (a genuine compensation/refund line, e.g. OTTO's "PAWW Rekompensata" -0.51)
+  // large enough that even the resulting tax on the inflated base does not cancel it back out.
+  // 10h x 10 EUR/h = 100 EUR gross; entering "pension: -50" (a compensation, not a deduction) pushes
+  // loon_voor_heffingen/taxable_base to 150 - annualised income is low enough that
+  // heffingskortingen floor the tax near 0, so wage_net lands close to 150, comfortably above the
+  // 100 EUR gross.
+  const input: TierAInput = {
+    period_type: 'week',
+    hours_worked: 10,
+    hourly_rate: 10,
+    overtime_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: { pension: -50 } },
+  };
+  const period = buildTierAPeriod(input);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status === 'complete') {
+    assert.ok(outcome.result.wage_net > outcome.result.gross_total, `expected wage_net (${outcome.result.wage_net}) > gross_total (${outcome.result.gross_total}) for this synthetic case`);
+  }
   const warnings = checkTierASanity(outcome, input);
   assert.ok(warnings.some((w) => w.code === 'net_exceeds_gross' || w.code === 'effective_rate_exceeds_gross_rate'), `expected a sanity warning, got: ${JSON.stringify(warnings)}`);
 });

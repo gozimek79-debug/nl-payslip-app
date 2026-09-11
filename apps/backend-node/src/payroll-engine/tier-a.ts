@@ -82,16 +82,56 @@ export const ESTIMATED_PAWW_DEFAULT = {
 };
 
 /**
- * Deliberately NOT defaulted, even in "estimate" mode (audit round, architecture change, point 4):
- * the sector/Ziektewet premium an agency deducts from an employee varies by document in every
- * reference fixture this engagement has seen (0.7% on one, absent on another), and the only
- * authoritative published figures found (WGA ~2.92%, Ziektewet up to 6.49% for the uitzendbranche)
- * are the EMPLOYER's differentiated premium, not a confirmed employee-deducted rate. Fabricating one
- * here would repeat exactly the failure mode this whole architecture change exists to eliminate -
- * this category stays `unknownField()` even under "estimate", with this note surfaced to the user.
+ * Owner's decision (audit AZ1-AZ4, following up on the earlier round's refusal to invent this
+ * default): the sector/Ziektewet premium still has no statutory or sector-published employee-side
+ * rate (the only authoritative figures found - WGA ~2.92%, Ziektewet up to 6.49% - are the
+ * EMPLOYER's differentiated premium, not a confirmed employee-deducted one). Rather than block net
+ * entirely on this one line, the estimate path now uses a RANGE observed across the four real
+ * reference payslips this engagement has, disclosed as a range rather than averaged into a single,
+ * falsely-precise number (AZ2 - an average would be wrong by up to 40% in one direction, silently).
+ *
+ *   Randstad   Ziektewet premiegroep II A      0.700%   <- upper bound
+ *   Olympia    AZW werknemer                   0.553%
+ *   PKF        WGA-Gat werknemer                0.183%   <- lower bound (gediff. WGA 0.345% is a
+ *                                                            separate, additional line on that
+ *                                                            document, not folded into this floor)
+ *   OTTO       WHK own contribution            not stated on the document
+ *
+ * AZ4: this is a sample of FOUR DOCUMENTS FROM ONE PERSON, not a population - it is provisional.
+ * If a future payslip's own printed figure for this line falls outside 0.18%-0.70%, WIDEN this
+ * range; do not treat that document as anomalous. Update this object, not the engine - it is data
+ * Tier A supplies to the model, not a constant baked into computePayslipPeriod.
  */
-export const SECTOR_PREMIUM_NO_DEFAULT_REASON =
-  'Geen betrouwbaar landelijk gemiddelde beschikbaar voor de werknemersbijdrage sectorpremie - dit verschilt per uitzendbureau. Voer het bedrag in vanaf uw loonstrook, of laat het openstaan.';
+export const SECTOR_PREMIUM_ESTIMATE_RANGE = {
+  low_percent: 0.18,
+  high_percent: 0.7,
+  basis_note:
+    'Bandbreedte gebaseerd op vier echte loonstroken van drie verschillende uitzendbureaus - geen wettelijk of sectoraal gepubliceerd tarief. De sectorpremie verschilt per uitzendbureau; het exacte percentage staat op uw eigen loonstrook, op een regel genaamd Ziektewet, AZW, WGA of WHK (de naam verschilt per bureau).',
+};
+
+export interface TierASectorPremiumEstimate {
+  low_percent: number;
+  high_percent: number;
+  low_amount: number;
+  high_amount: number;
+  provenance: 'estimated';
+  basis: string;
+}
+
+/** Computes the sector-premium range in EUR for a given gross total (AZ1). Kept separate from
+ * pre_tax_deductions entirely (AZ5 - "only net and the sector-premium line... gross, taxable base
+ * and tax are unaffected") rather than modeled as a Field<number> range, since PreTaxDeduction.amount
+ * is a single Field<number> by design everywhere else in this model. */
+export function estimateSectorPremiumRange(grossTotal: number): TierASectorPremiumEstimate {
+  return {
+    low_percent: SECTOR_PREMIUM_ESTIMATE_RANGE.low_percent,
+    high_percent: SECTOR_PREMIUM_ESTIMATE_RANGE.high_percent,
+    low_amount: round2(grossTotal * (SECTOR_PREMIUM_ESTIMATE_RANGE.low_percent / 100)),
+    high_amount: round2(grossTotal * (SECTOR_PREMIUM_ESTIMATE_RANGE.high_percent / 100)),
+    provenance: 'estimated',
+    basis: SECTOR_PREMIUM_ESTIMATE_RANGE.basis_note,
+  };
+}
 
 function round2(value: number): number {
   return Number(value.toFixed(2));
@@ -111,10 +151,13 @@ function buildPreTaxDeductions(input: TierAInput, grossSoFar: number): PreTaxDed
   if (mode === 'estimate') {
     const pensionAmount = round2(Math.max(0, grossSoFar - ESTIMATED_STIPP_DEFAULTS.franchise_per_hour * input.hours_worked) * (ESTIMATED_STIPP_DEFAULTS.employee_rate_percent / 100));
     const pawwAmount = round2(grossSoFar * (ESTIMATED_PAWW_DEFAULT.percent / 100));
+    // Sector premium is deliberately NOT a row here (AZ1/AZ5, owner's decision): it is a RANGE, not
+    // a single Field<number>, computed separately by estimateSectorPremiumRange() and applied
+    // directly to net/payout in computeTierAResult() - never entering pre_tax_deductions, so it
+    // cannot affect taxable_base or tax the way a normal PreTaxDeduction would.
     return [
       { category: 'pension', description: `STIPP-pensioen (schatting, ${ESTIMATED_STIPP_DEFAULTS.source})`, amount: known(pensionAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_STIPP_DEFAULTS.employee_rate_percent },
       { category: 'paww', description: `PAWW-premie (schatting, ${ESTIMATED_PAWW_DEFAULT.source})`, amount: known(pawwAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_PAWW_DEFAULT.percent },
-      { category: 'ziektewet', description: `Sectorpremie (${SECTOR_PREMIUM_NO_DEFAULT_REASON})`, amount: unknownField(), base: null, percent: null },
     ];
   }
 
@@ -215,6 +258,55 @@ export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
   };
 }
 
+export interface TierAResult {
+  /** The full PayslipPeriod Tier A built from the input - every hour_line/pre_tax_deductions/
+   * post_tax_social entry still carries its own Field<number> provenance, so a consumer (the API
+   * response, then the result panel) can render the full chain per-line without a second lookup
+   * (architecture-round audit reply, point 2 - "if the API returns a bare number per line, the UI
+   * cannot show where it came from"). */
+  period: PayslipPeriod;
+  outcome: PayslipComputationOutcome;
+  /** Present only when deductions.mode === 'estimate' AND the base computation (pension/PAWW
+   * known/estimated, nothing else unknown) succeeded. AZ5: gross_total/taxable_base/table_tax/bt_tax
+   * inside `outcome` are the single, correct figures - unaffected by this range. Only these three
+   * fields, and the sector-premium line itself, are ever shown as a range (AZ5 - "do not render
+   * every figure as a range"). */
+  sector_premium_estimate?: TierASectorPremiumEstimate;
+  net_range?: { low: number; high: number };
+  payout_range?: { low: number; high: number };
+}
+
+/**
+ * The Tier A entry point: builds the period, runs the shared engine, and - only for the "estimate"
+ * deduction mode - applies the sector-premium range (AZ1) to net and payout afterward. A higher
+ * assumed premium means a lower net, so the range's HIGH percent produces the LOW end of the net
+ * range and vice versa; this is a direct EUR subtraction from the already-computed wage_net/payout,
+ * not a second pass through pre_tax_deductions/taxable_base/tax (AZ5).
+ */
+export function computeTierAResult(input: TierAInput, rates: PayslipComputationRates): TierAResult {
+  const period = buildTierAPeriod(input);
+  const outcome = computePayslipPeriod(period, rates, input.apply_loonheffingskorting);
+
+  if (input.deductions.mode !== 'estimate' || outcome.status !== 'complete') {
+    return { period, outcome };
+  }
+
+  const sectorPremiumEstimate = estimateSectorPremiumRange(outcome.result.gross_total);
+  return {
+    period,
+    outcome,
+    sector_premium_estimate: sectorPremiumEstimate,
+    net_range: {
+      low: round2(outcome.result.wage_net - sectorPremiumEstimate.high_amount),
+      high: round2(outcome.result.wage_net - sectorPremiumEstimate.low_amount),
+    },
+    payout_range: {
+      low: round2(outcome.result.payout_amount - sectorPremiumEstimate.high_amount),
+      high: round2(outcome.result.payout_amount - sectorPremiumEstimate.low_amount),
+    },
+  };
+}
+
 export interface TierASanityWarning {
   code: 'net_exceeds_gross' | 'effective_rate_exceeds_gross_rate';
   message: string;
@@ -225,18 +317,29 @@ export interface TierASanityWarning {
  * 16.54 net per hour against an entered 15.55 gross without comment. This is a Tier-A-specific UI
  * concern (it needs the user's own entered gross hourly rate for comparison, which is not part of
  * the generic PayslipPeriod/engine contract), so it lives here rather than in the shared engine.
+ *
+ * Checked against `wage_net` (before net_additions/net_deductions), not `payout_amount` - found
+ * while wiring this into the actual API route (this round): a real, generous travel_allowance is
+ * one of Tier A's own listed inputs (spec §3) and routinely pushes the final payout above the
+ * wage-only gross for a worker with few hours - that is not a bug, it is an untaxed reimbursement
+ * doing exactly what it is supposed to. wage_net, in contrast, can never legitimately exceed
+ * gross_total under this engine's own tax arithmetic (heffingskortingen only ever reduce tax,
+ * floored at 0) UNLESS a pre-tax deduction line is itself negative (a genuine compensation/refund
+ * line, e.g. OTTO's "PAWW Rekompensata") large enough that even the resulting tax doesn't cancel it
+ * out - so this check still has a real, non-hypothetical case to catch, just not the travel-
+ * allowance false positive the first version of this function produced.
  */
 export function checkTierASanity(outcome: PayslipComputationOutcome, input: TierAInput): TierASanityWarning[] {
   if (outcome.status !== 'complete') return [];
   const warnings: TierASanityWarning[] = [];
   const { result } = outcome;
-  if (result.payout_amount > result.gross_total) {
-    warnings.push({ code: 'net_exceeds_gross', message: `Netto (${result.payout_amount.toFixed(2)}) is hoger dan bruto (${result.gross_total.toFixed(2)}) - controleer de invoer.` });
+  if (result.wage_net > result.gross_total) {
+    warnings.push({ code: 'net_exceeds_gross', message: `Netto vóór onbelaste vergoedingen (${result.wage_net.toFixed(2)}) is hoger dan bruto (${result.gross_total.toFixed(2)}) - controleer de invoer.` });
   }
   if (result.hours_worked > 0) {
-    const effectiveNetHourlyRate = result.payout_amount / result.hours_worked;
-    if (effectiveNetHourlyRate > input.hourly_rate) {
-      warnings.push({ code: 'effective_rate_exceeds_gross_rate', message: `Effectief netto uurloon (${effectiveNetHourlyRate.toFixed(2)}) is hoger dan het opgegeven bruto uurloon (${input.hourly_rate.toFixed(2)}) - controleer de invoer.` });
+    const effectiveWageNetHourlyRate = result.wage_net / result.hours_worked;
+    if (effectiveWageNetHourlyRate > input.hourly_rate) {
+      warnings.push({ code: 'effective_rate_exceeds_gross_rate', message: `Effectief netto uurloon vóór onbelaste vergoedingen (${effectiveWageNetHourlyRate.toFixed(2)}) is hoger dan het opgegeven bruto uurloon (${input.hourly_rate.toFixed(2)}) - controleer de invoer.` });
     }
   }
   return warnings;

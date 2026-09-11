@@ -113,7 +113,14 @@ interface BijzonderTariefAddonTier {
   addon: number;
 }
 
-interface TaxRatesFile {
+/**
+ * Exported (not just used internally) so Tier A's controller can fetch tax rates the exact same
+ * way this engine does - DB row with a completeness check, falling back to the static file - rather
+ * than duplicating that fetch logic a second time. loonheffing_brackets/heffingskortingen here are
+ * structurally identical to payslip-model.ts's PayslipComputationRates, so a TaxRatesFile can be
+ * used directly as the source for one, plus a period_multiplier Tier A supplies itself.
+ */
+export interface TaxRatesFile {
   valid_from: string;
   valid_to: string;
   year: number;
@@ -154,7 +161,7 @@ function loadStaticPeriods(): TaxRatesFile[] {
  * good to propagate "cannot compute" today (see the comment at its one call site below) - fixed
  * where it matters most, the minimum-wage check, via rules-repository.ts's getMinimumWageAt.
  */
-function loadStaticTaxRatesAt(date: Date): TaxRatesFile | null {
+export function loadStaticTaxRatesAt(date: Date): TaxRatesFile | null {
   const iso = date.toISOString().slice(0, 10);
   return loadStaticPeriods().find((period) => iso >= period.valid_from && iso <= period.valid_to) ?? null;
 }

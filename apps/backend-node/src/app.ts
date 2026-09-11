@@ -8,6 +8,7 @@ import calculatorRouter from './controllers/calculator.controller.js';
 import contractRouter from './controllers/contract.controller.js';
 import aiRouter from './controllers/ai.controller.js';
 import maintenanceRouter from './controllers/maintenance.controller.js';
+import tierARouter from './controllers/tier-a.controller.js';
 import { checkDatabase } from './database.js';
 
 const app = express();
@@ -29,6 +30,7 @@ app.use('/api/calculator', calculatorRouter);
 app.use('/api/contracts', contractRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/maintenance', maintenanceRouter);
+app.use('/api/tier-a', tierARouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Nie znaleziono zasobu' });

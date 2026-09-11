@@ -356,13 +356,17 @@ export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComput
   const tableTaxAnnual = progressiveTax(annualizedTable, rates.loonheffing_brackets);
   const tableTax = round(tableTaxAnnual / multiplier);
 
-  // A nonzero BT-tagged gross with no known BT percentage is its OWN unknown - not something to
+  // A nonzero BT-tagged gross with no KNOWN BT percentage is its own unknown - not something to
   // silently zero out. Before this check, computePayslipPeriod would have quietly set btTax=0 for
   // any bt_state other than 'known' (including 'unknown'), which is exactly the class of bug this
   // whole model exists to prevent: a genuinely-BT-taxed amount rendered as if it owed no tax at all,
-  // rather than a stated gap. 'not_applicable' is not this - it means the document genuinely has no
-  // BT-taxed gross, which is consistent with taxableBt being 0 in that case.
-  const btRateUnknown = taxableBt > 0 && period.bijzonder_tarief.bt_state === 'unknown';
+  // rather than a stated gap. This also catches 'not_applicable' paired with nonzero taxableBt -
+  // that specific combination is a builder contract violation (the model claims no BT applies while
+  // carrying BT-tagged gross), and per audit BA1 ("every combination... either computes or blocks,
+  // never silently returns zero") that inconsistency must block too, not resolve itself to 0 by
+  // accident. 'not_applicable' only means "no BT" when it is paired with taxableBt === 0, which is
+  // the only combination this check does not flag (see the exhaustive test in payslip-model.test.ts).
+  const btRateUnknown = taxableBt > 0 && period.bijzonder_tarief.bt_state !== 'known';
 
   let btTax = 0;
   if (period.bijzonder_tarief.bt_state === 'known' && taxableBt > 0) {

@@ -352,3 +352,84 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
   assert.ok(residual > TABLE_TAX_TOLERANCE_WEEKLY, `expected a residual exceeding the ${TABLE_TAX_TOLERANCE_WEEKLY} EUR tolerance (documented failure), got only ${residual.toFixed(2)}`);
   assert.equal(result.table_tax_after_korting.toFixed(2), '65.24'); // pins this engine's actual output as a regression guard
 });
+
+// ============================================================================
+// BA1 (architecture-change round) — exhaustive BT-state coverage, not just fixture incidence
+// ============================================================================
+function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
+  return {
+    period_label: null,
+    period_type: 'week',
+    period_end_date: null,
+    is_correction: false,
+    version: 1,
+    employers: [{ name: null, franchise_bearing: 'unknown' }],
+    hirer: null,
+    contract_hours: null,
+    hour_lines: [],
+    pre_tax_deductions: [],
+    bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+    et: null,
+    post_tax_social: [],
+    net_additions: [],
+    net_deductions: [],
+    payout_adjustments: [],
+    reservations: [],
+    wml_printed: null,
+    wml_applicable: null,
+    printed_table_tax: null,
+    printed_bt_tax: null,
+    printed_algemene_heffingskorting: null,
+    printed_arbeidskorting: null,
+    ...overrides,
+  };
+}
+
+/**
+ * The BT-rate-silently-zeroed bug (found while implementing the provenance rule, architecture-change
+ * round) survived four real fixtures because none of them exercised every combination of bt_state
+ * against a nonzero BT-tagged gross - each fixture happened to be either bt_state='known' with real
+ * BT gross, or bt_state='not_applicable' with zero BT gross. This test enumerates all six
+ * combinations directly (bt_state in {known, not_applicable, unknown} x taxableBt in {zero,
+ * nonzero}) and asserts each one either computes a real number or blocks (status:'incomplete') -
+ * never silently returns bt_tax=0 for a genuinely BT-taxed amount. This is what protects Tier B/C's
+ * future construction code from reintroducing the same defect in a different shape (audit BA1 -
+ * "carry your own finding forward as a test, not a note").
+ */
+test('BA1: every bt_state x zero/nonzero BT-tagged gross combination either computes or blocks, never silently zero', () => {
+  const tableLine = { employer_index: 0, description: 'Regular', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular' as const, tax_treatment: 'table' as const, adds_hours: true };
+  const btLine = { employer_index: 0, description: 'Overtime (BT)', hours: 5, rate: 15, percent: null, amount: 100, category: 'overtime' as const, tax_treatment: 'bt' as const, adds_hours: true };
+
+  const btStates: Array<'known' | 'not_applicable' | 'unknown'> = ['known', 'not_applicable', 'unknown'];
+  for (const btState of btStates) {
+    // --- zero BT-tagged gross (no BT line at all): every bt_state must compute, since there is
+    // nothing to tax at BT regardless of whether a rate is known.
+    const zeroBtPeriod = minimalPeriod({
+      hour_lines: [tableLine],
+      bijzonder_tarief: { jaarloon_bt: btState === 'known' ? 40000 : null, bt_state: btState, tarief_bt: { printed: btState === 'known' ? 40 : null, computed: null } },
+    });
+    const zeroOutcome = computePayslipPeriod(zeroBtPeriod, RATES_2026, false);
+    assert.equal(zeroOutcome.status, 'complete', `bt_state=${btState}, zero BT gross: expected complete, got ${zeroOutcome.status}`);
+    if (zeroOutcome.status === 'complete') assert.equal(zeroOutcome.result.bt_tax, 0);
+
+    // --- nonzero BT-tagged gross: only 'known' has an actual rate to apply.
+    const nonzeroBtPeriod = minimalPeriod({
+      hour_lines: [tableLine, btLine],
+      bijzonder_tarief: { jaarloon_bt: btState === 'known' ? 40000 : null, bt_state: btState, tarief_bt: { printed: btState === 'known' ? 40 : null, computed: null } },
+    });
+    const nonzeroOutcome = computePayslipPeriod(nonzeroBtPeriod, RATES_2026, false);
+    if (btState === 'known') {
+      assert.equal(nonzeroOutcome.status, 'complete', `bt_state=known, nonzero BT gross: expected complete`);
+      if (nonzeroOutcome.status === 'complete') {
+        assert.ok(nonzeroOutcome.result.bt_tax > 0, `bt_state=known, nonzero BT gross: expected a real bt_tax, got ${nonzeroOutcome.result.bt_tax}`);
+      }
+    } else {
+      // 'not_applicable' or 'unknown' with nonzero BT gross: no valid rate exists. Must BLOCK,
+      // never silently compute bt_tax=0 for a genuinely BT-taxed amount.
+      assert.equal(nonzeroOutcome.status, 'incomplete', `bt_state=${btState}, nonzero BT gross: expected incomplete (blocked), got ${nonzeroOutcome.status}`);
+      if (nonzeroOutcome.status === 'incomplete') {
+        assert.ok(nonzeroOutcome.missing_fields.includes('bijzonder_tarief_percentage'), `bt_state=${btState}: expected 'bijzonder_tarief_percentage' in missing_fields, got ${JSON.stringify(nonzeroOutcome.missing_fields)}`);
+      }
+    }
+  }
+});

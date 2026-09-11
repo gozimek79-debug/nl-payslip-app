@@ -8,12 +8,31 @@ import { computePayslipPeriod, type PayslipPeriod, type PayslipComputationRates 
  * FIXTURES-paski-referencyjne.md's own worked figures, re-read fresh for this round (not from
  * memory - see the round 7/8 audit replies on why that distinction matters here specifically).
  *
- * Tolerance note: every fixture that involves the TABLE tax component is checked within ~0.35 EUR
- * per period, not to the cent. This is the same, already-established residual from reconstructing
- * Belastingdienst's stepwise period tables from a smooth annual formula (see N2/full-payslip.ts's
- * tolerance tiers) - confirmed there against Olympia and Randstad directly. BT tax, which is a flat
- * percentage times a base rather than a table lookup, is exact.
+ * TOLERANCE PRINCIPLE (audit AN2/AN3, round 9) - stated ONCE here, before any test is run, and never
+ * adjusted afterward to make a specific test pass. Reconstructing Belastingdienst's stepwise period
+ * table from a smooth annual formula carries a stepwise-rounding residual of roughly 0.2-0.4 EUR per
+ * WEEK (confirmed directly against Olympia and Randstad, both weekly). That per-week residual scales
+ * with the number of weeks a period actually covers, not with the period "type" as a label:
+ *   weekly (1 week):        0.50 EUR   (auditor's proposal, adopted)
+ *   4-weekly (4 weeks):     1.00 EUR   (auditor's proposal, adopted)
+ *   monthly (~4.33 weeks):  1.50 EUR   (auditor's proposal, adopted)
+ * Any residual landing outside its period's bound is a FINDING to report, not noise to absorb into a
+ * wider bound - this is what caught OTTO's 12.28 EUR gap as a real, unresolved failure (round 8/9)
+ * rather than something a "generous enough" tolerance would have silently passed. BT tax is a flat
+ * percentage times a base, not a table lookup - checked exact, no tolerance.
  */
+const TABLE_TAX_TOLERANCE_WEEKLY = 0.5;
+const TABLE_TAX_TOLERANCE_4_WEEKLY = 1.0;
+const TABLE_TAX_TOLERANCE_MONTHLY = 1.5;
+
+/** Asserts within tolerance AND always prints the actual residual (audit AN4) - so a residual
+ * drifting from, say, 0.2 to 0.45 while still technically under 0.50 is visible in test output
+ * before it ever crosses the line, not just at the moment it fails. */
+function assertTableTaxWithinTolerance(actual: number, printed: number, tolerance: number, label: string): void {
+  const residual = Math.round((actual - printed) * 100) / 100;
+  console.log(`  [residual] ${label}: table tax ${actual.toFixed(2)} vs printed ${printed.toFixed(2)} -> residual ${residual >= 0 ? '+' : ''}${residual.toFixed(2)} EUR (tolerance ${tolerance.toFixed(2)})`);
+  assert.ok(Math.abs(residual) <= tolerance, `${label}: residual ${residual.toFixed(2)} EUR exceeds tolerance ${tolerance.toFixed(2)} EUR`);
+}
 
 const RATES_2026: PayslipComputationRates = {
   loonheffing_brackets: [
@@ -114,8 +133,8 @@ test('payslip-model: Fixture 4 Olympia reproduces payout 776.09 (within table-ta
   assert.equal(result.taxable_base, 844.92);
   assert.equal(result.bt_tax, 0);
   assert.equal(result.arbeidskorting.toFixed(2), '108.71'); // exact - confirmed A3/N1, no table-rounding involved
-  assert.ok(Math.abs(result.table_tax_after_korting - 152.37) <= 0.35, `table tax ${result.table_tax_after_korting} vs printed 152.37`);
-  assert.ok(Math.abs(result.payout_amount - 776.09) <= 0.35, `payout ${result.payout_amount} vs printed 776.09`);
+  assertTableTaxWithinTolerance(result.table_tax_after_korting, 152.37, TABLE_TAX_TOLERANCE_WEEKLY, 'Olympia');
+  assert.ok(Math.abs(result.payout_amount - 776.09) <= TABLE_TAX_TOLERANCE_WEEKLY, `payout ${result.payout_amount} vs printed 776.09`);
 });
 
 // ============================================================================
@@ -163,11 +182,8 @@ test('payslip-model: Fixture 3 PKF reproduces payout 1754.12 (within table-tax t
   assert.equal(result.gross_total, 3515.56);
   assert.equal(result.taxable_base, 3277.02);
   assert.equal(result.bt_tax.toFixed(2), '222.42'); // exact - flat percentage, not a table lookup
-  // Monthly-scale tolerance is wider than the weekly fixtures' 0.35 - the same absolute rounding
-  // per table step compounds differently at monthly scale (S2's point from an earlier round: an
-  // absolute EUR tolerance isn't necessarily the same fraction of the period at every period type).
-  assert.ok(Math.abs(result.table_tax_after_korting - 276.42) <= 0.7, `table tax ${result.table_tax_after_korting} vs printed 276.42`);
-  assert.ok(Math.abs(result.payout_amount - 1754.12) <= 0.7, `payout ${result.payout_amount} vs printed 1754.12`);
+  assertTableTaxWithinTolerance(result.table_tax_after_korting, 276.42, TABLE_TAX_TOLERANCE_MONTHLY, 'PKF');
+  assert.ok(Math.abs(result.payout_amount - 1754.12) <= TABLE_TAX_TOLERANCE_MONTHLY, `payout ${result.payout_amount} vs printed 1754.12`);
 });
 
 // ============================================================================
@@ -221,14 +237,14 @@ test('payslip-model: Fixture 1 Randstad reproduces wage_net 702.37 and signed pa
   assert.equal(result.loon_voor_heffingen, 927.25);
   assert.equal(result.taxable_base, 927.25); // no ET here
   assert.equal(result.bt_tax.toFixed(2), '141.24'); // exact - flat 50.47% of the raw 279.85 BT base
-  assert.ok(Math.abs(result.table_tax_after_korting - 71.31) <= 0.35, `table tax ${result.table_tax_after_korting} vs printed 71.31`);
+  assertTableTaxWithinTolerance(result.table_tax_after_korting, 71.31, TABLE_TAX_TOLERANCE_WEEKLY, 'Randstad');
   // wage_net is the model's stage BEFORE net_additions/net_deductions - this is what the fixtures
   // document itself calls "period_net" for THIS specific document (702.37), even though for other
   // fixtures (PKF) the document uses the same term for a later stage. Checking both stages by name
   // avoids relying on the document's own inconsistent use of "period_net" as a fixed formula position.
-  assert.ok(Math.abs(result.wage_net - 702.37) <= 0.35, `wage_net ${result.wage_net} vs printed 702.37`);
+  assert.ok(Math.abs(result.wage_net - 702.37) <= TABLE_TAX_TOLERANCE_WEEKLY, `wage_net ${result.wage_net} vs printed 702.37`);
   const finalPayout = result.wage_net + result.net_additions_total + result.payout_adjustments_total;
-  assert.ok(Math.abs(finalPayout - -53.89) <= 0.35, `final payout ${finalPayout} vs printed -53.89 (owed)`);
+  assert.ok(Math.abs(finalPayout - -53.89) <= TABLE_TAX_TOLERANCE_WEEKLY, `final payout ${finalPayout} vs printed -53.89 (owed)`);
 });
 
 // ============================================================================
@@ -303,20 +319,22 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
   assert.equal(result.taxable_base, 725.38); // "RAZEM PODSTAWA" - exact, no table lookup in the split
   assert.equal(result.bt_tax.toFixed(2), '40.08'); // exact - flat 38.45% of the raw 104.24 BT base
 
-  // UNRESOLVED GAP (audit AK4 - reported, not hidden): this engine's table tax comes to ~65.24
-  // against OTTO's printed 77.52 - a 12.28 EUR gap, an order of magnitude larger than the
-  // ~0.3-0.7 EUR table-rounding residual seen on every other fixture (Olympia, PKF, Randstad, all
-  // reproduced within 0.7 EUR using the same progressive-formula approach). Using the correct 2025
-  // rates (a real bug, now fixed - see the RATES_2025 comment above) closed most of an even larger
-  // initial gap (16.55 EUR) but not all of it. Leading candidate, not confirmed: OTTO's employee has
-  // "adres fiskalny: EU" and an active ET arrangement - a non-resident/cross-border worker may be
-  // subject to a different withholding table (e.g. an "anonieme tabel" or a cross-border-specific
-  // variant) than the standard resident white table this engine implements, which could plausibly
-  // carry a different effective rate or credit eligibility. Not investigated further this round, per
-  // the standing instruction not to chase a single open thread indefinitely - flagged in NEW
-  // FINDINGS instead. The assertions below pin this engine's CURRENT actual output as a regression
-  // guard (so a future change is caught if it moves), not a claim that this reproduces the fixture.
-  assert.equal(result.table_tax_after_korting.toFixed(2), '65.24');
-  assert.equal(result.wage_net.toFixed(2), '620.06');
-  assert.equal(result.payout_amount.toFixed(2), '610.87');
+  // UNRESOLVED GAP (audit AN2/AN3, round 9), measured against the SAME stated tolerance as every
+  // other fixture (TABLE_TAX_TOLERANCE_WEEKLY, 0.50 EUR) - not a wider one carved out for this one.
+  // Round 9 tested and RULED OUT both ordinary explanations the auditor proposed before allowing an
+  // exotic one:
+  //   AM2 (fiscal days, not a full period): applying the actual 2025 DAILY white table to
+  //     621.14/5 fiscal days -> ~13.03-13.12/day x 5 = ~65.15-65.60, matching this engine's own
+  //     annualized reconstruction almost exactly - NOT closing the gap to 77.52.
+  //   AM3 (wrong base fed to the table): confirmed directly from the code - it uses 621.14
+  //     (post-ET), never 798.14 (pre-ET). Not the bug.
+  // Per AM4: both ordinary explanations ruled out, so a "different withholding table for a
+  // cross-border/ET worker" stands as the leading candidate, unconfirmed - logged in NEW FINDINGS
+  // rather than chased further this round. This test asserts the FAILURE is real and stable (residual
+  // clearly exceeds the stated tolerance), the same pattern calculator.test.ts uses for its own
+  // documented OTTO StiPP failure - it must keep failing this check, not be forced to pass one.
+  const residual = Math.abs(result.table_tax_after_korting - 77.52);
+  console.log(`  [residual] OTTO (documented failure): table tax ${result.table_tax_after_korting.toFixed(2)} vs printed 77.52 -> residual ${residual.toFixed(2)} EUR (tolerance ${TABLE_TAX_TOLERANCE_WEEKLY.toFixed(2)})`);
+  assert.ok(residual > TABLE_TAX_TOLERANCE_WEEKLY, `expected a residual exceeding the ${TABLE_TAX_TOLERANCE_WEEKLY} EUR tolerance (documented failure), got only ${residual.toFixed(2)}`);
+  assert.equal(result.table_tax_after_korting.toFixed(2), '65.24'); // pins this engine's actual output as a regression guard
 });

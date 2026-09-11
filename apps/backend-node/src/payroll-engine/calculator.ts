@@ -272,10 +272,19 @@ export class PayrollCalculator {
     const thirtyPercentExempt = input.applyThirtyPercentRuling ? loonVoorHeffingen * 0.3 : 0;
     const taxableBase = loonVoorHeffingen - thirtyPercentExempt;
 
+    // BT base is the raw, unreduced irregular gross - pre-tax deductions (PAWW, pension, sickness,
+    // WGA) burden ONLY the table portion (audit AO1/AO2, round 9). This was previously a
+    // proportional split (irregularGross / totalGross share of taxableBase), which spread those
+    // deductions across the BT portion too - confirmed wrong while building the payslip-model
+    // rewrite against PKF's and Randstad's own explicit notes ("potrącenia przedpodatkowe obciążają
+    // wyłącznie część tabelaryczną. Podstawa BT to pełne brutto [nadgodzin]"), both of which
+    // reproduce their own printed table/BT split exactly under this rule, not the proportional one.
+    // Because totalGross = regularGross + irregularGross, subtracting the raw irregularGross from
+    // taxableBase (= loonVoorHeffingen - thirtyPercentExempt) leaves exactly regularGross minus the
+    // deductions and the 30%-ruling exemption - i.e. those apply only to the regular/table portion.
     const useBijzonderTarief = adv.enabled && adv.applyBijzonderTarief && totalGross > 0;
-    const irregularShare = useBijzonderTarief ? irregularGross / totalGross : 0;
-    const taxableIrregular = taxableBase * irregularShare;
-    const taxableRegular = taxableBase - taxableIrregular;
+    const taxableIrregular = useBijzonderTarief ? irregularGross : 0;
+    const taxableRegular = Math.max(0, taxableBase - taxableIrregular);
 
     const annualizedRegular = taxableRegular * multiplier;
     const loonheffingTabelAnnual = this.progressiveTax(annualizedRegular, rates.loonheffing_brackets);

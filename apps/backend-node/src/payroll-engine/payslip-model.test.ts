@@ -1,12 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computePayslipPeriod, type PayslipPeriod, type PayslipComputationRates } from './payslip-model.js';
+import { computePayslipPeriod, known, type PayslipPeriod, type PayslipComputationRates, type PayslipComputationResult } from './payslip-model.js';
 
 /**
  * Golden tests for the payslip-model rewrite (audit round 8, AK3), in the required fixture order:
  * Olympia, PKF, Randstad, OTTO. Each PayslipPeriod is built by hand from
  * FIXTURES-paski-referencyjne.md's own worked figures, re-read fresh for this round (not from
  * memory - see the round 7/8 audit replies on why that distinction matters here specifically).
+ *
+ * All four fixtures are fully-known documents (payslip_extracted / rules_database), so every one of
+ * them hits the 'complete' branch of computePayslipPeriod's outcome (spec §1 provenance rule,
+ * architecture round) - `expectComplete()` below unwraps that and fails loudly if a fixture ever
+ * regresses into 'incomplete'. Tier A's own tests (tier-a.test.ts) cover the 'incomplete' branch,
+ * since that is what a real, deduction-unknown Tier A calculation looks like.
  *
  * TOLERANCE PRINCIPLE (audit AN2/AN3, round 9) - stated ONCE here, before any test is run, and never
  * adjusted afterward to make a specific test pass. Reconstructing Belastingdienst's stepwise period
@@ -32,6 +38,14 @@ function assertTableTaxWithinTolerance(actual: number, printed: number, toleranc
   const residual = Math.round((actual - printed) * 100) / 100;
   console.log(`  [residual] ${label}: table tax ${actual.toFixed(2)} vs printed ${printed.toFixed(2)} -> residual ${residual >= 0 ? '+' : ''}${residual.toFixed(2)} EUR (tolerance ${tolerance.toFixed(2)})`);
   assert.ok(Math.abs(residual) <= tolerance, `${label}: residual ${residual.toFixed(2)} EUR exceeds tolerance ${tolerance.toFixed(2)} EUR`);
+}
+
+/** Unwraps the 'complete' branch of a PayslipComputationOutcome, failing loudly (not silently
+ * returning undefined) if a fixture that should be fully known ever produces 'incomplete'. */
+function expectComplete(outcome: ReturnType<typeof computePayslipPeriod>): PayslipComputationResult {
+  assert.equal(outcome.status, 'complete', `expected a complete computation, got: ${JSON.stringify(outcome)}`);
+  if (outcome.status !== 'complete') throw new Error('unreachable');
+  return outcome.result;
 }
 
 const RATES_2026: PayslipComputationRates = {
@@ -104,13 +118,13 @@ test('payslip-model: Fixture 4 Olympia reproduces payout 776.09 (within table-ta
       { employer_index: 0, description: 'ADV toeslag', hours: 45, rate: 15.55, percent: 1.54, amount: 10.78, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
     ],
     pre_tax_deductions: [
-      { category: 'paww', description: 'Bijdrage PAWW werknemer', amount: 0.89, base: 885.50, percent: 0.1 },
-      { category: 'ziektewet', description: 'AZW werknemer', amount: 4.9, base: null, percent: null },
-      { category: 'pension', description: 'STIPP-pensioen werknemer', amount: 34.79, base: 879.71, percent: 7.5 },
+      { category: 'paww', description: 'Bijdrage PAWW werknemer', amount: known(0.89, 'payslip_extracted'), base: 885.50, percent: 0.1 },
+      { category: 'ziektewet', description: 'AZW werknemer', amount: known(4.9, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'STIPP-pensioen werknemer', amount: known(34.79, 'payslip_extracted'), base: 879.71, percent: 7.5 },
     ],
     bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
     et: null,
-    post_tax_social: [{ category: 'whk', description: 'WHK werknemer', amount: 6.46, percent: null }],
+    post_tax_social: [{ category: 'whk', description: 'WHK werknemer', amount: known(6.46, 'payslip_extracted'), percent: null }],
     net_additions: [{ category: 'reimbursement', description: 'Onb. reiskosten woon/werk', amount: 90.0 }],
     net_deductions: [],
     payout_adjustments: [],
@@ -127,7 +141,7 @@ test('payslip-model: Fixture 4 Olympia reproduces payout 776.09 (within table-ta
     printed_arbeidskorting: 108.71,
   };
 
-  const result = computePayslipPeriod(olympia, RATES_2026, true);
+  const result = expectComplete(computePayslipPeriod(olympia, RATES_2026, true));
   assert.equal(result.gross_total, 885.5);
   assert.equal(result.loon_voor_heffingen, 844.92);
   assert.equal(result.taxable_base, 844.92);
@@ -156,13 +170,13 @@ test('payslip-model: Fixture 3 PKF reproduces payout 1754.12 (within table-tax t
       { employer_index: 0, description: 'Overwerk 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
     ],
     pre_tax_deductions: [
-      { category: 'paww', description: 'Paww Wn', amount: 3.52, base: 3515.56, percent: 0.1 },
-      { category: 'pension', description: 'Pensioenpremie Wn', amount: 229.03, base: 1601.58, percent: 14.3 },
-      { category: 'wga_gat', description: 'WGA-Gat Verz. Wn', amount: 5.99, base: 3277.02, percent: 0.183 },
+      { category: 'paww', description: 'Paww Wn', amount: known(3.52, 'payslip_extracted'), base: 3515.56, percent: 0.1 },
+      { category: 'pension', description: 'Pensioenpremie Wn', amount: known(229.03, 'payslip_extracted'), base: 1601.58, percent: 14.3 },
+      { category: 'wga_gat', description: 'WGA-Gat Verz. Wn', amount: known(5.99, 'payslip_extracted'), base: 3277.02, percent: 0.183 },
     ],
     bijzonder_tarief: { jaarloon_bt: 38000, bt_state: 'known', tarief_bt: { printed: 40.2, computed: null } },
     et: null,
-    post_tax_social: [{ category: 'gediff_wga', description: 'gediff. WGA wn', amount: 11.31, percent: 0.345 }],
+    post_tax_social: [{ category: 'gediff_wga', description: 'gediff. WGA wn', amount: known(11.31, 'payslip_extracted'), percent: 0.345 }],
     net_additions: [{ category: 'reimbursement', description: 'Reiskostenvergoeding', amount: 91.25 }],
     net_deductions: [
       { category: 'union', description: 'Inhouding Personeelsvereniging', amount: 4.0 },
@@ -178,7 +192,7 @@ test('payslip-model: Fixture 3 PKF reproduces payout 1754.12 (within table-tax t
     printed_arbeidskorting: null,
   };
 
-  const result = computePayslipPeriod(pkf, { ...RATES_2026, period_multiplier: 12 }, true);
+  const result = expectComplete(computePayslipPeriod(pkf, { ...RATES_2026, period_multiplier: 12 }, true));
   assert.equal(result.gross_total, 3515.56);
   assert.equal(result.taxable_base, 3277.02);
   assert.equal(result.bt_tax.toFixed(2), '222.42'); // exact - flat percentage, not a table lookup
@@ -210,13 +224,13 @@ test('payslip-model: Fixture 1 Randstad reproduces wage_net 702.37 and signed pa
       { employer_index: 0, description: 'Compensatie overgangsregeling', hours: null, rate: null, percent: null, amount: 2.01, category: 'other', tax_treatment: 'table', adds_hours: false },
     ],
     pre_tax_deductions: [
-      { category: 'paww', description: 'Premie PAWW', amount: 0.74, base: 970.89, percent: 0.08 },
-      { category: 'ziektewet', description: 'Premie Ziektewet groep II A', amount: 4.55, base: 970.89, percent: 0.7 },
-      { category: 'pension', description: 'Pensioenpremie', amount: 38.35, base: null, percent: 7.5 },
+      { category: 'paww', description: 'Premie PAWW', amount: known(0.74, 'payslip_extracted'), base: 970.89, percent: 0.08 },
+      { category: 'ziektewet', description: 'Premie Ziektewet groep II A', amount: known(4.55, 'payslip_extracted'), base: 970.89, percent: 0.7 },
+      { category: 'pension', description: 'Pensioenpremie', amount: known(38.35, 'payslip_extracted'), base: null, percent: 7.5 },
     ],
     bijzonder_tarief: { jaarloon_bt: 46074, bt_state: 'known', tarief_bt: { printed: 50.47, computed: null } },
     et: null,
-    post_tax_social: [{ category: 'wga', description: 'Premie WGA', amount: 12.33, percent: 1.33 }],
+    post_tax_social: [{ category: 'wga', description: 'Premie WGA', amount: known(12.33, 'payslip_extracted'), percent: 1.33 }],
     net_additions: [{ category: 'reimbursement', description: 'Reiskosten woon-werk', amount: 36.0 }],
     net_deductions: [],
     // Signed: both reduce what's actually transferred this period, on top of the period's own net wage.
@@ -233,7 +247,7 @@ test('payslip-model: Fixture 1 Randstad reproduces wage_net 702.37 and signed pa
     printed_arbeidskorting: null,
   };
 
-  const result = computePayslipPeriod(randstad, RATES_2026, true);
+  const result = expectComplete(computePayslipPeriod(randstad, RATES_2026, true));
   assert.equal(result.loon_voor_heffingen, 927.25);
   assert.equal(result.taxable_base, 927.25); // no ET here
   assert.equal(result.bt_tax.toFixed(2), '141.24'); // exact - flat 50.47% of the raw 279.85 BT base
@@ -279,9 +293,9 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
       { employer_index: 0, description: 'Wynagrodzenie kierowcy brutto', hours: null, rate: null, percent: null, amount: 6.0, category: 'other', tax_treatment: 'bt', adds_hours: false },
     ],
     pre_tax_deductions: [
-      { category: 'paww', description: 'PAWW Rekompensata', amount: -0.51, base: null, percent: null },
-      { category: 'paww', description: 'PAWW Opłata', amount: 0.51, base: null, percent: null },
-      { category: 'pension', description: 'Emerytura STIPP', amount: 21.65, base: null, percent: 4 },
+      { category: 'paww', description: 'PAWW Rekompensata', amount: known(-0.51, 'payslip_extracted'), base: null, percent: null },
+      { category: 'paww', description: 'PAWW Opłata', amount: known(0.51, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'Emerytura STIPP', amount: known(21.65, 'payslip_extracted'), base: null, percent: 4 },
     ],
     bijzonder_tarief: { jaarloon_bt: 35006, bt_state: 'known', tarief_bt: { printed: 38.45, computed: null } },
     et: {
@@ -315,7 +329,7 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
     printed_arbeidskorting: null,
   };
 
-  const result = computePayslipPeriod(otto, RATES_2025, true);
+  const result = expectComplete(computePayslipPeriod(otto, RATES_2025, true));
   assert.equal(result.taxable_base, 725.38); // "RAZEM PODSTAWA" - exact, no table lookup in the split
   assert.equal(result.bt_tax.toFixed(2), '40.08'); // exact - flat 38.45% of the raw 104.24 BT base
 

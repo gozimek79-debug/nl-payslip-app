@@ -12,6 +12,32 @@
  * the golden tests below, from the fixtures document's own worked figures.
  */
 
+/**
+ * Governing rule (SPEC-loonto-architecture.md §1, architecture round): every value that can
+ * legitimately come from different sources carries its provenance, and 'unknown' is an explicit
+ * state a computation must check for - never silently treated as zero. This is what makes the
+ * live 8% net-pay overstatement (744.34 vs a true 686.09 on Olympia - the calculator taxed the full
+ * gross because it has no concept of pension/PAWW/sector-premium deductions at all) structurally
+ * impossible going forward: a missing deduction stops the computation instead of vanishing into it.
+ */
+export type Provenance = 'user_entered' | 'contract_extracted' | 'payslip_extracted' | 'estimated' | 'rules_database' | 'unknown';
+
+/** Discriminated so 'unknown' can never carry a fabricated value - TypeScript enforces value:null
+ * whenever provenance is 'unknown', so a caller cannot accidentally treat a missing field as 0. */
+export type Field<T> =
+  | { provenance: Exclude<Provenance, 'unknown'>; value: T }
+  | { provenance: 'unknown'; value: null };
+
+export function known<T>(value: T, provenance: Exclude<Provenance, 'unknown'>): Field<T> {
+  return { provenance, value };
+}
+export function unknownField<T>(): Field<T> {
+  return { provenance: 'unknown', value: null } as Field<T>;
+}
+export function isKnownField<T>(field: Field<T>): field is { provenance: Exclude<Provenance, 'unknown'>; value: T } {
+  return field.provenance !== 'unknown';
+}
+
 export type HourLineCategory = 'regular' | 'irregular_surcharge' | 'overtime' | 'adv_compensation' | 'other';
 export type TaxTreatment = 'table' | 'bt' | 'unknown';
 
@@ -55,7 +81,11 @@ export type PreTaxDeductionCategory = 'pension' | 'paww' | 'ziektewet' | 'wga_ga
 export interface PreTaxDeduction {
   category: PreTaxDeductionCategory;
   description: string;
-  amount: number;
+  /** The value this line concerns AND its provenance are inseparable (spec §1) - a Tier A user who
+   * chose "skip" still has a row here (category + description), it just carries
+   * `{provenance:'unknown', value:null}` so the UI can say "sector premium: not provided" pointing
+   * at where to find it, rather than omitting the category or defaulting it to 0. */
+  amount: Field<number>;
   /** The base this was computed from, when known (e.g. PKF's pension base is post-franchise,
    * 1601.58, not the full 3515.56) - kept explicit rather than re-derived, since the franchise is a
    * pension-fund parameter, not a tax one (per the fixtures document's own note on this). */
@@ -68,7 +98,7 @@ export type PostTaxSocialCategory = 'wga' | 'gediff_wga' | 'whk' | 'other';
 export interface PostTaxSocialDeduction {
   category: PostTaxSocialCategory;
   description: string;
-  amount: number;
+  amount: Field<number>;
   percent: number | null;
 }
 
@@ -260,6 +290,32 @@ export interface PayslipComputationResult {
 }
 
 /**
+ * Result of a computation that could not reach a final net figure because a pre-tax or post-tax
+ * deduction field was `unknown` (spec §1 - "a computation that requires an unknown field does not
+ * produce a number, it produces a stated gap"). `tax_is_upper_bound` distinguishes two genuinely
+ * different situations, since only one of them lets the tax figures be trusted at all:
+ *   - pre-tax deductions unknown: taxable_base/table_tax/total_tax below are computed AS IF there
+ *     were no pre-tax deductions - an upper bound only (real, unknown deductions would only reduce
+ *     them further), never to be shown as "your tax" without that caveat.
+ *   - only post-tax deductions unknown: pre-tax was fully known, so taxable_base/table_tax/total_tax
+ *     below ARE the real, correct figures - only the net-and-below chain is missing.
+ * Neither branch computes wage_net/period_net/payout_amount at all - those keys are simply absent
+ * from this shape, not zero and not null, so a consumer cannot render "net: 0" by accident.
+ */
+export interface IncompletePayslipComputation {
+  status: 'incomplete';
+  missing_fields: string[];
+  tax_is_upper_bound: boolean;
+  gross_total: number;
+  taxable_base: number;
+  table_tax_after_korting: number;
+  bt_tax: number;
+  total_tax: number;
+}
+
+export type PayslipComputationOutcome = { status: 'complete'; result: PayslipComputationResult } | IncompletePayslipComputation;
+
+/**
  * Computes a full period from a populated PayslipPeriod. Deliberately does NOT re-derive
  * tarief_bt.computed unless nothing is printed - a document's own stated BT percentage (PKF,
  * Randstad, OTTO's non-NL-standard "Taryfa specjalna") is authoritative over this engine's bracket
@@ -269,13 +325,21 @@ export interface PayslipComputationResult {
  * matches how the real "met loonheffingskorting" BT addon table already nets the credits into its
  * own percentage (see calculator.ts's bijzonderTariefRate and the G1 decomposition), so subtracting
  * them again here would double-count exactly the error class already fixed there.
+ *
+ * Returns a discriminated PayslipComputationOutcome, not a bare PayslipComputationResult (spec §1) -
+ * see IncompletePayslipComputation above for what happens when a deduction field is unknown.
  */
-export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComputationRates, applyLoonheffingskorting: boolean): PayslipComputationResult {
+export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComputationRates, applyLoonheffingskorting: boolean): PayslipComputationOutcome {
   const hourLinesTotal = summariseHourLines(period.hour_lines);
-  const preTaxTotal = round(period.pre_tax_deductions.reduce((sum, d) => sum + d.amount, 0));
-  const loonVoorHeffingen = round(hourLinesTotal.gross - preTaxTotal);
+  const unknownPreTax = period.pre_tax_deductions.filter((d) => d.amount.provenance === 'unknown');
+  const unknownPostTax = period.post_tax_social.filter((d) => d.amount.provenance === 'unknown');
+  const preTaxKnown = unknownPreTax.length === 0;
 
   const etReduction = period.et?.et_applicable ? period.et.et_exchange_amount : 0;
+  // When a pre-tax deduction is unknown, preTaxTotal is treated as 0 for this computation ONLY to
+  // produce the explicitly-labelled upper bound below - never returned as `loon_voor_heffingen` or
+  // any figure implying it is the real, deduction-inclusive total (spec §1: unknown != 0).
+  const preTaxTotal = preTaxKnown ? round(period.pre_tax_deductions.reduce((sum, d) => sum + (d.amount.value as number), 0)) : 0;
 
   // Pre-tax deductions and the ET reduction apply ONLY to the table-taxed portion; the BT-taxed
   // portion is the RAW, unreduced BT-tagged gross - this is not a proportional split, it's the
@@ -291,6 +355,14 @@ export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComput
   const annualizedTable = taxableTable * multiplier;
   const tableTaxAnnual = progressiveTax(annualizedTable, rates.loonheffing_brackets);
   const tableTax = round(tableTaxAnnual / multiplier);
+
+  // A nonzero BT-tagged gross with no known BT percentage is its OWN unknown - not something to
+  // silently zero out. Before this check, computePayslipPeriod would have quietly set btTax=0 for
+  // any bt_state other than 'known' (including 'unknown'), which is exactly the class of bug this
+  // whole model exists to prevent: a genuinely-BT-taxed amount rendered as if it owed no tax at all,
+  // rather than a stated gap. 'not_applicable' is not this - it means the document genuinely has no
+  // BT-taxed gross, which is consistent with taxableBt being 0 in that case.
+  const btRateUnknown = taxableBt > 0 && period.bijzonder_tarief.bt_state === 'unknown';
 
   let btTax = 0;
   if (period.bijzonder_tarief.bt_state === 'known' && taxableBt > 0) {
@@ -308,7 +380,33 @@ export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComput
   const tableTaxAfterKorting = Math.max(0, round(tableTax - algemeneHeffingskorting - arbeidskorting));
   const totalTax = round(tableTaxAfterKorting + btTax);
 
-  const postTaxTotal = round(period.post_tax_social.reduce((sum, d) => sum + d.amount, 0));
+  if (!preTaxKnown || btRateUnknown) {
+    const missing = [...unknownPreTax.map((d) => d.category), ...(btRateUnknown ? ['bijzonder_tarief_percentage'] : [])];
+    return {
+      status: 'incomplete',
+      missing_fields: missing,
+      tax_is_upper_bound: true,
+      gross_total: hourLinesTotal.gross,
+      taxable_base: taxableBase,
+      table_tax_after_korting: tableTaxAfterKorting,
+      bt_tax: btTax,
+      total_tax: totalTax,
+    };
+  }
+  if (unknownPostTax.length > 0) {
+    return {
+      status: 'incomplete',
+      missing_fields: unknownPostTax.map((d) => d.category),
+      tax_is_upper_bound: false,
+      gross_total: hourLinesTotal.gross,
+      taxable_base: taxableBase,
+      table_tax_after_korting: tableTaxAfterKorting,
+      bt_tax: btTax,
+      total_tax: totalTax,
+    };
+  }
+
+  const postTaxTotal = round(period.post_tax_social.reduce((sum, d) => sum + (d.amount.value as number), 0));
   // Uses taxableBase (loon_voor_heffingen minus the ET reduction), not loon_voor_heffingen itself -
   // OTTO's "Podsuma wynagrodzenia" (607.78) is explicitly RAZEM PODSTAWA (725.38, already
   // ET-reduced) minus tax, not loon_voor_heffingen (902.38) minus tax. Without an ET arrangement
@@ -325,23 +423,26 @@ export function computePayslipPeriod(period: PayslipPeriod, rates: PayslipComput
   const payoutAmount = round(periodNet + payoutAdjustmentsTotal);
 
   return {
-    gross_total: hourLinesTotal.gross,
-    hours_worked: hourLinesTotal.hours_worked,
-    pre_tax_deductions_total: preTaxTotal,
-    loon_voor_heffingen: loonVoorHeffingen,
-    taxable_base: taxableBase,
-    table_tax: tableTax,
-    table_tax_after_korting: tableTaxAfterKorting,
-    bt_tax: btTax,
-    algemene_heffingskorting: algemeneHeffingskorting,
-    arbeidskorting,
-    total_tax: totalTax,
-    post_tax_social_total: postTaxTotal,
-    wage_net: wageNet,
-    net_additions_total: netAdditionsTotal,
-    net_deductions_total: netDeductionsTotal,
-    period_net: periodNet,
-    payout_adjustments_total: payoutAdjustmentsTotal,
-    payout_amount: payoutAmount,
+    status: 'complete',
+    result: {
+      gross_total: hourLinesTotal.gross,
+      hours_worked: hourLinesTotal.hours_worked,
+      pre_tax_deductions_total: preTaxTotal,
+      loon_voor_heffingen: round(hourLinesTotal.gross - preTaxTotal),
+      taxable_base: taxableBase,
+      table_tax: tableTax,
+      table_tax_after_korting: tableTaxAfterKorting,
+      bt_tax: btTax,
+      algemene_heffingskorting: algemeneHeffingskorting,
+      arbeidskorting,
+      total_tax: totalTax,
+      post_tax_social_total: postTaxTotal,
+      wage_net: wageNet,
+      net_additions_total: netAdditionsTotal,
+      net_deductions_total: netDeductionsTotal,
+      period_net: periodNet,
+      payout_adjustments_total: payoutAdjustmentsTotal,
+      payout_amount: payoutAmount,
+    },
   };
 }

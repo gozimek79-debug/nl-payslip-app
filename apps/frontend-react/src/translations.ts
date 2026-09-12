@@ -19,7 +19,7 @@ const pl = {
   analizaHome: {
     title: 'Analiza', lead: 'Wybierz, co chcesz sprawdzić.',
     umowaName: 'Sprawdź umowę', umowaNeed: 'Czy moja umowa jest w porządku?',
-    paskiName: 'Paski', paskiNeed: 'Co oznaczają pozycje, porównanie okresów',
+    paskiName: 'Wyjaśnij paski', paskiNeed: 'Co oznaczają pozycje, porównanie okresów',
     back: 'Wróć do analizy',
   },
   slownikHome: { title: 'Słownik', lead: 'Pojęcia z paska wypłaty, umowy i przepisów - po polsku, niderlandzku i angielsku.' },
@@ -171,7 +171,7 @@ const en: typeof pl = {
   analizaHome: {
     title: 'Analysis', lead: 'Choose what you want to check.',
     umowaName: 'Check your contract', umowaNeed: 'Is my contract in order?',
-    paskiName: 'Payslips', paskiNeed: 'What line items mean, comparing periods',
+    paskiName: 'Explain payslips', paskiNeed: 'What line items mean, comparing periods',
     back: 'Back to analysis',
   },
   slownikHome: { title: 'Dictionary', lead: 'Terms from your payslip, contract and Dutch regulations - in Polish, Dutch and English.' },

@@ -1,7 +1,26 @@
 export type Lang = 'pl' | 'en';
 
 const pl = {
-  nav: { how: 'Jak to działa', calculator: 'Kalkulator', analyze: 'Analiza paska', contract: 'Umowa', login: 'Zaloguj się', account: 'Moje konto' },
+  nav: { how: 'Jak to działa', kalkulator: 'Kalkulator', analiza: 'Analiza', slownik: 'Słownik', login: 'Zaloguj się', account: 'Moje konto' },
+  kalkulatorHome: {
+    title: 'Wybierz kalkulator', lead: 'Trzy sposoby liczenia, ten sam model - wybierz ten, który pasuje do Twojej sytuacji.',
+    szybkiName: 'Szybki', szybkiNeed: 'Znam godziny i stawkę',
+    szybkiLimit: 'Netto zależy od potrąceń, które musisz podać sam lub pozwolić nam oszacować.',
+    zUmowyName: 'Z umowy', zUmowyNeed: 'Mam umowę do wgrania',
+    zUmowyLimit: 'Umowa nie zawiera wysokości składki emerytalnej ani premii sektorowej.',
+    proName: 'PRO', proNeed: 'Mam paski wypłaty',
+    proLimit: 'Nic nie jest zakładane - ten poziom korzysta z prawdziwych liczb z Twojego paska.',
+    comingSoon: 'Wkrótce dostępne',
+    back: 'Wróć do wyboru kalkulatora',
+  },
+  analizaHome: {
+    title: 'Analiza', lead: 'Wybierz, co chcesz sprawdzić.',
+    umowaName: 'Umowa', umowaNeed: 'Czy moja umowa jest w porządku?',
+    paskiName: 'Paski', paskiNeed: 'Co oznaczają pozycje, porównanie okresów',
+    back: 'Wróć do analizy',
+  },
+  slownikHome: { title: 'Słownik', lead: 'Pojęcia z paska wypłaty, umowy i przepisów - po polsku, niderlandzku i angielsku.' },
+  comingSoon: { title: 'Wkrótce dostępne', body: 'Ta sekcja jest w budowie i pojawi się w kolejnej aktualizacji.' },
   account: {
     title: 'Konto lokalne', heading: 'Zaloguj się',
     intro: 'Na etapie lokalnego MVP wystarczy adres e-mail. Przed publikacją dodamy bezpieczny magic link.',
@@ -133,7 +152,26 @@ const pl = {
 } satisfies Record<string, Record<string, unknown>>;
 
 const en: typeof pl = {
-  nav: { how: 'How it works', calculator: 'Calculator', analyze: 'Payslip analysis', contract: 'Contract', login: 'Log in', account: 'My account' },
+  nav: { how: 'How it works', kalkulator: 'Calculator', analiza: 'Analysis', slownik: 'Dictionary', login: 'Log in', account: 'My account' },
+  kalkulatorHome: {
+    title: 'Choose a calculator', lead: 'Three ways of calculating, the same model - pick the one that fits your situation.',
+    szybkiName: 'Quick', szybkiNeed: 'I know my hours and rate',
+    szybkiLimit: 'Net depends on deductions you must supply yourself or let us estimate.',
+    zUmowyName: 'From contract', zUmowyNeed: 'I have a contract to upload',
+    zUmowyLimit: 'A contract does not contain the pension contribution or sector premium figures.',
+    proName: 'PRO', proNeed: 'I have my payslips',
+    proLimit: 'Nothing is assumed - this tier uses the real numbers from your payslip.',
+    comingSoon: 'Coming soon',
+    back: 'Back to calculator choice',
+  },
+  analizaHome: {
+    title: 'Analysis', lead: 'Choose what you want to check.',
+    umowaName: 'Contract', umowaNeed: 'Is my contract in order?',
+    paskiName: 'Payslips', paskiNeed: 'What line items mean, comparing periods',
+    back: 'Back to analysis',
+  },
+  slownikHome: { title: 'Dictionary', lead: 'Terms from your payslip, contract and Dutch regulations - in Polish, Dutch and English.' },
+  comingSoon: { title: 'Coming soon', body: 'This section is under construction and will arrive in a future update.' },
   account: {
     title: 'Local account', heading: 'Log in',
     intro: 'At this local MVP stage, an email address is enough. We will add a secure magic link before launch.',

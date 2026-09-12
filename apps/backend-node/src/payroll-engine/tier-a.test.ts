@@ -140,9 +140,11 @@ test('AZ1/AZ5: "estimate" mode produces a net RANGE from the sector-premium rang
   assert.equal(spe.low_percent, 0.18);
   assert.equal(spe.high_percent, 0.7);
   assert.equal(spe.provenance, 'estimated');
-  // AZ3: the basis must state its actual grounding (observed range across real payslips), not read
-  // as a statutory figure.
-  assert.match(spe.basis, /loonstro/i);
+  // BK4 (language-regression round): the backend supplies the literal Dutch line-name terms as
+  // DATA (known_terms), not a prebaked sentence in one language - the frontend builds the
+  // translated sentence around them. AZ3's original intent (state the actual grounding: an observed
+  // range, not a statutory figure) is preserved by these terms being real payslip line names.
+  assert.deepEqual(spe.known_terms, ['Ziektewet', 'AZW', 'WGA', 'WHK']);
 
   const netRange = result.net_range!;
   // A higher assumed premium means a lower net - the range's low bound must be <= its high bound,

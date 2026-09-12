@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, Calculator as CalculatorIcon, Plus, ShieldCheck, Trash2 } from 'lucide-react';
-import type { Lang } from './translations.ts';
+import { translations, type Lang } from './translations.ts';
 
 /**
  * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3). Replaces the old Calculator.tsx as
@@ -9,6 +9,14 @@ import type { Lang } from './translations.ts';
  * exists to fix). This component talks to POST /api/tier-a/calculate and renders exactly what that
  * route returns - the full chain with per-line provenance, an explicit "cannot determine net" state
  * when deductions are skipped, and a net RANGE (not a single fabricated number) for "estimate".
+ *
+ * Language-regression round (audit BJ): every user-facing string here now resolves through
+ * translations[lang].tierA, honouring the PL/EN switch - the previous version hardcoded Dutch
+ * strings and discarded the `lang` prop entirely (`const t = copy.pl`, despite `copy.pl`'s own
+ * content being Dutch, not Polish - a double confusion). BK: every line that names a deduction
+ * category also renders the Dutch term the backend supplies (`description`, per audit BK3 - Tier
+ * A's own canonical name for that category), never translated, alongside the translated label -
+ * that Dutch term is what the user will actually find printed on their own payslip.
  */
 
 type PeriodType = 'week' | '4-weekly' | 'month';
@@ -90,8 +98,16 @@ interface SectorPremiumEstimate {
   high_percent: number;
   low_amount: number;
   high_amount: number;
-  basis: string;
+  /** BK4: literal Dutch payslip line names (data, not copy) - the frontend builds its own
+   * translated sentence around this list rather than receiving one hardcoded Dutch sentence. */
+  known_terms: string[];
 }
+
+/** BJ1: structured, not a prebaked sentence - the frontend builds the message in the interface
+ * language from these numeric fields (see sanityWarningMessage below). */
+type SanityWarning =
+  | { code: 'net_exceeds_gross'; wage_net: number; gross_total: number }
+  | { code: 'effective_rate_exceeds_gross_rate'; effective_rate: number; hourly_rate: number };
 
 interface TierAResponse {
   period: TierAPeriodResponse;
@@ -99,60 +115,36 @@ interface TierAResponse {
   sector_premium_estimate: SectorPremiumEstimate | null;
   net_range: { low: number; high: number } | null;
   payout_range: { low: number; high: number } | null;
-  warnings: Array<{ code: string; message: string }>;
+  warnings: SanityWarning[];
   taxRatesSource: 'database' | 'static';
 }
 
-const copy = {
-  pl: {
-    title: 'Snelle calculator',
-    lead: 'Een schatting op basis van wat u zonder documenten weet - elke regel toont waar het cijfer vandaan komt.',
-    inputsTitle: 'Gegevens',
-    period: 'Periode', periodWeek: 'Week', period4w: '4-weken', periodMonth: 'Maand',
-    hoursWorked: 'Gewerkte uren', hourlyRate: 'Bruto uurloon',
-    overtimeTitle: 'Overuren / onregelmatigheidstoeslag',
-    addLine: 'Regel toevoegen', lineDescription: 'Omschrijving', lineHours: 'Uren', linePercent: 'Percentage',
-    addsHours: 'Extra uren (echt overwerk)', surchargeOnly: 'Toeslag op reeds geteld aantal uren',
-    loonheffingskorting: 'Loonheffingskorting toepassen',
-    travelAllowance: 'Reiskostenvergoeding (onbelast)',
-    vakantiegeldTitle: 'Vakantiegeld',
-    vakantiegeldNone: 'Niet van toepassing',
-    vakantiegeldAccruing: 'Wordt opgebouwd (nu niet uitbetaald)',
-    vakantiegeldPaidNow: 'Wordt dit keer uitbetaald',
-    vakantiegeldPercent: 'Percentage',
-    deductionsTitle: 'Pensioen, PAWW en sectorpremie',
-    deductionsHint: 'Weet u deze bedragen niet? Dat is normaal - kies hieronder wat wij moeten doen.',
-    deductionEnter: 'Ik weet ze', deductionEstimate: 'Schat voor mij', deductionSkip: 'Overslaan',
-    deductionEstimateHint: 'Gebruikt een schatting voor pensioen (StiPP) en PAWW, en een bandbreedte voor de sectorpremie - zie de toelichting bij het resultaat.',
-    deductionSkipHint: 'We berekenen brutoloon en belasting, maar tonen geen netto - dat is eerlijker dan een verzonnen getal.',
-    enteredPension: 'Pensioenpremie (StiPP)', enteredPaww: 'PAWW-premie', enteredSector: 'Sectorpremie (Ziektewet/AZW/WGA/WHK)',
-    submit: 'Bereken', calculating: 'Bezig...',
-    grossTotal: 'Bruto totaal', preTaxDeductions: 'Aftrek vóór belasting', loonVoorHeffingen: 'Loon voor heffingen',
-    taxTable: 'Loonheffing (tabel)', taxBt: 'Loonheffing (bijzonder tarief)', totalTax: 'Totale belasting',
-    wageNet: 'Netto loon', netAdditions: 'Onbelaste vergoedingen', payoutAmount: 'Uit te betalen',
-    incompleteTitle: 'Netto kan niet worden bepaald',
-    incompleteBody: 'De volgende gegevens ontbreken, dus we tonen geen netto - een verzonnen getal zou u kunnen misleiden:',
-    upperBoundNote: 'De belasting hieronder is een bovengrens (berekend zonder de ontbrekende aftrekposten) - uw werkelijke belasting is waarschijnlijk lager.',
-    missingPension: 'Pensioenpremie', missingPaww: 'PAWW-premie', missingZiektewet: 'Sectorpremie', missingBt: 'Bijzonder tarief-percentage',
-    rangeNote: 'Bandbreedte, geen vast bedrag',
-    provenanceUserEntered: 'door u ingevoerd', provenanceEstimated: 'schatting', provenanceRulesDatabase: 'wettelijk tarief',
-    warningsTitle: 'Controleer uw invoer',
-    error: 'Er is iets misgegaan.',
-  },
-} as const;
+type TierACopy = (typeof translations)['pl']['tierA'];
 
 function money(value: number): string {
   return `€${value.toFixed(2)}`;
 }
 
-function provenanceLabel(t: (typeof copy)['pl'], provenance: Provenance): string {
+function sanityWarningMessage(t: TierACopy, warning: SanityWarning): string {
+  if (warning.code === 'net_exceeds_gross') return t.sanityNetExceedsGross(money(warning.wage_net), money(warning.gross_total));
+  return t.sanityEffectiveRateExceedsGross(money(warning.effective_rate), money(warning.hourly_rate));
+}
+
+function categoryLabel(t: TierACopy, category: string): string {
+  if (category === 'pension') return t.categoryPension;
+  if (category === 'paww') return t.categoryPaww;
+  if (category === 'ziektewet') return t.categorySector;
+  return t.categoryOther;
+}
+
+function provenanceLabel(t: TierACopy, provenance: Provenance): string {
   if (provenance === 'user_entered' || provenance === 'contract_extracted' || provenance === 'payslip_extracted') return t.provenanceUserEntered;
   if (provenance === 'estimated') return t.provenanceEstimated;
   if (provenance === 'rules_database') return t.provenanceRulesDatabase;
   return '';
 }
 
-function missingFieldLabel(t: (typeof copy)['pl'], field: string): string {
+function missingFieldLabel(t: TierACopy, field: string): string {
   if (field === 'pension') return t.missingPension;
   if (field === 'paww') return t.missingPaww;
   if (field === 'ziektewet') return t.missingZiektewet;
@@ -181,10 +173,8 @@ function parseDecimal(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function TierACalculator({ lang: _lang }: { lang: Lang }) {
-  // Bilingual scaffolding kept minimal for this round - only Dutch/shared copy is written out above;
-  // wiring the 'en'/'pl' switch fully into this component is a follow-up, not silently skipped.
-  const t = copy.pl;
+export function TierACalculator({ lang }: { lang: Lang }) {
+  const t = translations[lang].tierA;
 
   const [periodType, setPeriodType] = useState<PeriodType>('week');
   const [hoursWorked, setHoursWorked] = useState('40');
@@ -223,7 +213,7 @@ export function TierACalculator({ lang: _lang }: { lang: Lang }) {
       hourly_rate: parseDecimal(hourlyRate),
       overtime_lines: overtimeLines
         .filter(line => line.hours.trim() !== '')
-        .map(line => ({ description: line.description || 'Toeslag', hours: parseDecimal(line.hours), percent: parseDecimal(line.percent), adds_hours: line.addsHours })),
+        .map(line => ({ description: line.description || t.defaultLineDescription, hours: parseDecimal(line.hours), percent: parseDecimal(line.percent), adds_hours: line.addsHours })),
       apply_loonheffingskorting: applyLoonheffingskorting,
       travel_allowance: parseDecimal(travelAllowance),
       vakantiegeld: vakantiegeldMode === 'none' ? { mode: 'none' } : { mode: vakantiegeldMode, percent: parseDecimal(vakantiegeldPercent) },
@@ -370,7 +360,7 @@ export function TierACalculator({ lang: _lang }: { lang: Lang }) {
               <AlertTriangle size={16}/>
               <div>
                 <strong>{t.warningsTitle}</strong>
-                {response.warnings.map((w, i) => <p key={i}>{w.message}</p>)}
+                {response.warnings.map((w, i) => <p key={i}>{sanityWarningMessage(t, w)}</p>)}
               </div>
             </div>
           )}
@@ -388,7 +378,7 @@ export function TierACalculator({ lang: _lang }: { lang: Lang }) {
                 <h3>{t.preTaxDeductions}</h3>
                 {response.period.pre_tax_deductions.map((d, i) => (
                   <p key={i}>
-                    {d.description.split(' (')[0]}:{' '}
+                    {categoryLabel(t, d.category)} <span className="form-note nl-term">({t.dutchTerm(d.description)})</span>:{' '}
                     <strong>{d.amount.provenance === 'unknown' ? '—' : money(d.amount.value as number)}</strong>
                     {d.amount.provenance !== 'unknown' && <span className="form-note"> ({provenanceLabel(t, d.amount.provenance)})</span>}
                   </p>
@@ -420,7 +410,7 @@ export function TierACalculator({ lang: _lang }: { lang: Lang }) {
                       <strong>{money(response.net_range.low)} – {money(response.net_range.high)}</strong>{' '}
                       <span className="form-note">({t.rangeNote})</span>
                     </p>
-                    <p className="form-note">{response.sector_premium_estimate.basis}</p>
+                    <p className="form-note">{t.sectorPremiumBasis(response.sector_premium_estimate.known_terms)}</p>
                   </>
                 ) : (
                   <p><strong>{money(response.outcome.result.wage_net)}</strong></p>

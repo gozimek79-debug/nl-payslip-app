@@ -276,6 +276,7 @@ export function App() {
             </button>
             <button type="button" className="tier-card" onClick={() => setKalkulatorTier('pro')}>
               <ShieldCheck size={22}/><h3>{t.kalkulatorHome.proName}</h3><p className="tier-need">{t.kalkulatorHome.proNeed}</p><small className="form-note">{t.kalkulatorHome.proLimit}</small>
+              <span className="tier-badge tier-badge-interim"><Clock size={12}/> {t.kalkulatorHome.proInterimBadge}</span>
             </button>
           </div>
         </section>
@@ -327,6 +328,7 @@ export function App() {
       {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setMode('kalkulator'); setKalkulatorTier('pro'); startOver(); }} onDeleteData={deleteMyData}/>}
       {mode === 'kalkulator' && kalkulatorTier === 'pro' && <>
       <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
+      <div className="notice-card pro-interim-notice"><Clock/><div><h3>{t.kalkulatorHome.proInterimTitle}</h3><p>{t.kalkulatorHome.proInterimBody}</p></div></div>
 
       {step === 'upload' && <>
         <section className="hero">

@@ -194,7 +194,10 @@ h1 em{color:var(--loonto-primary);font-style:normal}
 .tier-card small{color:var(--text-secondary);line-height:1.5}
 .tier-card-disabled{opacity:.85}
 .tier-badge{position:absolute;top:16px;right:16px;display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-secondary);background:rgba(20,37,31,.08);padding:4px 9px;border-radius:999px}
+.tier-badge-interim{color:#8a5a00;background:rgba(217,145,0,.14)}
 .tier-back{margin:26px 28px 0}
+.pro-interim-notice{margin:0 28px 12px}
+.nl-term{font-style:italic}
 @media (max-width:900px){.tier-cards{grid-template-columns:1fr}}
 .review-grid{display:grid;grid-template-columns:.72fr 1.28fr;gap:24px;align-items:start}
 .document-card,.fields-card,.notice-card{

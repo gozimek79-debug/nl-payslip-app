@@ -105,9 +105,17 @@ export const ESTIMATED_PAWW_DEFAULT = {
 export const SECTOR_PREMIUM_ESTIMATE_RANGE = {
   low_percent: 0.18,
   high_percent: 0.7,
-  basis_note:
-    'Bandbreedte gebaseerd op vier echte loonstroken van drie verschillende uitzendbureaus - geen wettelijk of sectoraal gepubliceerd tarief. De sectorpremie verschilt per uitzendbureau; het exacte percentage staat op uw eigen loonstrook, op een regel genaamd Ziektewet, AZW, WGA of WHK (de naam verschilt per bureau).',
 };
+
+/**
+ * BK4 (language-regression round): the Dutch line names this category is filed under vary by
+ * agency - this is data, not UI copy, and lives here (reference data) rather than baked into a
+ * sentence in either language. The frontend renders the SURROUNDING sentence in the interface
+ * language and inserts these literal (untranslated - they are Dutch proper nouns/line names, not
+ * concepts) terms into it, rather than the backend supplying one hardcoded Dutch sentence that
+ * ignored the language switch entirely (the exact defect this round exists to fix, audit BJ1).
+ */
+export const SECTOR_PREMIUM_KNOWN_TERMS = ['Ziektewet', 'AZW', 'WGA', 'WHK'];
 
 export interface TierASectorPremiumEstimate {
   low_percent: number;
@@ -115,7 +123,10 @@ export interface TierASectorPremiumEstimate {
   low_amount: number;
   high_amount: number;
   provenance: 'estimated';
-  basis: string;
+  /** BK4: the payslip line names this category appears under, across the reference documents -
+   * literal Dutch terms, not translated copy. The frontend builds its own translated sentence
+   * around this list (see translations.ts's tierA.sectorPremiumBasis). */
+  known_terms: string[];
 }
 
 /** Computes the sector-premium range in EUR for a given gross total (AZ1). Kept separate from
@@ -129,7 +140,7 @@ export function estimateSectorPremiumRange(grossTotal: number): TierASectorPremi
     low_amount: round2(grossTotal * (SECTOR_PREMIUM_ESTIMATE_RANGE.low_percent / 100)),
     high_amount: round2(grossTotal * (SECTOR_PREMIUM_ESTIMATE_RANGE.high_percent / 100)),
     provenance: 'estimated',
-    basis: SECTOR_PREMIUM_ESTIMATE_RANGE.basis_note,
+    known_terms: SECTOR_PREMIUM_KNOWN_TERMS,
   };
 }
 
@@ -137,14 +148,31 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
+/**
+ * BK1/BK3/BK4 (language-regression round): `description` on every line is the DUTCH TERM, not a
+ * translated, provenance-annotated sentence - the earlier version baked "(schatting, <url>)" /
+ * "(opgegeven)" / "(niet opgegeven)" directly into this Dutch string, which is exactly why the
+ * frontend had to `.split(' (')[0]` it back apart to render anything else (audit BJ1's regression).
+ * Provenance is ALREADY carried by `amount.provenance` (Field<T>) and is the frontend's job to
+ * label, in the interface language; this constant is the single source for Tier A's CANONICAL term
+ * per category (Tiers B/C would instead use the term AS PRINTED on the user's own document, once
+ * built - same field, different population, per BK3).
+ */
+const TIER_A_DUTCH_TERMS = {
+  pension: 'StiPP-pensioenpremie',
+  paww: 'PAWW-premie',
+  sectorPremium: 'Sectorpremie (Ziektewet/AZW/WGA/WHK)',
+  postTaxOther: 'Overige inhouding na belasting',
+};
+
 function buildPreTaxDeductions(input: TierAInput, grossSoFar: number): PreTaxDeduction[] {
   const { mode, entered } = input.deductions;
 
   if (mode === 'skip') {
     return [
-      { category: 'pension', description: 'STIPP-pensioen (niet opgegeven)', amount: unknownField(), base: null, percent: null },
-      { category: 'paww', description: 'PAWW-premie (niet opgegeven)', amount: unknownField(), base: null, percent: null },
-      { category: 'ziektewet', description: 'Sectorpremie (niet opgegeven)', amount: unknownField(), base: null, percent: null },
+      { category: 'pension', description: TIER_A_DUTCH_TERMS.pension, amount: unknownField(), base: null, percent: null },
+      { category: 'paww', description: TIER_A_DUTCH_TERMS.paww, amount: unknownField(), base: null, percent: null },
+      { category: 'ziektewet', description: TIER_A_DUTCH_TERMS.sectorPremium, amount: unknownField(), base: null, percent: null },
     ];
   }
 
@@ -154,25 +182,28 @@ function buildPreTaxDeductions(input: TierAInput, grossSoFar: number): PreTaxDed
     // Sector premium is deliberately NOT a row here (AZ1/AZ5, owner's decision): it is a RANGE, not
     // a single Field<number>, computed separately by estimateSectorPremiumRange() and applied
     // directly to net/payout in computeTierAResult() - never entering pre_tax_deductions, so it
-    // cannot affect taxable_base or tax the way a normal PreTaxDeduction would.
+    // cannot affect taxable_base or tax the way a normal PreTaxDeduction would. Each default's
+    // source URL (ESTIMATED_STIPP_DEFAULTS.source / ESTIMATED_PAWW_DEFAULT.source) documents where
+    // the rate came from for audit purposes - it was never actually surfaced to the user (the old
+    // description string with the URL embedded was stripped by the frontend before rendering).
     return [
-      { category: 'pension', description: `STIPP-pensioen (schatting, ${ESTIMATED_STIPP_DEFAULTS.source})`, amount: known(pensionAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_STIPP_DEFAULTS.employee_rate_percent },
-      { category: 'paww', description: `PAWW-premie (schatting, ${ESTIMATED_PAWW_DEFAULT.source})`, amount: known(pawwAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_PAWW_DEFAULT.percent },
+      { category: 'pension', description: TIER_A_DUTCH_TERMS.pension, amount: known(pensionAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_STIPP_DEFAULTS.employee_rate_percent },
+      { category: 'paww', description: TIER_A_DUTCH_TERMS.paww, amount: known(pawwAmount, 'estimated'), base: round2(grossSoFar), percent: ESTIMATED_PAWW_DEFAULT.percent },
     ];
   }
 
   // mode === 'enter'
   const lines: PreTaxDeduction[] = [];
-  if (entered?.pension !== undefined) lines.push({ category: 'pension', description: 'STIPP-pensioen (opgegeven)', amount: known(entered.pension, 'user_entered'), base: null, percent: null });
-  if (entered?.paww !== undefined) lines.push({ category: 'paww', description: 'PAWW-premie (opgegeven)', amount: known(entered.paww, 'user_entered'), base: null, percent: null });
-  if (entered?.sector_premium !== undefined) lines.push({ category: 'ziektewet', description: 'Sectorpremie (opgegeven)', amount: known(entered.sector_premium, 'user_entered'), base: null, percent: null });
+  if (entered?.pension !== undefined) lines.push({ category: 'pension', description: TIER_A_DUTCH_TERMS.pension, amount: known(entered.pension, 'user_entered'), base: null, percent: null });
+  if (entered?.paww !== undefined) lines.push({ category: 'paww', description: TIER_A_DUTCH_TERMS.paww, amount: known(entered.paww, 'user_entered'), base: null, percent: null });
+  if (entered?.sector_premium !== undefined) lines.push({ category: 'ziektewet', description: TIER_A_DUTCH_TERMS.sectorPremium, amount: known(entered.sector_premium, 'user_entered'), base: null, percent: null });
   return lines;
 }
 
 function buildPostTaxSocial(input: TierAInput): PostTaxSocialDeduction[] {
   const postTaxOther = input.deductions.entered?.post_tax_other;
   if (input.deductions.mode !== 'enter' || postTaxOther === undefined) return [];
-  return [{ category: 'other', description: 'Overige na-belasting premie (opgegeven)', amount: known(postTaxOther, 'user_entered'), percent: null }];
+  return [{ category: 'other', description: TIER_A_DUTCH_TERMS.postTaxOther, amount: known(postTaxOther, 'user_entered'), percent: null }];
 }
 
 /** Builds the PayslipPeriod Tier A's own three-way deduction question and vakantiegeld distinction
@@ -307,10 +338,15 @@ export function computeTierAResult(input: TierAInput, rates: PayslipComputationR
   };
 }
 
-export interface TierASanityWarning {
-  code: 'net_exceeds_gross' | 'effective_rate_exceeds_gross_rate';
-  message: string;
-}
+/**
+ * Structured, not a prebaked sentence (audit BJ1, language-regression round): the earlier version
+ * carried a fully-formatted Dutch `message` string, which is the same defect as the deduction-line
+ * descriptions above - it ignored the interface language switch entirely. The frontend now builds
+ * the sentence itself, in the interface language, from these numeric fields.
+ */
+export type TierASanityWarning =
+  | { code: 'net_exceeds_gross'; wage_net: number; gross_total: number }
+  | { code: 'effective_rate_exceeds_gross_rate'; effective_rate: number; hourly_rate: number };
 
 /**
  * Sanity check before rendering (spec §3, "Sanity check before rendering") - the live build showed
@@ -334,12 +370,12 @@ export function checkTierASanity(outcome: PayslipComputationOutcome, input: Tier
   const warnings: TierASanityWarning[] = [];
   const { result } = outcome;
   if (result.wage_net > result.gross_total) {
-    warnings.push({ code: 'net_exceeds_gross', message: `Netto vóór onbelaste vergoedingen (${result.wage_net.toFixed(2)}) is hoger dan bruto (${result.gross_total.toFixed(2)}) - controleer de invoer.` });
+    warnings.push({ code: 'net_exceeds_gross', wage_net: result.wage_net, gross_total: result.gross_total });
   }
   if (result.hours_worked > 0) {
     const effectiveWageNetHourlyRate = result.wage_net / result.hours_worked;
     if (effectiveWageNetHourlyRate > input.hourly_rate) {
-      warnings.push({ code: 'effective_rate_exceeds_gross_rate', message: `Effectief netto uurloon vóór onbelaste vergoedingen (${effectiveWageNetHourlyRate.toFixed(2)}) is hoger dan het opgegeven bruto uurloon (${input.hourly_rate.toFixed(2)}) - controleer de invoer.` });
+      warnings.push({ code: 'effective_rate_exceeds_gross_rate', effective_rate: round2(effectiveWageNetHourlyRate), hourly_rate: input.hourly_rate });
     }
   }
   return warnings;

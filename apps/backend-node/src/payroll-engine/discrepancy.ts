@@ -8,10 +8,27 @@ import { tableTaxToleranceFor, type PayslipComputationOutcome, type PayslipPerio
  * generic to ANY correctly-populated period, not something specific to how Tier C's extraction
  * populates one (spec §2's "one engine, one model" - Tier B would want the identical comparator).
  *
+ * ============================================================================================
+ * STAGE 1 - THE CONFIRMATION STEP (audit "CONSOLIDATED ASSIGNMENT" round, Tier C §3, "gates
+ * everything else"). Three bands, not two:
+ *
+ *   within `tolerance`                    silent - no discrepancy at all (unchanged from before)
+ *   beyond `tolerance`, within `confirmation_upper`   status 'confirm' - a question, never an
+ *                                                       accusation ("we read X - is that right?")
+ *   beyond `confirmation_upper`           status 'finding' - stated plainly
+ *
+ * This module produces the CLASSIFICATION only - `status` plus the two band edges, so a consumer
+ * (Stage 2's result panel) can render the actual confirm/correct/recompute interaction. Building
+ * that interaction here would be running two stages in parallel, which this round's own instruction
+ * forbids.
+ * ============================================================================================
+ *
  * Structured per audit BN3/CONVENTIONS.md: a `code` plus numeric parameters, never a prebaked
  * sentence - this is Tier C's own new code, so it follows the house pattern from the start rather
  * than being retrofitted the way Tier A's was.
  */
+export type DiscrepancyStatus = 'confirm' | 'finding';
+
 export interface Discrepancy {
   code:
     | 'table_tax_mismatch'
@@ -25,7 +42,11 @@ export interface Discrepancy {
   computed: number | null;
   printed: number;
   residual: number | null;
-  tolerance: number | null;
+  /** The silent-band upper edge - unchanged name and meaning from before this round. */
+  tolerance: number;
+  /** NEW this round: beyond `tolerance` but within this, `status` is 'confirm'. */
+  confirmation_upper: number;
+  status: DiscrepancyStatus;
 }
 
 /**
@@ -45,61 +66,106 @@ function korTolerance(period: PayslipPeriod): number {
 }
 
 /**
+ * Stage 1's confirmation-band derivation, per code family, each reasoned from the SAME measured
+ * evidence BT_TAX_TOLERANCE itself came from (BW1-BW4, BW2, CL - tier-c.test.ts), per the explicit
+ * instruction to derive these "the way you derived BT_TAX_TOLERANCE", not invent them.
+ *
+ * table_tax_mismatch / algemene_heffingskorting_mismatch / arbeidskorting_mismatch / net_mismatch /
+ * payout_mismatch all share the SAME base tolerance (tableTaxToleranceFor) - they are all downstream
+ * of the same stepwise-table-rounding reconstruction, or (net/payout, per CL) inherit that residual
+ * one-for-one. Confirmation multiplier: 3x that base. Derivation: BW2 measured a real, single-line
+ * category misclassification (one small ambiguous line moved table->bt) producing a
+ * table_tax_mismatch residual of -0.60 - about 1.2x the weekly tolerance (0.50). A single plausible
+ * AI misjudgment on one line is exactly the class of thing a confirmation question should catch, not
+ * silently escalate to a finding - 3x gives room for that measured case plus some compounding margin
+ * (two such lines), landing at 1.50/3.00/4.50 EUR for week/4-weekly/month. OTTO's real, documented
+ * 12.28 EUR gap (24x the weekly tolerance) stays far above this at every period length, so it
+ * correctly remains a 'finding', never merely a question.
+ */
+const TABLE_TOLERANCE_CONFIRMATION_MULTIPLIER = 3;
+
+/**
+ * bt_tax_mismatch gets its OWN confirmation edge, not a multiple of BT_TAX_TOLERANCE - that base
+ * tolerance is deliberately tight (0.10) because BT's computation itself has no rounding ambiguity;
+ * a flat multiplier of it would be too small to cover BW2's measured single-line-misclassification
+ * effect on bt_tax specifically (+1.01), which is exactly the "did we get one line wrong" case a
+ * confirmation question exists for. Set directly from that measurement plus margin.
+ */
+const BT_TAX_CONFIRMATION_UPPER = 1.5;
+
+/**
+ * Minimum-wage staleness is a different kind of comparison from the five above: printed-vs-
+ * authoritative-rate (the rules database), not computed-vs-printed. The ambiguity a confirmation
+ * question can usefully resolve here is narrower - "did we read the printed minimum wage correctly"
+ * - not "did the employer apply the right rate" (that is a fact, not extraction noise). Kept
+ * deliberately tight: Olympia's own real, confirmed staleness case (14.71 printed vs 14.99
+ * applicable, a genuine 0.28 EUR gap from an out-of-date printed rate) must stay a 'finding', not sit
+ * as an indefinitely-open question - 0.10 covers only a trivial single-cent-range OCR misread.
+ */
+const MINIMUM_WAGE_CONFIRMATION_UPPER = 0.1;
+
+const pushable = (
+  code: Discrepancy['code'],
+  computed: number,
+  printed: number | null,
+  tolerance: number,
+  confirmationUpper: number,
+): Discrepancy | null => {
+  if (printed === null) return null; // nothing printed to check against - not a discrepancy, an absence
+  const residual = Math.round((computed - printed) * 100) / 100;
+  const magnitude = Math.abs(residual);
+  if (magnitude <= tolerance) return null; // silent - the original BP4 guarantee, unchanged
+  const status: DiscrepancyStatus = magnitude <= confirmationUpper ? 'confirm' : 'finding';
+  return { code, computed, printed, residual, tolerance, confirmation_upper: confirmationUpper, status };
+};
+
+/**
  * BP4's shipping condition, restated as the actual acceptance test this function exists to satisfy:
  * "the discrepancy list correctly reports a correct payslip as correct." A verifier that flags a
  * valid payslip is worse than no verifier (the original audit's first finding) - so every comparison
  * below only fires when the residual exceeds the SAME tolerance the golden tests already established
- * as real table-rounding noise, never a tighter one invented for this function specifically.
+ * as real table-rounding noise, never a tighter one invented for this function specifically. Stage 1
+ * adds a status to what DOES fire, it does not change what counts as silent.
  */
 export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipComputationOutcome): Discrepancy[] {
   const discrepancies: Discrepancy[] = [];
   const tableTolerance = tableTaxToleranceFor(period.period_type);
   const heffingskortingTolerance = korTolerance(period);
+  const tableConfirmationUpper = tableTolerance * TABLE_TOLERANCE_CONFIRMATION_MULTIPLIER;
+  const heffingskortingConfirmationUpper = heffingskortingTolerance * TABLE_TOLERANCE_CONFIRMATION_MULTIPLIER;
 
-  const pushIfBeyondTolerance = (
-    code: Discrepancy['code'],
-    computed: number,
-    printed: number | null,
-    tolerance: number,
-  ): void => {
-    if (printed === null) return; // nothing printed to check against - not a discrepancy, an absence
-    const residual = Math.round((computed - printed) * 100) / 100;
-    if (Math.abs(residual) > tolerance) {
-      discrepancies.push({ code, computed, printed, residual, tolerance });
-    }
+  const push = (result: Discrepancy | null): void => {
+    if (result) discrepancies.push(result);
   };
 
   if (outcome.status === 'complete') {
     const { result } = outcome;
-    pushIfBeyondTolerance('table_tax_mismatch', result.table_tax_after_korting, period.printed_table_tax, tableTolerance);
-    pushIfBeyondTolerance('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE);
-    pushIfBeyondTolerance('algemene_heffingskorting_mismatch', result.algemene_heffingskorting, period.printed_algemene_heffingskorting, heffingskortingTolerance);
-    pushIfBeyondTolerance('arbeidskorting_mismatch', result.arbeidskorting, period.printed_arbeidskorting, heffingskortingTolerance);
+    push(pushable('table_tax_mismatch', result.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper));
+    push(pushable('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER));
+    push(pushable('algemene_heffingskorting_mismatch', result.algemene_heffingskorting, period.printed_algemene_heffingskorting, heffingskortingTolerance, heffingskortingConfirmationUpper));
+    push(pushable('arbeidskorting_mismatch', result.arbeidskorting, period.printed_arbeidskorting, heffingskortingTolerance, heffingskortingConfirmationUpper));
     // CL: net_mismatch/payout_mismatch were declared for two rounds with nothing pushing them - a
     // net_lines misclassification (a reimbursement read as a deduction) would silently pass "no
     // discrepancy" with only the four checks above. Reuses tableTolerance (not a fresh number): both
     // figures are downstream of table_tax_after_korting, so they inherit its own rounding residual
-    // one-for-one and cannot be held to a tighter band than the figure they're built from.
-    pushIfBeyondTolerance('net_mismatch', result.period_net, period.printed_net, tableTolerance);
-    pushIfBeyondTolerance('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance);
+    // one-for-one and cannot be held to a tighter band than the figure they're built from. Same
+    // reasoning extends to the confirmation edge.
+    push(pushable('net_mismatch', result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper));
+    push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper));
   } else {
     // Incomplete: table_tax/bt_tax are still present (as an upper bound, or fully correct if only
     // post-tax was unknown - see IncompletePayslipComputation's own doc comment), net/payout are not.
-    pushIfBeyondTolerance('table_tax_mismatch', outcome.table_tax_after_korting, period.printed_table_tax, tableTolerance);
-    pushIfBeyondTolerance('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE);
+    push(pushable('table_tax_mismatch', outcome.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper));
+    push(pushable('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER));
   }
 
   // Minimum wage: audit N4/BP1 point 4 - `wml_applicable` must already be resolved from the rules
   // DB by the caller (getRuleAt('loonheffing_nl', period_end), via getMinimumWageAt) before this
   // function runs; this only reports the printed-vs-applicable comparison, it does not resolve it.
-  if (period.wml_printed !== null && period.wml_applicable !== null && Math.abs(period.wml_printed - period.wml_applicable) > 0.005) {
-    discrepancies.push({
-      code: 'minimum_wage_stale_on_document',
-      computed: period.wml_applicable,
-      printed: period.wml_printed,
-      residual: Math.round((period.wml_applicable - period.wml_printed) * 100) / 100,
-      tolerance: 0,
-    });
+  // Tolerance stays 0.005 (unchanged from before this round - a rounding guard, not a real band) -
+  // Stage 1 only adds which of the two remaining bands a genuine difference falls into.
+  if (period.wml_applicable !== null) {
+    push(pushable('minimum_wage_stale_on_document', period.wml_applicable, period.wml_printed, 0.005, MINIMUM_WAGE_CONFIRMATION_UPPER));
   }
 
   return discrepancies;

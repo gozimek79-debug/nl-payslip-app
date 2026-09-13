@@ -144,6 +144,10 @@ test('Tier C integration: Fixture 4 Olympia maps, computes and reports NO discre
   // not absorbed into silence. Every OTHER discrepancy code must be absent - this is a correct
   // payslip everywhere except that one already-known printed-minimum-wage staleness.
   assert.deepEqual(discrepancies.map((d) => d.code), ['minimum_wage_stale_on_document']);
+  // Stage 1: a genuine 0.28 EUR staleness gap (an out-of-date printed rate, not extraction noise)
+  // must classify as 'finding' - the confirmation band here (0.10) exists only for a trivial
+  // single-cent-range OCR misread, not to soften a real, already-verified fact into a question.
+  assert.equal(discrepancies[0]?.status, 'finding', `expected 'finding' for Olympia's real 0.28 EUR staleness gap, got ${discrepancies[0]?.status}`);
 });
 
 test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepancy', () => {
@@ -308,6 +312,9 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   const tableTaxDiscrepancy = discrepancies.find((d) => d.code === 'table_tax_mismatch');
   assert.ok(tableTaxDiscrepancy, 'expected the already-documented table-tax gap to surface as a real discrepancy, not be silently absorbed');
   assert.ok(Math.abs((tableTaxDiscrepancy?.residual ?? 0) + 12.28) < 0.5, `expected a residual near -12.28, got ${tableTaxDiscrepancy?.residual}`);
+  // Stage 1: a 12.28 EUR residual is 24x the weekly tolerance (0.50) - nowhere near plausible
+  // single-line extraction noise (confirmation band tops out at 1.5x). Must stay 'finding'.
+  assert.equal(tableTaxDiscrepancy?.status, 'finding', `expected 'finding' for OTTO's real 12.28 EUR gap, got ${tableTaxDiscrepancy?.status}`);
 });
 
 /**
@@ -423,6 +430,10 @@ test('CL: a reimbursement misclassified as a deduction now correctly surfaces as
   console.log(`  [CL] reimbursement-misclassified-as-deduction discrepancies: ${JSON.stringify(discrepancies)}`);
   const payoutMismatch = discrepancies.find((d) => d.code === 'payout_mismatch');
   assert.ok(payoutMismatch, 'BEFORE this round: this error passed silently as "no discrepancy". AFTER: payout_mismatch must fire - the 36 EUR moved from net_additions to net_deductions is a real 72 EUR swing in the final payout.');
+  // Stage 1 (audit "CONSOLIDATED ASSIGNMENT" round): a 72 EUR swing is nowhere near plausible
+  // single-line extraction noise (the confirmation band tops out at 1.5x tableTolerance) - this must
+  // classify as 'finding', stated plainly, never softened into a mere confirmation question.
+  assert.equal(payoutMismatch?.status, 'finding', `expected 'finding' for a 72 EUR swing, got ${payoutMismatch?.status}`);
 });
 
 test('BW2: a small ambiguous line misclassified table->bt (a plausible AI judgment error) - measured', () => {
@@ -474,6 +485,10 @@ test('BW2: a small ambiguous line misclassified table->bt (a plausible AI judgme
   // question BW2 answers - assert on what running the code showed, not on an assumption made before
   // running it.
   assert.ok(discrepancies.every((d) => d.code === 'table_tax_mismatch' || d.code === 'bt_tax_mismatch'), 'only tax-figure codes should be able to fire from a tax_treatment change');
+  // Stage 1 (audit "CONSOLIDATED ASSIGNMENT" round, Tier C): a single plausible AI misjudgment on
+  // one small ambiguous line is exactly the case the confirmation band exists for - both codes
+  // measured here must classify as 'confirm' (a question), never 'finding' (a stated accusation).
+  assert.ok(discrepancies.every((d) => d.status === 'confirm'), `expected both to classify as 'confirm', got: ${JSON.stringify(discrepancies.map((d) => ({ code: d.code, status: d.status })))}`);
 });
 
 test('BW3: a five-cent OCR digit-slip on the printed BT-tax figure - re-measured after CJ\'s retune', () => {
@@ -563,6 +578,9 @@ test('BW3b: a 0.20 EUR bt_tax slip still correctly fires past the retuned tolera
   console.log(`  [BW3b] 0.20 EUR bt_tax slip discrepancies: ${JSON.stringify(discrepancies)}`);
   const btMismatch = discrepancies.find((d) => d.code === 'bt_tax_mismatch');
   assert.ok(btMismatch, 'a 0.20 EUR slip must still be caught - the retune widened the band, it did not remove it');
+  // Stage 1: still inside BT's confirmation band (1.5) - a modest, plausible OCR slip on the printed
+  // figure should read as a question, not an accusation, even though it's beyond the silent tolerance.
+  assert.equal(btMismatch?.status, 'confirm', `expected 'confirm' for a 0.20 EUR slip, got ${btMismatch?.status}`);
 });
 
 test('BW4: a table-tax OCR slip within the period tolerance band - correctly absorbed, CLEAN', () => {

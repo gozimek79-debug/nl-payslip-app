@@ -225,7 +225,7 @@ sekcją "Netto" tuż przed wierszem "Totaal netto"/"Totalen" - NIE pomijaj jej).
 
 Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown) o strukturze:
 {"per":string|null,"ped":string|null,"pt":"w"|"4w"|"m"|null,"ic":boolean,"ver":number,
-"emp":string[],"hir":string|null,"hpw":number|null,"mw":number|null,"btp":number|null,
+"emp":string[],"hir":string|null,"hpw":number|null,"mw":number|null,"btp":number|null,"btj":number|null,
 "hl":[{"d":string,"h":number|null,"r":number|null,"pc":number|null,"a":number,"c":string,"tt":string,"ah":boolean,"ei":number}],
 "pdl":[{"d":string,"a":number,"c":string,"b":number|null,"pc":number|null}],
 "sdl":[{"d":string,"a":number,"c":string,"pc":number|null}],
@@ -241,7 +241,11 @@ pt=typ okresu ("w"=tydzień, "4w"=4 tygodnie, "m"=miesiąc), ic=czy to KOREKTA/h
 gdy wyraźnie oznaczone), ver=numer wersji dokumentu (1, jeśli nie widać innego), emp=nazwa(-y)
 pracodawcy jak wydrukowane (może być więcej niż jedna - np. dwa równoległe zatrudnienia), hir=nazwa
 zleceniodawcy/opdrachtgever jeśli WYRAŹNIE inna niż pracodawca, hpw=godziny/tydzień z umowy, mw=minimumloon
-WYDRUKOWANE, btp=procent bijzonder tarief jeśli wydrukowany wprost jako osobna stawka (np. "50,47%").
+WYDRUKOWANE, btp=procent bijzonder tarief. Może być wydrukowany jako JEDNA liczba (np. "50,47%") ALBO
+jako DWIE składowe rozdzielone znakiem "+" (np. "35,75 + 4,45%") - w tym drugim przypadku ZSUMUJ obie
+liczby i zwróć JEDNĄ wartość (35,75+4,45=40,20), nigdy tylko jedną z dwóch połówek. btj=jaarloon/roczny
+dochód użyty do ustalenia stawki bijzonder tarief, jeśli wydrukowany wprost (np. "Jaarloon BT: 38.000,00"
+albo "Jaarloon bijz. beloning 46074") - null jeśli nie widać takiej wartości.
 
 hl=linie godzinowe/brutto: d=opis TAK JAK WYDRUKOWANY (nie tłumacz), h=liczba godzin, r=stawka za
 godzinę, pc=procent dodatku (np. 100 dla "100%"), a=kwota, c=kategoria jednym znakiem: "r"=zwykłe
@@ -444,6 +448,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     pre_tax_deduction_lines: mapDeductionLines(parsed.pdl, 'pdl', mapPreTaxCategory),
     post_tax_deduction_lines: mapDeductionLines(parsed.sdl, 'sdl', mapPostTaxCategory),
     bijzonder_tarief_printed_percent: toNullableNumber(parsed.btp),
+    bijzonder_tarief_jaarloon: toNullableNumber(parsed.btj),
     et_exchange_amount: toNullableNumber(parsed.etx),
     et_reimbursement_lines: etReimbursementLines,
     net_lines: mapNetLines(parsed.nl, 'nl'),

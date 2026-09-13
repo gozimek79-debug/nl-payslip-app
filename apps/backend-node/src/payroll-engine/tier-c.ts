@@ -28,23 +28,32 @@ import {
  *   - is_correction / version: NEW - previously not captured at all. Detectable when the document
  *     itself prints a correction marker ("KOREKTA", "herziening", a version number) - defaults to
  *     false/1 when no such marker is visible, which is the correct default, not a guess.
- *   - employer name, hirer name: NEW - both are printed on some documents (Olympia prints both,
- *     separately) and absent on others. Left null when not printed, never invented.
+ *   - employer name, hirer name: NEW - both are printed on some documents (Olympia and Randstad both
+ *     print a hirer distinct from the formal employer - the client company/inlener) and absent on
+ *     others. Left null when not printed, never invented.
  *   - hour_lines: category/tax_treatment/adds_hours per line - NEW. The pre-existing schema had no
  *     concept of any of these; they are exactly why the old flat lineItems list could not populate
  *     HourLine's contract. tax_treatment defaults to 'unknown' (never 'table') when the document
  *     gives no signal, per the model's own rule that assuming 'table' is exactly the same class of
  *     guess as assuming 'bt' would be (payslip-model.ts's own HourLine doc comment).
- *   - printed bijzonder-tarief percentage: NEW - three of four reference documents print this
- *     directly as a standalone rate (PKF 40.20%, Randstad 50.47%, OTTO 38.45% "Taryfa specjalna").
- *   - pre-tax/post-tax deduction category + placement: NEW, via a keyword lookup against the actual
- *     line names observed across the four reference documents (BK2's own list: Ziektewet, AZW,
- *     WGA-Gat, WHK for the sector-premium category; StiPP/pensioen for pension; PAWW is fixed).
- *     Falls back to category 'other' / placement 'pre_tax' when nothing matches - a conservative
- *     default that shows up as an unclassified line, not a silently-dropped one.
+ *   - printed bijzonder-tarief percentage AND jaarloon: NEW - corrected this round (audit BQ) after
+ *     testing against the actual real documents, not just the curated fixture summary. All three
+ *     documents that use BT print it directly: Randstad "Jaarloon bijz. beloning 46074" / "% tabel
+ *     bijz. beloning 50,47%" (one combined number); PKF "Jaarloon BT: 38.000,00" / "Tarief BT: 35,75 +
+ *     4,45%" (printed as TWO components - base rate + addon - that must be SUMMED, not read as one
+ *     figure or picked apart); OTTO shows a jaarloon-shaped figure under an unlabelled "TSP" column
+ *     next to its own printed 38,45% rate, not yet confirmed to mean the same thing. The prompt below
+ *     asks for both components and sums them, rather than assuming one printed-rate format.
+ *   - pre-tax/post-tax deduction category + placement: NEW, via the AI's own reading of the line
+ *     (never a backend keyword-match against the printed text - real documents drop Polish diacritics
+ *     inconsistently, e.g. "Jednorazowa zaplata" not "zapłata" on OTTO's actual document, which would
+ *     break a naive string-match classifier; asking the model to classify directly avoids that).
+ *     Falls back to category 'other' / placement 'pre_tax' when the model itself cannot classify - a
+ *     conservative default that shows up as an unclassified line, not a silently-dropped one.
  *   - printed table/BT tax, algemene heffingskorting, arbeidskorting: NEW - needed for
- *     comparePeriodToDocument() to have anything to compare against; detected via keyword match
- *     against the same "loonheffing"/"heffingskorting" line names visible in the reference documents.
+ *     comparePeriodToDocument() to have anything to compare against; confirmed exactly correct on all
+ *     four real documents this round (audit BQ) against the reference figures already used in
+ *     tier-c.test.ts.
  *   - minimum wage (wml_printed) and its rules-DB counterpart (wml_applicable, via getRuleAt at the
  *     controller layer): NOT a new gap - already correctly implemented pre-Tier-C
  *     (rules-repository.ts's getMinimumWageAt, wired in payslip.controller.ts's
@@ -56,12 +65,9 @@ import {
  *     franchise is NOT printed anywhere - it took manual reasoning across two rounds of this audit
  *     (T3/round 7-8) to work out for OTTO specifically, by testing which hypothesis reproduced the
  *     printed StiPP figure. An extraction cannot do that reasoning from one document. Stays
- *     `'unknown'` whenever more than one employer is detected - reported, not guessed.
- *   - bijzonder_tarief.jaarloon_bt: this is the PRIOR YEAR's income, used by the employer's payroll
- *     system to look up a table row - it is essentially never restated on the CURRENT period's
- *     payslip. Stays null; `tarief_bt.printed` (see above) is what actually drives the computation
- *     when present, so this absence does not block a BT computation the way it would if
- *     `tarief_bt.printed` were also missing.
+ *     `'unknown'` whenever more than one employer is detected - reported, not guessed. Confirmed
+ *     against OTTO's real document (audit BQ): nothing on it identifies which employer is
+ *     franchise-bearing any more clearly than the fixture summary did.
  *   - contract_hours: the model's own design (spec, "Wnioski dla modelu danych") already says this
  *     is independent of hours_worked with no cross-check - a payslip's `hoursPerWeek` field (kept,
  *     unchanged from the pre-existing extraction) is the closest available signal, not converted
@@ -131,6 +137,11 @@ export interface TierCExtraction {
   pre_tax_deduction_lines: TierCDeductionLine[];
   post_tax_deduction_lines: TierCDeductionLine[];
   bijzonder_tarief_printed_percent: number | null;
+  /** The prior year's jaarloon used to look up the BT rate - confirmed THIS round (audit BQ) to be
+   * printed directly on real documents more often than the earlier gap analysis assumed (Randstad
+   * "Jaarloon bijz. beloning", PKF "Jaarloon BT"). Kept for informational/verification purposes; the
+   * computation itself is driven by `bijzonder_tarief_printed_percent`, not re-derived from this. */
+  bijzonder_tarief_jaarloon: number | null;
   et_exchange_amount: number | null;
   et_reimbursement_lines: TierCNetLine[];
   net_lines: TierCNetLine[];
@@ -236,7 +247,7 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     hour_lines: hourLines,
     pre_tax_deductions: preTaxDeductions,
     bijzonder_tarief: {
-      jaarloon_bt: null,
+      jaarloon_bt: extraction.bijzonder_tarief_jaarloon,
       bt_state: btState,
       tarief_bt: { printed: extraction.bijzonder_tarief_printed_percent, computed: null },
     },

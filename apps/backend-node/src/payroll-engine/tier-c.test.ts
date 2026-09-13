@@ -81,6 +81,7 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
     pre_tax_deduction_lines: [],
     post_tax_deduction_lines: [],
     bijzonder_tarief_printed_percent: null,
+    bijzonder_tarief_jaarloon: null,
     et_exchange_amount: null,
     et_reimbursement_lines: [],
     net_lines: [],
@@ -145,31 +146,42 @@ test('Tier C integration: Fixture 4 Olympia maps, computes and reports NO discre
 });
 
 test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepancy', () => {
+  // Corrected against the actual source document this round (audit BQ), not just the earlier
+  // curated fixture summary: hours_per_week (40,00, printed) and a vakantiegeld reservation
+  // (281,24, printed - both absent from the version of this fixture built last round) are real,
+  // printed data this test was missing; jaarloon_bt (38.000,00) IS printed here ("Jaarloon BT:"),
+  // correcting the earlier "essentially never printed" claim; the real printed BT rate is TWO
+  // components summed ("Tarief BT: 35,75 + 4,45%"), not one pre-summed figure - confirms
+  // extractTierCPayslip's own prompt needs to handle that format, not just Randstad's single-number
+  // one. Deduction descriptions below use the exact real text, not a paraphrase (audit BK3).
   const extraction = baseExtraction({
     period_label: '2026-8-M',
     period_end_date: '2026-08-31',
     period_type: 'month',
-    employer_names: ['PKF/Post Finsterwolde'],
+    employer_names: ['PKF / Post Finsterwolde BV'],
+    hours_per_week: 40.0,
     minimum_wage_printed: 14.99,
     hour_lines: [
-      { employer_index: 0, description: 'Stam salaris', hours: null, rate: null, percent: null, amount: 2962.27, category: 'regular', tax_treatment: 'table', adds_hours: false },
-      { employer_index: 0, description: 'Overwerk 125%', hours: 4.0, rate: 21.36, percent: 125, amount: 85.45, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
-      { employer_index: 0, description: 'Overwerk 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Salaris', hours: null, rate: null, percent: null, amount: 2962.27, category: 'regular', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Overwerk uren 125%', hours: 4.0, rate: 21.36, percent: 125, amount: 85.45, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Overwerk uren 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
     ],
     pre_tax_deduction_lines: [
       { description: 'Paww Wn', amount: 3.52, category: 'paww', placement: 'pre_tax', base: 3515.56, percent: 0.1 },
       { description: 'Pensioenpremie Wn', amount: 229.03, category: 'pension', placement: 'pre_tax', base: 1601.58, percent: 14.3 },
-      { description: 'WGA-Gat Verz. Wn', amount: 5.99, category: 'wga_gat', placement: 'pre_tax', base: 3277.02, percent: 0.183 },
+      { description: 'WGA-Gat Verzekering Wn', amount: 5.99, category: 'wga_gat', placement: 'pre_tax', base: 3277.02, percent: 0.183 },
     ],
     post_tax_deduction_lines: [
-      { description: 'gediff. WGA wn', amount: 11.31, category: 'gediff_wga', placement: 'post_tax', base: null, percent: 0.345 },
+      { description: 'gediff. WGA wn', amount: 11.31, category: 'gediff_wga', placement: 'post_tax', base: 3277.02, percent: 0.345 },
     ],
     net_lines: [
-      { description: 'Reiskostenvergoeding', amount: 91.25, category: 'reimbursement' },
+      { description: 'Reiskostenvergoeding (onbelast)', amount: 91.25, category: 'reimbursement' },
       { description: 'Inhouding Personeelsvereniging', amount: 4.0, category: 'union' },
       { description: 'Inhouding Lening', amount: 1100.0, category: 'loan' },
     ],
-    bijzonder_tarief_printed_percent: 40.2,
+    reservation_lines: [{ type: 'vakantiegeld', opgebouwd: 281.24, paid_out: 0 }],
+    bijzonder_tarief_printed_percent: 40.2, // printed as "35,75 + 4,45%" - see comment above
+    bijzonder_tarief_jaarloon: 38000,
     printed_table_tax: 276.42,
     printed_bt_tax: 222.42,
   });
@@ -189,12 +201,18 @@ test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepanc
 });
 
 test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes and reports NO discrepancy', () => {
+  // Corrected against the real source document this round (audit BQ): a hirer is printed here too
+  // (Emballagefabriek H. Post B.V.) - not only Olympia, as the earlier gap-analysis comment claimed;
+  // jaarloon_bt IS printed ("Jaarloon bijz. beloning 46074"), as a single number (contrast PKF's
+  // two-part-sum format); the Ziektewet line's real printed text is longer than what was hand-entered
+  // last round (audit BK3's as-printed-term requirement).
   const extraction = baseExtraction({
     period_label: 'week 2026-11',
     period_end_date: '2026-04-30',
     is_correction: true,
     version: 2,
     employer_names: ['Randstad'],
+    hirer_name: 'Emballagefabriek H. Post B.V.',
     minimum_wage_printed: 14.71,
     hour_lines: [
       { employer_index: 0, description: 'Bruto loon uren', hours: 38.0, rate: 17.09, percent: null, amount: 649.42, category: 'regular', tax_treatment: 'table', adds_hours: true },
@@ -205,7 +223,7 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
     ],
     pre_tax_deduction_lines: [
       { description: 'Premie PAWW', amount: 0.74, category: 'paww', placement: 'pre_tax', base: 970.89, percent: 0.08 },
-      { description: 'Premie Ziektewet groep II A', amount: 4.55, category: 'ziektewet', placement: 'pre_tax', base: 970.89, percent: 0.7 },
+      { description: 'Premie aanvullende verzekering Ziektewet premiegroep II A', amount: 4.55, category: 'ziektewet', placement: 'pre_tax', base: 970.89, percent: 0.7 },
       { description: 'Pensioenpremie', amount: 38.35, category: 'pension', placement: 'pre_tax', base: null, percent: 7.5 },
     ],
     post_tax_deduction_lines: [
@@ -217,6 +235,7 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
       { description: 'Eerder betaald', amount: -744.73 },
     ],
     bijzonder_tarief_printed_percent: 50.47,
+    bijzonder_tarief_jaarloon: 46074,
     printed_table_tax: 71.31,
     printed_bt_tax: 141.24,
   });

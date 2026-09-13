@@ -284,7 +284,7 @@ export function App() {
       {mode === 'kalkulator' && kalkulatorTier === 'szybki' && (
         <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
-          <TierACalculator lang={lang}/>
+          <TierACalculator lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>
         </>
       )}
       {mode === 'kalkulator' && kalkulatorTier === 'z_umowy' && (

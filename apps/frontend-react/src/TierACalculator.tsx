@@ -245,7 +245,7 @@ function weeksForPeriod(periodType: PeriodType, current: WeekGridForm[]): WeekGr
   return [...current, ...Array.from({ length: target - current.length }, emptyWeekGrid)];
 }
 
-export function TierACalculator({ lang }: { lang: Lang }) {
+export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
   const t = translations[lang].tierA;
 
   const [periodType, setPeriodType] = useState<PeriodType>('week');
@@ -630,6 +630,45 @@ export function TierACalculator({ lang }: { lang: Lang }) {
               </div>
             </div>
           )}
+
+          {/* 3.5 (audit "LOONTO — CONSOLIDATED ASSIGNMENT"): a MENTION only, per spec §6a/§DJ1 - one
+              line per group, the held-for-later total, a link. Full breakdown (per-type balances,
+              what to claim) belongs to Module 3, not built yet. Gated on 'complete': §1's own rule
+              (unknown != 0) means this must not render a "gone for good" figure derived from an
+              outcome that couldn't compute wage_net in the first place. */}
+          {response.outcome.status === 'complete' && (() => {
+            const { gross_total, wage_net, payout_amount } = response.outcome.result;
+            const heldForLaterTotal = response.period.reservations.reduce((sum, r) => sum + r.opgebouwd_this_period, 0);
+            const spe = response.sector_premium_estimate;
+            // AZ5: the sector-premium estimate is applied to net/payout AFTER wage_net, never inside
+            // pre_tax_deductions - so "gone for good" must add it back in explicitly (as a range) or
+            // it would understate the group by exactly the premium estimate mode already shows
+            // elsewhere on this same result.
+            const goneForGoodLow = spe ? gross_total - wage_net + spe.low_amount : gross_total - wage_net;
+            const goneForGoodHigh = spe ? gross_total - wage_net + spe.high_amount : gross_total - wage_net;
+            return (
+              <div className="notice-card three-groups">
+                <div>
+                  <h3>{t.threeGroupsTitle}</h3>
+                  <p>
+                    <strong>{t.paidNowLabel}</strong>: {response.payout_range ? `${money(response.payout_range.low)} – ${money(response.payout_range.high)}` : money(payout_amount)}{' '}
+                    <span className="form-note">({t.paidNowHint})</span>
+                  </p>
+                  <p>
+                    <strong>{t.goneForGoodLabel}</strong>: {goneForGoodLow === goneForGoodHigh ? money(goneForGoodLow) : `${money(goneForGoodLow)} – ${money(goneForGoodHigh)}`}{' '}
+                    <span className="form-note">({t.goneForGoodHint})</span>
+                  </p>
+                  {heldForLaterTotal > 0 && (
+                    <>
+                      <p><strong>{t.heldForLaterLabel}</strong>: {money(heldForLaterTotal)} <span className="form-note">({t.heldForLaterHint})</span></p>
+                      <p className="form-note">{t.heldForLaterNote}</p>
+                      <button type="button" className="secondary" onClick={onNavigateToDictionary}>{t.heldForLaterLink}</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* CA3/CA5 (audit "CK RESTATED, THEN FINISH TIER A" round): visible on every result, in
               every language, not a tooltip - the owner's requirement (spec §5a) that reliability be

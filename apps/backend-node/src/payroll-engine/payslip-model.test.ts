@@ -145,6 +145,8 @@ test('payslip-model: Fixture 4 Olympia reproduces payout 776.09 (within table-ta
     printed_bt_tax: null,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: 108.71,
+    printed_net: null,
+    printed_payout: null,
   };
 
   const result = expectComplete(computePayslipPeriod(olympia, RATES_2026, true));
@@ -196,6 +198,8 @@ test('payslip-model: Fixture 3 PKF reproduces payout 1754.12 (within table-tax t
     printed_bt_tax: 222.42,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: null,
+    printed_net: null,
+    printed_payout: null,
   };
 
   const result = expectComplete(computePayslipPeriod(pkf, { ...RATES_2026, period_multiplier: 12 }, true));
@@ -251,6 +255,8 @@ test('payslip-model: Fixture 1 Randstad reproduces wage_net 702.37 and signed pa
     printed_bt_tax: 141.24,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: null,
+    printed_net: null,
+    printed_payout: null,
   };
 
   const result = expectComplete(computePayslipPeriod(randstad, RATES_2026, true));
@@ -333,6 +339,8 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
     printed_bt_tax: 40.08,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: null,
+    printed_net: null,
+    printed_payout: null,
   };
 
   const result = expectComplete(computePayslipPeriod(otto, RATES_2025, true));
@@ -387,6 +395,8 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
     printed_bt_tax: null,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: null,
+    printed_net: null,
+    printed_payout: null,
     ...overrides,
   };
 }

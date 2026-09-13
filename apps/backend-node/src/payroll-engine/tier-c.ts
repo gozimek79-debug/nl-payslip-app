@@ -263,5 +263,9 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     printed_bt_tax: extraction.printed_bt_tax,
     printed_algemene_heffingskorting: extraction.printed_algemene_heffingskorting,
     printed_arbeidskorting: extraction.printed_arbeidskorting,
+    // CL: these two were extracted but silently dropped here for two rounds - the fields existed on
+    // TierCExtraction, comparePeriodToDocument declared codes for them, but nothing connected the two.
+    printed_net: extraction.reported_total_net,
+    printed_payout: extraction.reported_net_paid,
   };
 }

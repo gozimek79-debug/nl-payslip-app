@@ -28,7 +28,15 @@ export interface Discrepancy {
   tolerance: number | null;
 }
 
-const EXACT_TOLERANCE = 0.01;
+/**
+ * CJ (audit "SEVERAL EMPLOYERS AT ONCE" round): retuned from 0.01. BT tax's COMPUTATION has no
+ * rounding ambiguity (flat percentage, not a table lookup) - but the PRINTED reference figure it's
+ * checked against is still read by OCR, and BW3 (tier-c.test.ts) measured a real false positive from
+ * a plausible single-digit OCR slip on that printed figure under the old 0.01 tolerance. 0.10 gives
+ * room for that class of noise while staying far below the multi-euro residual a genuine rate or
+ * base error produces (see BW2, which correctly still fires at this tolerance).
+ */
+const BT_TAX_TOLERANCE = 0.1;
 /** algemene_heffingskorting/arbeidskorting are annual-formula outputs divided by the period
  * multiplier, same stepwise-rounding source as table_tax - reuse the same period-scaled tolerance
  * rather than inventing a second one (spec §2 - one set of tolerances, not two that could drift). */
@@ -64,14 +72,21 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
   if (outcome.status === 'complete') {
     const { result } = outcome;
     pushIfBeyondTolerance('table_tax_mismatch', result.table_tax_after_korting, period.printed_table_tax, tableTolerance);
-    pushIfBeyondTolerance('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, EXACT_TOLERANCE);
+    pushIfBeyondTolerance('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE);
     pushIfBeyondTolerance('algemene_heffingskorting_mismatch', result.algemene_heffingskorting, period.printed_algemene_heffingskorting, heffingskortingTolerance);
     pushIfBeyondTolerance('arbeidskorting_mismatch', result.arbeidskorting, period.printed_arbeidskorting, heffingskortingTolerance);
+    // CL: net_mismatch/payout_mismatch were declared for two rounds with nothing pushing them - a
+    // net_lines misclassification (a reimbursement read as a deduction) would silently pass "no
+    // discrepancy" with only the four checks above. Reuses tableTolerance (not a fresh number): both
+    // figures are downstream of table_tax_after_korting, so they inherit its own rounding residual
+    // one-for-one and cannot be held to a tighter band than the figure they're built from.
+    pushIfBeyondTolerance('net_mismatch', result.period_net, period.printed_net, tableTolerance);
+    pushIfBeyondTolerance('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance);
   } else {
     // Incomplete: table_tax/bt_tax are still present (as an upper bound, or fully correct if only
     // post-tax was unknown - see IncompletePayslipComputation's own doc comment), net/payout are not.
     pushIfBeyondTolerance('table_tax_mismatch', outcome.table_tax_after_korting, period.printed_table_tax, tableTolerance);
-    pushIfBeyondTolerance('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, EXACT_TOLERANCE);
+    pushIfBeyondTolerance('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE);
   }
 
   // Minimum wage: audit N4/BP1 point 4 - `wml_applicable` must already be resolved from the rules

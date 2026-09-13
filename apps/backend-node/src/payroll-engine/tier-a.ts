@@ -286,6 +286,8 @@ export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
     printed_bt_tax: null,
     printed_algemene_heffingskorting: null,
     printed_arbeidskorting: null,
+    printed_net: null,
+    printed_payout: null,
   };
 }
 

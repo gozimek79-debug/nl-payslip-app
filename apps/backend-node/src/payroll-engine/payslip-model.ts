@@ -179,6 +179,13 @@ export interface PayslipPeriod {
   printed_bt_tax: number | null;
   printed_algemene_heffingskorting: number | null;
   printed_arbeidskorting: number | null;
+  /** CL (audit "SEVERAL EMPLOYERS AT ONCE" round): discrepancy.ts declared net_mismatch/
+   * payout_mismatch codes for two rounds without anything to compare against - these two fields are
+   * that comparison target. printed_net is the pre-payout-adjustment net (matches
+   * PayslipComputationResult.period_net); printed_payout is the final paid-out figure (matches
+   * .payout_amount, the line a worker actually sees land in their account). */
+  printed_net: number | null;
+  printed_payout: number | null;
 }
 
 export interface TaxBracket {

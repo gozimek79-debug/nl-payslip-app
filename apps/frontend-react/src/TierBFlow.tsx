@@ -49,8 +49,17 @@ export function TierBFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ images, language: lang }),
       });
-      const data = await response.json() as { extraction?: ContractExtractionResponse; error_code?: string; error?: string };
-      if (!response.ok) throw new Error(data.error_code ?? data.error ?? t.error);
+      const data = await response.json() as { extraction?: ContractExtractionResponse; error_code?: string };
+      if (!response.ok) {
+        // §3.2: error_code -> translated message, resolved here where `lang` is known - never the
+        // raw backend string (contract.controller.ts now sends only a code, never a sentence).
+        const code = data.error_code;
+        const translated = code === 'vision_unavailable' ? t.errorVisionUnavailable
+          : code === 'invalid_input' ? t.errorInvalidInput
+          : code === 'extraction_failed' ? t.errorExtractionFailed
+          : t.error;
+        throw new Error(translated);
+      }
       const extraction = data.extraction;
       if (!extraction) throw new Error(t.error);
       setPrefill({
@@ -97,6 +106,10 @@ export function TierBFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         <StepProgress current={uploadState === 'uploading' ? 2 : 1} labels={[progressLabels.document, progressLabels.analysis]}/>
         <h2>{t.uploadTitle}</h2>
         <p>{t.uploadLead}</p>
+        {/* §3.1: owner's decision - annex override detection is deferred until a real annex document
+            exists (§2.3/§2.4: not built from a guessed shape). What ships instead is this notice,
+            right where the user decides what to upload - not a tooltip, not a footnote. */}
+        <p className="form-note calc-honest-limit">{t.annexNotice}</p>
         <input ref={inputRef} className="hidden" type="file" accept="application/pdf,image/jpeg,image/png" onChange={event => void uploadFile(event.target.files?.[0])} aria-label={t.choose}/>
         <button
           className={`drop ${uploadState} ${isDragOver ? 'drag-over' : ''}`}

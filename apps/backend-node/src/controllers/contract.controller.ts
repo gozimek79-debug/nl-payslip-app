@@ -18,11 +18,16 @@ const analyzeSchema = z.object({
 });
 
 router.post('/analyze', aiRateLimit, async (req, res) => {
+  // §3.2 (audit "CONSOLIDATED ASSIGNMENT" round): error_code + params, never a prebaked sentence -
+  // the same CONVENTIONS.md pattern already applied to tier-a.controller.ts, scoped here to the
+  // controller Tier B actually calls (TierBFlow.tsx). Module 2's OWN surfaces - ContractAnalysis.tsx
+  // rendering `analysis.flags[].message` directly - are a separate, already-flagged defect (NEW
+  // FINDING, prior round) left for whenever Module 2 itself is built, not retrofitted here.
   if (!isVisionConfigured()) {
-    return res.status(503).json({ error: 'Analiza umowy AI jest chwilowo niedostępna (brak modelu wizyjnego u dostawcy).' });
+    return res.status(503).json({ error_code: 'vision_unavailable' });
   }
   const parsed = analyzeSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe dane obrazu.', details: parsed.error.flatten() });
+  if (!parsed.success) return res.status(400).json({ error_code: 'invalid_input', details: parsed.error.flatten() });
 
   const language = parsed.data.language ?? 'pl';
   try {
@@ -70,7 +75,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     return res.json({ extraction: displayExtraction, analysis, explanation });
   } catch (error) {
     console.error('Groq contract OCR error', error);
-    return res.status(502).json({ error: 'Nie udało się odczytać umowy przez AI. Spróbuj ponownie.' });
+    return res.status(502).json({ error_code: 'extraction_failed' });
   }
 });
 

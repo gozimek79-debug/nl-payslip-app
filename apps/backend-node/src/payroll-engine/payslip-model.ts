@@ -198,6 +198,39 @@ export interface PayslipComputationRates {
   period_multiplier: number;
 }
 
+/**
+ * TOLERANCE PRINCIPLE (audit AN2/AN3), promoted here from payslip-model.test.ts so Tier C's actual
+ * runtime discrepancy check (audit BP1) uses the exact same numbers the golden tests already proved
+ * correct against real fixtures - not a second, hand-copied constant that could quietly drift from
+ * them. Reconstructing Belastingdienst's stepwise period table from a smooth annual formula carries
+ * a stepwise-rounding residual of roughly 0.2-0.4 EUR per WEEK (confirmed directly against Olympia
+ * and Randstad); that residual scales with the number of weeks a period covers.
+ */
+export const TABLE_TAX_TOLERANCE_WEEKLY = 0.5;
+export const TABLE_TAX_TOLERANCE_4_WEEKLY = 1.0;
+export const TABLE_TAX_TOLERANCE_MONTHLY = 1.5;
+
+export function tableTaxToleranceFor(periodType: PayslipPeriod['period_type']): number {
+  if (periodType === 'week') return TABLE_TAX_TOLERANCE_WEEKLY;
+  if (periodType === '4-weekly') return TABLE_TAX_TOLERANCE_4_WEEKLY;
+  return TABLE_TAX_TOLERANCE_MONTHLY;
+}
+
+/**
+ * Single source of truth for periods-per-year, promoted here (audit BP round) after a Tier C
+ * integration test caught the exact bug this exists to prevent: a PayslipPeriod's own `period_type`
+ * and the `period_multiplier` handed to computePayslipPeriod() are two separate values that must
+ * stay in sync, and tier-a.controller.ts already had its own local copy of this mapping
+ * (TIER_A_PERIOD_MULTIPLIERS) before this function existed - a second, independently-written copy
+ * for Tier C would have been a third place this could drift (spec §2's own warning, generalised past
+ * "one engine" to "one lookup table" too).
+ */
+export function periodMultiplierFor(periodType: PayslipPeriod['period_type']): number {
+  if (periodType === 'week') return 52;
+  if (periodType === '4-weekly') return 13;
+  return 12;
+}
+
 export interface HourLinesTotal {
   gross: number;
   hours_worked: number;

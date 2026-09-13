@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computePayslipPeriod, known, type PayslipPeriod, type PayslipComputationRates, type PayslipComputationResult } from './payslip-model.js';
+import {
+  computePayslipPeriod, known,
+  TABLE_TAX_TOLERANCE_WEEKLY, TABLE_TAX_TOLERANCE_4_WEEKLY, TABLE_TAX_TOLERANCE_MONTHLY,
+  type PayslipPeriod, type PayslipComputationRates, type PayslipComputationResult,
+} from './payslip-model.js';
 
 /**
  * Golden tests for the payslip-model rewrite (audit round 8, AK3), in the required fixture order:
@@ -26,10 +30,12 @@ import { computePayslipPeriod, known, type PayslipPeriod, type PayslipComputatio
  * wider bound - this is what caught OTTO's 12.28 EUR gap as a real, unresolved failure (round 8/9)
  * rather than something a "generous enough" tolerance would have silently passed. BT tax is a flat
  * percentage times a base, not a table lookup - checked exact, no tolerance.
+ *
+ * The three constants are now exported from payslip-model.ts itself (audit BP round) rather than
+ * declared here a second time - Tier C's own real discrepancy check (discrepancy.ts) uses the exact
+ * same numbers, so there is one tolerance, not a test copy that could quietly drift from the runtime
+ * one.
  */
-const TABLE_TAX_TOLERANCE_WEEKLY = 0.5;
-const TABLE_TAX_TOLERANCE_4_WEEKLY = 1.0;
-const TABLE_TAX_TOLERANCE_MONTHLY = 1.5;
 
 /** Asserts within tolerance AND always prints the actual residual (audit AN4) - so a residual
  * drifting from, say, 0.2 to 0.45 while still technically under 0.50 is visible in test output

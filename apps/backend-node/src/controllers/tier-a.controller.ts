@@ -3,19 +3,9 @@ import { z } from 'zod';
 import { getCurrentRule } from '../rules-repository.js';
 import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from '../payroll-engine/calculator.js';
 import { computeTierAResult, checkTierASanity, type TierAInput } from '../payroll-engine/tier-a.js';
-import type { PayslipComputationRates } from '../payroll-engine/payslip-model.js';
+import { periodMultiplierFor, type PayslipComputationRates } from '../payroll-engine/payslip-model.js';
 
 const router = express.Router();
-
-/** Tier A per-period multiplier, distinct from calculator.ts's own PERIOD_MULTIPLIERS map because
- * Tier A's period_type uses spec's own labels ('week'/'4-weekly'/'month'), not calculator.ts's Dutch
- * ones ('week'/'4-wekelijks'/'maand') - kept as two separate literal unions rather than forcing one
- * tier's vocabulary onto the other. */
-const TIER_A_PERIOD_MULTIPLIERS: Record<TierAInput['period_type'], number> = {
-  week: 52,
-  '4-weekly': 13,
-  month: 12,
-};
 
 const overtimeLineSchema = z.object({
   description: z.string().min(1).max(200),
@@ -70,7 +60,7 @@ async function fetchRates(periodType: TierAInput['period_type']): Promise<{ rate
     rates: {
       loonheffing_brackets: taxRatesFile.loonheffing_brackets,
       heffingskortingen: taxRatesFile.heffingskortingen,
-      period_multiplier: TIER_A_PERIOD_MULTIPLIERS[periodType],
+      period_multiplier: periodMultiplierFor(periodType),
     },
     source: dbRates ? 'database' : 'static',
   };

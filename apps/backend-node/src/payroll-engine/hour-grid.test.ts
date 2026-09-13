@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { convertHourGridToLines, emptyHourGrid, resolveOvertimeTierThreshold } from './hour-grid.js';
+import { convertHourGridToLines, convertMultiEmployerHourGrid, emptyHourGrid, resolveOvertimeTierThreshold } from './hour-grid.js';
 
 test('resolveOvertimeTierThreshold: user correction outranks both contract and reproduction', () => {
   const t = resolveOvertimeTierThreshold({ contract_stated: 8, payslip_reproduced_evidence: 6, user_entered: 5 });
@@ -97,4 +97,75 @@ test('convertHourGridToLines: a public holiday overrides weekend treatment, not 
       { day: 'sat', category: 'holiday', hours: 5 },
     ],
   });
+});
+
+test('CO2: convertMultiEmployerHourGrid applies each employer\'s own threshold independently - never pooled', () => {
+  // CO2's own example: 5 hours at employer A and 4 at employer B is nine hours worked and no overtime
+  // anywhere - each contract counts its own day. Employer A's grid alone has no overtime hours at
+  // all (5 regular), employer B's alone has none either (4 regular) - pooling would be the only way
+  // to manufacture overtime here, and this function must not do that.
+  const gridA = emptyHourGrid();
+  gridA.mon = { regular_hours: 5, overtime_hours: 0, is_public_holiday: false };
+  const gridB = emptyHourGrid();
+  gridB.mon = { regular_hours: 4, overtime_hours: 0, is_public_holiday: false };
+
+  const thresholdA = resolveOvertimeTierThreshold({ contract_stated: 8, payslip_reproduced_evidence: null, user_entered: null });
+  const thresholdB = resolveOvertimeTierThreshold({ contract_stated: 4, payslip_reproduced_evidence: null, user_entered: null });
+
+  const result = convertMultiEmployerHourGrid({ A: gridA, B: gridB }, { A: thresholdA, B: thresholdB });
+
+  assert.deepEqual(result.per_employer.A, { status: 'complete', lines: [{ day: 'mon', category: 'regular', hours: 5 }] });
+  assert.deepEqual(result.per_employer.B, { status: 'complete', lines: [{ day: 'mon', category: 'regular', hours: 4 }] });
+  // The combined view is display-only hours-by-category - 9 regular hours total, still zero overtime.
+  assert.equal(result.combined_hours_by_category.regular, 9);
+  assert.equal(result.combined_hours_by_category.overtime_tier_1, 0);
+  assert.equal(result.combined_hours_by_category.overtime_tier_2, 0);
+});
+
+test('CO2: each employer uses its OWN threshold, not another employer\'s, even for identical hour totals', () => {
+  const gridA = emptyHourGrid();
+  gridA.tue = { regular_hours: 8, overtime_hours: 6, is_public_holiday: false };
+  const gridB = emptyHourGrid();
+  gridB.tue = { regular_hours: 8, overtime_hours: 6, is_public_holiday: false };
+
+  const thresholdA = resolveOvertimeTierThreshold({ contract_stated: 2, payslip_reproduced_evidence: null, user_entered: null });
+  const thresholdB = resolveOvertimeTierThreshold({ contract_stated: 4, payslip_reproduced_evidence: null, user_entered: null });
+
+  const result = convertMultiEmployerHourGrid({ A: gridA, B: gridB }, { A: thresholdA, B: thresholdB });
+
+  assert.deepEqual(result.per_employer.A, {
+    status: 'complete',
+    lines: [
+      { day: 'tue', category: 'regular', hours: 8 },
+      { day: 'tue', category: 'overtime_tier_1', hours: 2 },
+      { day: 'tue', category: 'overtime_tier_2', hours: 4 },
+    ],
+  });
+  assert.deepEqual(result.per_employer.B, {
+    status: 'complete',
+    lines: [
+      { day: 'tue', category: 'regular', hours: 8 },
+      { day: 'tue', category: 'overtime_tier_1', hours: 4 },
+      { day: 'tue', category: 'overtime_tier_2', hours: 2 },
+    ],
+  });
+});
+
+test('convertMultiEmployerHourGrid: one employer blocked on an unknown threshold does not block or contaminate the other', () => {
+  const gridA = emptyHourGrid();
+  gridA.wed = { regular_hours: 8, overtime_hours: 3, is_public_holiday: false };
+  const gridB = emptyHourGrid();
+  gridB.wed = { regular_hours: 8, overtime_hours: 0, is_public_holiday: false };
+
+  const unknownThreshold = resolveOvertimeTierThreshold({ contract_stated: null, payslip_reproduced_evidence: null, user_entered: null });
+  const knownThreshold = resolveOvertimeTierThreshold({ contract_stated: 4, payslip_reproduced_evidence: null, user_entered: null });
+
+  const result = convertMultiEmployerHourGrid({ A: gridA, B: gridB }, { A: unknownThreshold, B: knownThreshold });
+
+  assert.deepEqual(result.per_employer.A, { status: 'blocked', reason: 'overtime_threshold_unknown', days_affected: ['wed'] });
+  assert.deepEqual(result.per_employer.B, { status: 'complete', lines: [{ day: 'wed', category: 'regular', hours: 8 }] });
+  // Combined summary only reflects employers that actually resolved - A's blocked hours are not
+  // silently counted as zero (spec §1: unknown != 0), they're just absent from this rollup, same as
+  // A's own tab would show the gap rather than a wrong number.
+  assert.equal(result.combined_hours_by_category.regular, 8);
 });

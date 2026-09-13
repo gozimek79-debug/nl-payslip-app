@@ -149,3 +149,57 @@ export function convertHourGridToLines(grid: HourGridInput, threshold: OvertimeT
   }
   return { status: 'complete', lines };
 }
+
+/**
+ * §5c / CD+CR (audit "SEVERAL EMPLOYERS AT ONCE" round) - the grid gains a dimension: day x employer
+ * x category. This is NOT the OTTO case (one employer, two hirers, one payroll) - it is genuinely
+ * separate employers, each with their own contract, their own overtime threshold, their own payroll.
+ * We hold no reference document for this case (CN1) - everything here is reasoning from the rules,
+ * built to be verified against a real document later, not to be trusted as calibrated today.
+ *
+ * CO1 (never pool hours) is enforced structurally: this function calls convertHourGridToLines() once
+ * per employer, on that employer's own grid and own threshold, and never merges the inputs before
+ * conversion. What IS combined afterwards is a display-only hours-by-category rollup (CR2's "combined
+ * summary") - never fed back into any computation. Each employer's own `per_employer[id].lines` is
+ * what feeds that employer's own, separate PayslipPeriod/hour_lines (CO1's "one PayslipPeriod per
+ * employer") - this function does not build PayslipPeriod itself, that remains the caller's job
+ * (tier-c.ts / tier-a.ts), same separation §5b already established for the single-employer case.
+ */
+export type EmployerId = string;
+
+export interface MultiEmployerHourGridResult {
+  per_employer: Record<EmployerId, HourGridConversionResult>;
+  /** Display-only, for CR2's combined summary view below the per-employer tabs - NEVER an input to
+   * any tax computation. Only includes employers whose own conversion succeeded; an employer still
+   * blocked on an unknown threshold is omitted here (its own tab shows the gap, not a wrong total). */
+  combined_hours_by_category: Record<HourGridLineCategory, number>;
+}
+
+const ZERO_CATEGORY_TOTALS: Record<HourGridLineCategory, number> = {
+  regular: 0,
+  overtime_tier_1: 0,
+  overtime_tier_2: 0,
+  saturday: 0,
+  sunday: 0,
+  holiday: 0,
+};
+
+export function convertMultiEmployerHourGrid(
+  grids: Record<EmployerId, HourGridInput>,
+  thresholds: Record<EmployerId, OvertimeTierThreshold>,
+): MultiEmployerHourGridResult {
+  const perEmployer: Record<EmployerId, HourGridConversionResult> = {};
+  const combined: Record<HourGridLineCategory, number> = { ...ZERO_CATEGORY_TOTALS };
+
+  for (const [employerId, grid] of Object.entries(grids)) {
+    const threshold = thresholds[employerId];
+    if (!threshold) continue; // no threshold supplied for this employer - caller error, nothing to convert
+    const result = convertHourGridToLines(grid, threshold);
+    perEmployer[employerId] = result;
+    if (result.status === 'complete') {
+      for (const line of result.lines) combined[line.category] += line.hours;
+    }
+  }
+
+  return { per_employer: perEmployer, combined_hours_by_category: combined };
+}

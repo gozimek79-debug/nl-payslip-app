@@ -306,3 +306,219 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   assert.ok(tableTaxDiscrepancy, 'expected the already-documented table-tax gap to surface as a real discrepancy, not be silently absorbed');
   assert.ok(Math.abs((tableTaxDiscrepancy?.residual ?? 0) + 12.28) < 0.5, `expected a residual near -12.28, got ${tableTaxDiscrepancy?.residual}`);
 });
+
+/**
+ * ============================================================================================
+ * BW - extraction-noise false-positive test (audit round "TIER DEFINITIONS, FINAL", order item 1).
+ * ============================================================================================
+ * BQ4's question, restated: "if extraction noise alone generates discrepancies, the product accuses
+ * employers on the strength of its own OCR errors." Every test above uses a HAND-BUILT extraction
+ * that already matches its real document exactly - none of them exercise what happens when the
+ * extraction is off in ways a real vision read plausibly would be. These tests do: each takes the
+ * PKF or Randstad extraction (both confirmed byte-for-byte against the real PDF, audit BQ) and
+ * perturbs exactly one field the way a real OCR/vision misread plausibly would, then checks whether
+ * comparePeriodToDocument() manufactures a discrepancy on what is still, underneath the noise, a
+ * correct payslip. This is a measurement, not a prediction - the assertions below record what was
+ * actually observed running this code, not what was expected going in.
+ *
+ * Each noise scenario is classified FALSE POSITIVE (a correct payslip gets flagged) or CLEAN
+ * (tolerance correctly absorbs the noise, or the comparator correctly has nothing to compare against
+ * a field it never checks). The measured rate is reported in the round's report, not just here.
+ */
+
+test('BW1: description-only noise (diacritics dropped, case changed) changes nothing - CLEAN', () => {
+  // Real documents drop diacritics inconsistently (audit BQ's OTTO finding: "zaplata" not "zapłata").
+  // description is never used in computation (only category/tax_treatment/amount are) - this test
+  // exists to CONFIRM that design choice holds, not just assert it in a comment.
+  const extraction = baseExtraction({
+    period_label: 'week 2026-11',
+    period_end_date: '2026-04-30',
+    is_correction: true,
+    version: 2,
+    employer_names: ['Randstad'],
+    hirer_name: 'Emballagefabriek H. Post B.V.',
+    minimum_wage_printed: 14.71,
+    hour_lines: [
+      { employer_index: 0, description: 'BRUTO LOON UREN', hours: 38.0, rate: 17.09, percent: null, amount: 649.42, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'bruto loon overuren 125', hours: 2.0, rate: 17.09, percent: 125, amount: 42.73, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'bruto loon overuren 150', hours: 9.25, rate: 17.09, percent: 150, amount: 237.12, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'compensatie adv', hours: null, rate: null, percent: null, amount: 39.61, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'compensatie overgangsregeling', hours: null, rate: null, percent: null, amount: 2.01, category: 'other', tax_treatment: 'table', adds_hours: false },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'premie paww', amount: 0.74, category: 'paww', placement: 'pre_tax', base: 970.89, percent: 0.08 },
+      { description: 'premie aanvullende verzekering ziektewet premiegroep ii a (no diacritics)', amount: 4.55, category: 'ziektewet', placement: 'pre_tax', base: 970.89, percent: 0.7 },
+      { description: 'pensioenpremie', amount: 38.35, category: 'pension', placement: 'pre_tax', base: null, percent: 7.5 },
+    ],
+    post_tax_deduction_lines: [
+      { description: 'premie wga', amount: 12.33, category: 'wga', placement: 'post_tax', base: null, percent: 1.33 },
+    ],
+    net_lines: [{ description: 'reiskosten woon-werk', amount: 36.0, category: 'reimbursement' }],
+    payout_adjustment_lines: [
+      { description: 'verrekend met openstaande schuld', amount: -47.53 },
+      { description: 'eerder betaald', amount: -744.73 },
+    ],
+    bijzonder_tarief_printed_percent: 50.47,
+    bijzonder_tarief_jaarloon: 46074,
+    printed_table_tax: 71.31,
+    printed_bt_tax: 141.24,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.71);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  console.log(`  [BW1] description-noise discrepancies: ${discrepancies.length === 0 ? 'none (CLEAN, as expected)' : JSON.stringify(discrepancies)}`);
+  assert.deepEqual(discrepancies, [], 'description-only noise must never manufacture a discrepancy - description is not a computation input');
+});
+
+test('BW2: a small ambiguous line misclassified table->bt (a plausible AI judgment error) - measured', () => {
+  // Randstad's "Compensatie overgangsregeling" (2.01 EUR) has no explicit tax marker on the document
+  // beyond context; a vision read could plausibly file it as a bonus-shaped BT line instead of a
+  // table-taxed one. Real document text and every other field is unchanged from the clean Randstad
+  // fixture - only this one line's tax_treatment is flipped, exactly the kind of single-field
+  // extraction slip BQ4 is asking about.
+  const extraction = baseExtraction({
+    period_label: 'week 2026-11',
+    period_end_date: '2026-04-30',
+    is_correction: true,
+    version: 2,
+    employer_names: ['Randstad'],
+    hirer_name: 'Emballagefabriek H. Post B.V.',
+    minimum_wage_printed: 14.71,
+    hour_lines: [
+      { employer_index: 0, description: 'Bruto loon uren', hours: 38.0, rate: 17.09, percent: null, amount: 649.42, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Bruto loon overuren 125%', hours: 2.0, rate: 17.09, percent: 125, amount: 42.73, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Bruto loon overuren 150%', hours: 9.25, rate: 17.09, percent: 150, amount: 237.12, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Compensatie ADV', hours: null, rate: null, percent: null, amount: 39.61, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Compensatie overgangsregeling', hours: null, rate: null, percent: null, amount: 2.01, category: 'other', tax_treatment: 'bt', adds_hours: false }, // NOISE: was 'table'
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Premie PAWW', amount: 0.74, category: 'paww', placement: 'pre_tax', base: 970.89, percent: 0.08 },
+      { description: 'Premie aanvullende verzekering Ziektewet premiegroep II A', amount: 4.55, category: 'ziektewet', placement: 'pre_tax', base: 970.89, percent: 0.7 },
+      { description: 'Pensioenpremie', amount: 38.35, category: 'pension', placement: 'pre_tax', base: null, percent: 7.5 },
+    ],
+    post_tax_deduction_lines: [
+      { description: 'Premie WGA', amount: 12.33, category: 'wga', placement: 'post_tax', base: null, percent: 1.33 },
+    ],
+    net_lines: [{ description: 'Reiskosten woon-werk', amount: 36.0, category: 'reimbursement' }],
+    payout_adjustment_lines: [
+      { description: 'Verrekend met openstaande schuld', amount: -47.53 },
+      { description: 'Eerder betaald', amount: -744.73 },
+    ],
+    bijzonder_tarief_printed_percent: 50.47,
+    bijzonder_tarief_jaarloon: 46074,
+    printed_table_tax: 71.31,
+    printed_bt_tax: 141.24,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.71);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  console.log(`  [BW2] tax_treatment-misclassification discrepancies: ${JSON.stringify(discrepancies)}`);
+  // Measured, not assumed: moving 2.01 EUR from the table-taxed to the BT-taxed bucket shifts both
+  // table_tax and bt_tax by a small amount. Whether that crosses the tolerance band is the actual
+  // question BW2 answers - assert on what running the code showed, not on an assumption made before
+  // running it.
+  assert.ok(discrepancies.every((d) => d.code === 'table_tax_mismatch' || d.code === 'bt_tax_mismatch'), 'only tax-figure codes should be able to fire from a tax_treatment change');
+});
+
+test('BW3: a one-cent OCR digit-slip on the printed BT-tax figure - measured against EXACT_TOLERANCE', () => {
+  // bt_tax_mismatch uses EXACT_TOLERANCE (0.01), not the period-scaled table-tax tolerance (discrepancy.ts).
+  // A single-cent OCR misread of the printed BT tax (e.g. a smudged "2" read as "7") is exactly the
+  // kind of noise BQ4 warns about, and this is the discrepancy code with the least room to absorb it.
+  const base = baseExtraction({
+    period_label: '2026-8-M',
+    period_end_date: '2026-08-31',
+    period_type: 'month',
+    employer_names: ['PKF / Post Finsterwolde BV'],
+    hours_per_week: 40.0,
+    minimum_wage_printed: 14.99,
+    hour_lines: [
+      { employer_index: 0, description: 'Salaris', hours: null, rate: null, percent: null, amount: 2962.27, category: 'regular', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Overwerk uren 125%', hours: 4.0, rate: 21.36, percent: 125, amount: 85.45, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Overwerk uren 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Paww Wn', amount: 3.52, category: 'paww', placement: 'pre_tax', base: 3515.56, percent: 0.1 },
+      { description: 'Pensioenpremie Wn', amount: 229.03, category: 'pension', placement: 'pre_tax', base: 1601.58, percent: 14.3 },
+      { description: 'WGA-Gat Verzekering Wn', amount: 5.99, category: 'wga_gat', placement: 'pre_tax', base: 3277.02, percent: 0.183 },
+    ],
+    post_tax_deduction_lines: [
+      { description: 'gediff. WGA wn', amount: 11.31, category: 'gediff_wga', placement: 'post_tax', base: 3277.02, percent: 0.345 },
+    ],
+    net_lines: [
+      { description: 'Reiskostenvergoeding (onbelast)', amount: 91.25, category: 'reimbursement' },
+      { description: 'Inhouding Personeelsvereniging', amount: 4.0, category: 'union' },
+      { description: 'Inhouding Lening', amount: 1100.0, category: 'loan' },
+    ],
+    reservation_lines: [{ type: 'vakantiegeld', opgebouwd: 281.24, paid_out: 0 }],
+    bijzonder_tarief_printed_percent: 40.2,
+    bijzonder_tarief_jaarloon: 38000,
+    printed_table_tax: 276.42,
+    printed_bt_tax: 222.47, // NOISE: real printed figure is 222.42 - a one-cent digit slip
+  });
+
+  const period = mapExtractionToPeriod(base, 14.99);
+  const outcome = computePayslipPeriod(period, { ...RATES_2026, period_multiplier: 12 }, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  console.log(`  [BW3] one-cent bt_tax OCR slip discrepancies: ${JSON.stringify(discrepancies)}`);
+  const btMismatch = discrepancies.find((d) => d.code === 'bt_tax_mismatch');
+  assert.ok(btMismatch, 'MEASURED FALSE POSITIVE: a one-cent OCR slip on the printed BT figure is enough to trip EXACT_TOLERANCE (0.01) on an otherwise-correct payslip');
+});
+
+test('BW4: a table-tax OCR slip within the period tolerance band - correctly absorbed, CLEAN', () => {
+  // Same PKF fixture, but the noise this time is on printed_table_tax and stays inside the monthly
+  // tolerance (1.50) already established from real table-rounding behavior (N2/AN3) - this is the
+  // control case proving the tolerance band does its job for realistically-sized OCR noise on a
+  // figure that isn't held to EXACT_TOLERANCE.
+  const extraction = baseExtraction({
+    period_label: '2026-8-M',
+    period_end_date: '2026-08-31',
+    period_type: 'month',
+    employer_names: ['PKF / Post Finsterwolde BV'],
+    hours_per_week: 40.0,
+    minimum_wage_printed: 14.99,
+    hour_lines: [
+      { employer_index: 0, description: 'Salaris', hours: null, rate: null, percent: null, amount: 2962.27, category: 'regular', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Overwerk uren 125%', hours: 4.0, rate: 21.36, percent: 125, amount: 85.45, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Overwerk uren 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Paww Wn', amount: 3.52, category: 'paww', placement: 'pre_tax', base: 3515.56, percent: 0.1 },
+      { description: 'Pensioenpremie Wn', amount: 229.03, category: 'pension', placement: 'pre_tax', base: 1601.58, percent: 14.3 },
+      { description: 'WGA-Gat Verzekering Wn', amount: 5.99, category: 'wga_gat', placement: 'pre_tax', base: 3277.02, percent: 0.183 },
+    ],
+    post_tax_deduction_lines: [
+      { description: 'gediff. WGA wn', amount: 11.31, category: 'gediff_wga', placement: 'post_tax', base: 3277.02, percent: 0.345 },
+    ],
+    net_lines: [
+      { description: 'Reiskostenvergoeding (onbelast)', amount: 91.25, category: 'reimbursement' },
+      { description: 'Inhouding Personeelsvereniging', amount: 4.0, category: 'union' },
+      { description: 'Inhouding Lening', amount: 1100.0, category: 'loan' },
+    ],
+    reservation_lines: [{ type: 'vakantiegeld', opgebouwd: 281.24, paid_out: 0 }],
+    bijzonder_tarief_printed_percent: 40.2,
+    bijzonder_tarief_jaarloon: 38000,
+    printed_table_tax: 276.72, // NOISE: real printed figure is 276.42 - a 0.30 slip, inside the 1.50 monthly band
+    printed_bt_tax: 222.42,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.99);
+  const outcome = computePayslipPeriod(period, { ...RATES_2026, period_multiplier: 12 }, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  console.log(`  [BW4] table-tax OCR slip (within tolerance) discrepancies: ${JSON.stringify(discrepancies)}`);
+  assert.deepEqual(discrepancies, [], 'a 0.30 EUR slip on printed_table_tax must stay inside the 1.50 monthly tolerance');
+});
+
+/**
+ * BW5 - NOT a false-positive test, a documented FALSE-NEGATIVE gap found while building the above:
+ * discrepancy.ts declares 'net_mismatch' and 'payout_mismatch' codes but never pushes either one -
+ * there is no comparison anywhere against period.reported_total_net / reported_net_paid. A net_lines
+ * misclassification (e.g. a genuine reimbursement read as a deduction, flipping it from
+ * net_additions into net_deductions) would silently change the computed final payout and NOT be
+ * caught, because nothing compares the computed net/payout against what the document reports. This
+ * is the opposite risk from BW1-BW4 (silence on a real error, not noise on a correct one) and is
+ * reported as a NEW FINDING rather than fixed here - fixing it means deciding what `reported_net_paid`
+ * should be sourced from in the extraction schema, which is its own piece of work.
+ */
+

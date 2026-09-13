@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computePayslipPeriod, type PayslipComputationRates } from './payslip-model.js';
-import { buildTierAPeriod, checkTierASanity, computeTierAResult, type TierAInput } from './tier-a.js';
+import { buildTierAPeriod, checkTierASanity, computeTierAResult, resolveTierAHourGrid, type TierAInput } from './tier-a.js';
+import { emptyHourGrid, type HourGridInput } from './hour-grid.js';
 
 /**
  * Acceptance tests for Tier A (SPEC-loonto-architecture.md §10, "Tier A ships when:"), checked
@@ -13,6 +14,11 @@ import { buildTierAPeriod, checkTierASanity, computeTierAResult, type TierAInput
  * The full chain being visible with per-line provenance is a response-shape guarantee, checked by
  * confirming every pre_tax_deductions entry carries a Field<number> with a real provenance value
  * (never a bare number), which the type system already enforces at compile time.
+ *
+ * CX2a (audit "CK RESTATED, THEN FINISH TIER A" round): Tier A's flat "hours_worked" input is gone,
+ * replaced by the day grid (hour-grid.ts, built for CD/CR last round). These tests now build a
+ * one-week grid and resolve it via resolveTierAHourGrid() before building the period - the same two-
+ * step shape the API route (tier-a.controller.ts) uses.
  */
 
 const TABLE_TAX_TOLERANCE_WEEKLY = 0.5;
@@ -39,19 +45,33 @@ const RATES_2026: PayslipComputationRates = {
   period_multiplier: 52,
 };
 
+/** A single-week grid with `hours` regular hours on Monday and nothing else - test convenience, not
+ * a claim about which day the hours actually fell on (irrelevant to any assertion in this file). */
+function oneWeekGrid(hours: number): HourGridInput {
+  const grid = emptyHourGrid();
+  grid.mon = { regular_hours: hours, overtime_hours: 0, is_public_holiday: false };
+  return grid;
+}
+
 /** Olympia 2026-W36's own real inputs (FIXTURES-paski-referencyjne.md), entered exactly as a Tier A
- * user would type them - hours, rate, overtime lines by hours/percent, and (for the acceptance
+ * user would type them - hours, rate, surcharge lines by hours/percent, and (for the acceptance
  * test only) the real deduction figures printed on that same document, so the test proves the
  * chain end to end rather than exercising the "enter" path with made-up numbers. */
 function olympiaTierAInput(overrides: Partial<TierAInput> = {}): TierAInput {
   return {
     period_type: 'week',
-    hours_worked: 45,
     hourly_rate: 15.55,
-    overtime_lines: [
-      { description: 'Loon onregelm. uren 100%', hours: 7.5, percent: 100, adds_hours: false },
-      { description: 'Loon onregelm. uren 50%', hours: 7.5, percent: 50, adds_hours: false },
-      { description: 'ADV toeslag', hours: 45, percent: 1.54, adds_hours: false },
+    week_grids: [oneWeekGrid(45)],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [
+      { description: 'Loon onregelm. uren 100%', hours: 7.5, percent: 100 },
+      { description: 'Loon onregelm. uren 50%', hours: 7.5, percent: 50 },
+      { description: 'ADV toeslag', hours: 45, percent: 1.54 },
     ],
     apply_loonheffingskorting: true,
     travel_allowance: 90.0,
@@ -65,7 +85,10 @@ test('Tier A acceptance: Olympia inputs + its actual deductions reproduce net 68
   const input = olympiaTierAInput({
     deductions: { mode: 'enter', entered: { pension: 34.79, paww: 0.89, sector_premium: 4.9, post_tax_other: 6.46 } },
   });
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   assert.equal(period.pre_tax_deductions.length, 3);
   for (const d of period.pre_tax_deductions) {
     assert.equal(d.amount.provenance, 'user_entered');
@@ -90,7 +113,10 @@ test('Tier A acceptance: Olympia inputs + its actual deductions reproduce net 68
 
 test('Tier A acceptance: the same inputs with deductions skipped produce no net figure and a stated gap', () => {
   const input = olympiaTierAInput({ deductions: { mode: 'skip' } });
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   for (const d of period.pre_tax_deductions) {
     assert.equal(d.amount.provenance, 'unknown');
     assert.equal(d.amount.value, null);
@@ -116,7 +142,10 @@ test('Tier A acceptance: "estimate" marks pension/PAWW as estimated, and does NO
   // per-line Field<number> estimates; the sector premium is deliberately NOT a pre_tax_deductions
   // row at all any more (see estimateSectorPremiumRange()) - it is a range, applied to net directly.
   const input = olympiaTierAInput({ deductions: { mode: 'estimate' } });
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   const pension = period.pre_tax_deductions.find((d) => d.category === 'pension')!;
   const paww = period.pre_tax_deductions.find((d) => d.category === 'paww')!;
   assert.equal(pension.amount.provenance, 'estimated');
@@ -130,6 +159,8 @@ test('Tier A acceptance: "estimate" marks pension/PAWW as estimated, and does NO
 test('AZ1/AZ5: "estimate" mode produces a net RANGE from the sector-premium range, leaving gross/taxable_base/tax as single, unaffected figures', () => {
   const input = olympiaTierAInput({ deductions: { mode: 'estimate' } });
   const result = computeTierAResult(input, RATES_2026);
+  assert.equal(result.status, 'computed');
+  if (result.status !== 'computed') return;
   assert.equal(result.outcome.status, 'complete');
   if (result.outcome.status !== 'complete') return;
 
@@ -162,7 +193,10 @@ test('AZ1/AZ5: "estimate" mode produces a net RANGE from the sector-premium rang
 
 test('Tier A: vakantiegeld accruing stays outside gross and net, shown only as a reservation', () => {
   const input = olympiaTierAInput({ vakantiegeld: { mode: 'accruing', percent: 8 }, deductions: { mode: 'skip' } });
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   assert.equal(period.reservations.length, 1);
   assert.equal(period.reservations[0]!.type, 'vakantiegeld');
   assert.ok(period.reservations[0]!.opgebouwd_this_period > 0);
@@ -172,7 +206,10 @@ test('Tier A: vakantiegeld accruing stays outside gross and net, shown only as a
 
 test('Tier A: vakantiegeld paid now enters gross at BT, and the unknown BT rate correctly blocks the computation', () => {
   const input = olympiaTierAInput({ vakantiegeld: { mode: 'paid_now', percent: 8 }, deductions: { mode: 'skip' } });
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   const vakantiegeldLine = period.hour_lines.find((l) => l.description.toLowerCase().includes('vakantiegeld'));
   assert.ok(vakantiegeldLine, 'vakantiegeld should appear as an hour_line when paid now');
   assert.equal(vakantiegeldLine!.tax_treatment, 'bt');
@@ -194,15 +231,24 @@ test('Tier A: a real travel allowance does NOT falsely trigger the sanity check'
   // no warning at all now that the check is based on wage_net (before that allowance is added).
   const input: TierAInput = {
     period_type: 'week',
-    hours_worked: 2,
     hourly_rate: 10,
-    overtime_lines: [],
+    week_grids: [oneWeekGrid(2)],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
     apply_loonheffingskorting: true,
     travel_allowance: 200,
     vakantiegeld: { mode: 'none' },
     deductions: { mode: 'enter', entered: {} },
   };
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   const outcome = computePayslipPeriod(period, RATES_2026, true);
   const warnings = checkTierASanity(outcome, input);
   assert.deepEqual(warnings, [], `expected no sanity warnings for a legitimate travel allowance, got: ${JSON.stringify(warnings)}`);
@@ -219,15 +265,24 @@ test('Tier A: the net-exceeds-gross sanity check fires on a genuine wage-math im
   // 100 EUR gross.
   const input: TierAInput = {
     period_type: 'week',
-    hours_worked: 10,
     hourly_rate: 10,
-    overtime_lines: [],
+    week_grids: [oneWeekGrid(10)],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
     apply_loonheffingskorting: true,
     travel_allowance: 0,
     vakantiegeld: { mode: 'none' },
     deductions: { mode: 'enter', entered: { pension: -50 } },
   };
-  const period = buildTierAPeriod(input);
+  const grid = resolveTierAHourGrid(input);
+  assert.equal(grid.status, 'ready');
+  if (grid.status !== 'ready') return;
+  const period = buildTierAPeriod(input, grid);
   const outcome = computePayslipPeriod(period, RATES_2026, true);
   assert.equal(outcome.status, 'complete');
   if (outcome.status === 'complete') {
@@ -235,4 +290,133 @@ test('Tier A: the net-exceeds-gross sanity check fires on a genuine wage-math im
   }
   const warnings = checkTierASanity(outcome, input);
   assert.ok(warnings.some((w) => w.code === 'net_exceeds_gross' || w.code === 'effective_rate_exceeds_gross_rate'), `expected a sanity warning, got: ${JSON.stringify(warnings)}`);
+});
+
+/**
+ * ============================================================================================
+ * CX2a - new tests for the grid itself, not just re-plumbed old ones. These directly exercise the
+ * "no cells exist for Saturday/Sunday/a public holiday" gap CX2a names, and the "never guess a
+ * threshold or a percent" requirement carried over from CD/§5b/§1.
+ * ============================================================================================
+ */
+
+test('CX2a: Saturday hours at a stated saturday_percent enter gross as their own line, not the table rate', () => {
+  const grid = emptyHourGrid();
+  grid.sat = { regular_hours: 8, overtime_hours: 0, is_public_holiday: false };
+  const input: TierAInput = {
+    period_type: 'week',
+    hourly_rate: 15,
+    week_grids: [grid],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: 50,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: {} },
+  };
+  const result = resolveTierAHourGrid(input);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.hour_lines.length, 1);
+  assert.equal(result.hour_lines[0]!.amount, 180); // 8h x 15 EUR x 1.5
+  assert.equal(result.hours_worked, 8);
+});
+
+test('CX2a: Saturday hours with no stated saturday_percent block with a stated gap - never assumed as table rate', () => {
+  const grid = emptyHourGrid();
+  grid.sat = { regular_hours: 8, overtime_hours: 0, is_public_holiday: false };
+  const input: TierAInput = {
+    period_type: 'week',
+    hourly_rate: 15,
+    week_grids: [grid],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: {} },
+  };
+  const result = resolveTierAHourGrid(input);
+  assert.deepEqual(result, { status: 'blocked', reason: 'category_percent_missing', categories: ['saturday'] });
+});
+
+test('CX2a: overtime hours with no stated threshold block with a stated gap - never a default split', () => {
+  const grid = emptyHourGrid();
+  grid.wed = { regular_hours: 8, overtime_hours: 4, is_public_holiday: false };
+  const input: TierAInput = {
+    period_type: 'week',
+    hourly_rate: 15,
+    week_grids: [grid],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: 125,
+    overtime_tier_2_percent: 150,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: {} },
+  };
+  const result = resolveTierAHourGrid(input);
+  assert.deepEqual(result, { status: 'blocked', reason: 'overtime_threshold_unknown', days_affected: ['wed'] });
+});
+
+test('CX2a: a monthly period sums hours across several week grids (CM1), not just the first one', () => {
+  const week1 = emptyHourGrid();
+  week1.mon = { regular_hours: 40, overtime_hours: 0, is_public_holiday: false };
+  const week2 = emptyHourGrid();
+  week2.mon = { regular_hours: 38, overtime_hours: 0, is_public_holiday: false };
+  const input: TierAInput = {
+    period_type: 'month',
+    hourly_rate: 15,
+    week_grids: [week1, week2],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: {} },
+  };
+  const result = resolveTierAHourGrid(input);
+  assert.equal(result.status, 'ready');
+  if (result.status !== 'ready') return;
+  assert.equal(result.hours_worked, 78);
+});
+
+test('CM2: an entirely empty grid (nothing filled in yet) resolves cleanly to zero, not a block', () => {
+  const input: TierAInput = {
+    period_type: 'week',
+    hourly_rate: 15,
+    week_grids: [emptyHourGrid()],
+    overtime_tier_threshold_hours: null,
+    overtime_tier_1_percent: null,
+    overtime_tier_2_percent: null,
+    saturday_percent: null,
+    sunday_percent: null,
+    holiday_percent: null,
+    surcharge_lines: [],
+    apply_loonheffingskorting: true,
+    travel_allowance: 0,
+    vakantiegeld: { mode: 'none' },
+    deductions: { mode: 'enter', entered: {} },
+  };
+  const result = resolveTierAHourGrid(input);
+  assert.deepEqual(result, { status: 'ready', hour_lines: [], hours_worked: 0 });
 });

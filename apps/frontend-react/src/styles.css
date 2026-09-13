@@ -332,6 +332,17 @@ button.danger:disabled{opacity:.6;cursor:not-allowed}
 .calc-toggle{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--text-secondary);min-height:44px}
 .calc-toggle input{width:18px;height:18px;accent-color:var(--loonto-primary)}
 .calc-side-notice{position:sticky;top:100px}
+.calc-week-tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.week-tab{padding:8px 14px;border-radius:10px;border:1px solid rgba(20,37,31,.16);background:rgba(255,255,255,.7);color:var(--text-secondary);font-weight:700;font-size:13px;cursor:pointer}
+.week-tab.active{background:var(--loonto-primary);border-color:var(--loonto-primary);color:#fff}
+.hour-grid-table{overflow-x:auto;margin-bottom:8px}
+.hour-grid-table table{border-collapse:collapse;width:100%;min-width:480px}
+.hour-grid-table th,.hour-grid-table td{padding:6px 8px;text-align:center;font-size:13px}
+.hour-grid-table thead th{color:var(--text-secondary);font-weight:700}
+.hour-grid-table tbody th{text-align:left;color:var(--text-secondary);font-weight:700;white-space:nowrap}
+.grid-hour-input{width:52px;padding:8px 4px;border:1px solid rgba(20,37,31,.16);border-radius:8px;background:rgba(255,255,255,.7);color:var(--text-primary);text-align:center;outline:0}
+.grid-hour-input:focus{border-color:var(--loonto-primary);box-shadow:var(--focus-ring)}
+.calc-reliability-note{font-style:italic}
 .calc-side-notice p{margin:8px 0}
 .calc-result{margin-top:34px}
 .calc-wml-warning{display:flex;align-items:center;gap:8px;margin-bottom:18px}

@@ -10,6 +10,13 @@ import {
   type ReservationBalance,
   type PayslipComputationRates,
 } from './payslip-model.js';
+import {
+  convertHourGridToLines,
+  resolveOvertimeTierThreshold,
+  type HourGridInput,
+  type HourGridLineCategory,
+  type OvertimeTierThreshold,
+} from './hour-grid.js';
 
 /**
  * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3). Populates the SAME PayslipPeriod
@@ -18,14 +25,19 @@ import {
  * contains no computation logic of its own beyond that construction.
  */
 
-export interface TierAOvertimeLine {
+/**
+ * CX2a (audit "CK RESTATED, THEN FINISH TIER A" round): a percentage surcharge on hours already
+ * counted elsewhere (Olympia's real "Loon onregelm. uren 100%/50%", "ADV toeslag") - always
+ * adds_hours:false. Deliberately NOT part of the day grid below: these are period-level CAO
+ * allowances a worker states directly by hours+percent, not tied to which day of the week they fell
+ * on - forcing them into a day cell would ask the user a question their payslip doesn't answer
+ * either. This is the exact mechanism Tier A already had (renamed from TierAOvertimeLine) - the day
+ * grid ADDS the missing Saturday/Sunday/holiday/tiered-overtime dimension, it does not replace this.
+ */
+export interface TierASurchargeLine {
   description: string;
   hours: number;
   percent: number;
-  /** true = genuinely additional hours (real overtime); false = a surcharge multiplier on hours
-   * already counted in the base line (e.g. Olympia's "onregelm. uren" surcharges) - mirrors
-   * HourLine.adds_hours exactly, since Tier A builds the same HourLine shape every tier uses. */
-  adds_hours: boolean;
 }
 
 export type VakantiegeldTreatment =
@@ -56,9 +68,21 @@ export interface TierADeductionInputs {
 
 export interface TierAInput {
   period_type: 'week' | '4-weekly' | 'month';
-  hours_worked: number;
   hourly_rate: number;
-  overtime_lines: TierAOvertimeLine[];
+  /** CD/CX2a: one HourGridInput per week - length 1 for 'week', typically 4 for '4-weekly'/'month'
+   * (CM1: a week-selector reuses one grid component across several weeks in the UI; the underlying
+   * data is still N independent week-grids, summed here). CM2: starts empty (all-zero) in the UI -
+   * this module makes no assumption about a "typical" week. */
+  week_grids: HourGridInput[];
+  /** User-entered only (Tier A has no contract/payslip to derive it from, spec §4/§5b) - null means
+   * genuinely unknown, never defaulted (spec §5b: "do not ship a default"). */
+  overtime_tier_threshold_hours: number | null;
+  overtime_tier_1_percent: number | null;
+  overtime_tier_2_percent: number | null;
+  saturday_percent: number | null;
+  sunday_percent: number | null;
+  holiday_percent: number | null;
+  surcharge_lines: TierASurchargeLine[];
   apply_loonheffingskorting: boolean;
   travel_allowance: number;
   vakantiegeld: VakantiegeldTreatment;
@@ -165,7 +189,7 @@ const TIER_A_DUTCH_TERMS = {
   postTaxOther: 'Overige inhouding na belasting',
 };
 
-function buildPreTaxDeductions(input: TierAInput, grossSoFar: number): PreTaxDeduction[] {
+function buildPreTaxDeductions(input: TierAInput, grossSoFar: number, hoursWorked: number): PreTaxDeduction[] {
   const { mode, entered } = input.deductions;
 
   if (mode === 'skip') {
@@ -177,7 +201,7 @@ function buildPreTaxDeductions(input: TierAInput, grossSoFar: number): PreTaxDed
   }
 
   if (mode === 'estimate') {
-    const pensionAmount = round2(Math.max(0, grossSoFar - ESTIMATED_STIPP_DEFAULTS.franchise_per_hour * input.hours_worked) * (ESTIMATED_STIPP_DEFAULTS.employee_rate_percent / 100));
+    const pensionAmount = round2(Math.max(0, grossSoFar - ESTIMATED_STIPP_DEFAULTS.franchise_per_hour * hoursWorked) * (ESTIMATED_STIPP_DEFAULTS.employee_rate_percent / 100));
     const pawwAmount = round2(grossSoFar * (ESTIMATED_PAWW_DEFAULT.percent / 100));
     // Sector premium is deliberately NOT a row here (AZ1/AZ5, owner's decision): it is a RANGE, not
     // a single Field<number>, computed separately by estimateSectorPremiumRange() and applied
@@ -206,20 +230,123 @@ function buildPostTaxSocial(input: TierAInput): PostTaxSocialDeduction[] {
   return [{ category: 'other', description: TIER_A_DUTCH_TERMS.postTaxOther, amount: known(postTaxOther, 'user_entered'), percent: null }];
 }
 
+/**
+ * CD/CX2a: which day an hour falls on (Saturday/Sunday/public holiday, and tiered overtime within a
+ * working day) - resolved via the SAME hour-grid.ts module built and tested for Tier C (audit
+ * "SEVERAL EMPLOYERS AT ONCE" round), not a second, parallel implementation. Tier A is
+ * single-employer only (CR3: the common case does not pay for the rare one) - this calls
+ * convertHourGridToLines() once per week in `week_grids` and sums the per-category totals across
+ * weeks, exactly mirroring how convertMultiEmployerHourGrid sums across employers, just across weeks
+ * of one worker's one job instead.
+ */
+export type TierAGridResult =
+  | { status: 'blocked'; reason: 'overtime_threshold_unknown'; days_affected: string[] }
+  | { status: 'blocked'; reason: 'category_percent_missing'; categories: HourGridLineCategory[] }
+  | { status: 'ready'; hour_lines: HourLine[]; hours_worked: number };
+
+const CATEGORY_DUTCH_TERM: Record<HourGridLineCategory, string> = {
+  regular: 'Uren gewerkt',
+  overtime_tier_1: 'Overwerk (1e schijf)',
+  overtime_tier_2: 'Overwerk (2e schijf)',
+  saturday: 'Zaterdaguren',
+  sunday: 'Zondaguren',
+  holiday: 'Feestdaguren',
+};
+
+function categoryPercent(category: HourGridLineCategory, input: TierAInput): number | null {
+  switch (category) {
+    case 'regular':
+      return 0;
+    case 'overtime_tier_1':
+      return input.overtime_tier_1_percent;
+    case 'overtime_tier_2':
+      return input.overtime_tier_2_percent;
+    case 'saturday':
+      return input.saturday_percent;
+    case 'sunday':
+      return input.sunday_percent;
+    case 'holiday':
+      return input.holiday_percent;
+  }
+}
+
+export function resolveTierAHourGrid(input: TierAInput): TierAGridResult {
+  const threshold: OvertimeTierThreshold = resolveOvertimeTierThreshold({
+    contract_stated: null,
+    payslip_reproduced_evidence: null,
+    user_entered: input.overtime_tier_threshold_hours,
+  });
+
+  const categoryTotals: Record<HourGridLineCategory, number> = {
+    regular: 0,
+    overtime_tier_1: 0,
+    overtime_tier_2: 0,
+    saturday: 0,
+    sunday: 0,
+    holiday: 0,
+  };
+  const blockedDays = new Set<string>();
+
+  for (const grid of input.week_grids) {
+    const converted = convertHourGridToLines(grid, threshold);
+    if (converted.status === 'blocked') {
+      for (const day of converted.days_affected) blockedDays.add(day);
+      continue;
+    }
+    for (const line of converted.lines) categoryTotals[line.category] += line.hours;
+  }
+
+  if (blockedDays.size > 0) {
+    return { status: 'blocked', reason: 'overtime_threshold_unknown', days_affected: [...blockedDays] };
+  }
+
+  const missingPercentCategories: HourGridLineCategory[] = [];
+  const hourLines: HourLine[] = [];
+  let hoursWorked = 0;
+
+  for (const category of Object.keys(categoryTotals) as HourGridLineCategory[]) {
+    const hours = categoryTotals[category];
+    if (hours <= 0) continue;
+    const percent = categoryPercent(category, input);
+    if (percent === null) {
+      missingPercentCategories.push(category);
+      continue;
+    }
+    hourLines.push({
+      employer_index: 0,
+      description: CATEGORY_DUTCH_TERM[category],
+      hours,
+      rate: input.hourly_rate,
+      percent: percent === 0 ? null : percent,
+      amount: round2(hours * input.hourly_rate * (1 + percent / 100)),
+      category: category === 'regular' ? 'regular' : category === 'overtime_tier_1' || category === 'overtime_tier_2' ? 'overtime' : 'irregular_surcharge',
+      // Same reasoning as the pre-existing surcharge lines below: Tier A has no document
+      // establishing BT applicability, so every grid-derived line is 'table' by default.
+      tax_treatment: 'table',
+      adds_hours: true,
+    });
+    hoursWorked += hours;
+  }
+
+  if (missingPercentCategories.length > 0) {
+    return { status: 'blocked', reason: 'category_percent_missing', categories: missingPercentCategories };
+  }
+
+  return { status: 'ready', hour_lines: hourLines, hours_worked: hoursWorked };
+}
+
 /** Builds the PayslipPeriod Tier A's own three-way deduction question and vakantiegeld distinction
  * produce - the same model Tiers B and C populate differently (spec §2). No computation happens
- * here; call computePayslipPeriod() on the result exactly as any other tier would. */
-export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
-  const baseAmount = round2(input.hours_worked * input.hourly_rate);
-  const hourLines: HourLine[] = [
-    { employer_index: 0, description: 'Uren gewerkt', hours: input.hours_worked, rate: input.hourly_rate, percent: null, amount: baseAmount, category: 'regular', tax_treatment: 'table', adds_hours: true },
-  ];
+ * here; call computePayslipPeriod() on the result exactly as any other tier would. Takes the ALREADY
+ * -resolved grid (caller must check resolveTierAHourGrid() first - see computeTierAResult) rather
+ * than resolving it itself, so this function (like every other tier's period-builder) stays a pure,
+ * always-succeeding construction step; the "can we even build this" decision lives one level up. */
+export function buildTierAPeriod(input: TierAInput, grid: { hour_lines: HourLine[]; hours_worked: number }): PayslipPeriod {
+  const hourLines: HourLine[] = [...grid.hour_lines];
+  let grossBeforeVakantiegeld = hourLines.reduce((sum, l) => sum + l.amount, 0);
 
-  let grossBeforeVakantiegeld = baseAmount;
-  for (const line of input.overtime_lines) {
-    const amount = line.adds_hours
-      ? round2(line.hours * input.hourly_rate * (1 + line.percent / 100))
-      : round2(line.hours * input.hourly_rate * (line.percent / 100));
+  for (const line of input.surcharge_lines) {
+    const amount = round2(line.hours * input.hourly_rate * (line.percent / 100));
     grossBeforeVakantiegeld += amount;
     hourLines.push({
       employer_index: 0,
@@ -228,13 +355,13 @@ export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
       rate: input.hourly_rate,
       percent: line.percent,
       amount,
-      category: line.adds_hours ? 'overtime' : 'irregular_surcharge',
+      category: 'irregular_surcharge',
       // Tier A has no document establishing that a line is taxed at bijzonder tarief - BT
       // applicability and rate both depend on information (last year's income) Tier A structurally
       // lacks (spec §4 makes the same point about Tier B). Every Tier A line is 'table' by default,
       // matching the real Olympia document (which genuinely has no BT) rather than guessing BT.
       tax_treatment: 'table',
-      adds_hours: line.adds_hours,
+      adds_hours: false,
     });
   }
 
@@ -272,7 +399,7 @@ export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
     hirer: null,
     contract_hours: null,
     hour_lines: hourLines,
-    pre_tax_deductions: buildPreTaxDeductions(input, grossBeforeVakantiegeld),
+    pre_tax_deductions: buildPreTaxDeductions(input, grossBeforeVakantiegeld, grid.hours_worked),
     bijzonder_tarief: { jaarloon_bt: null, bt_state: bijzonderTariefState, tarief_bt: { printed: null, computed: null } },
     et: null,
     post_tax_social: buildPostTaxSocial(input),
@@ -291,7 +418,8 @@ export function buildTierAPeriod(input: TierAInput): PayslipPeriod {
   };
 }
 
-export interface TierAResult {
+export interface TierAComputedResult {
+  status: 'computed';
   /** The full PayslipPeriod Tier A built from the input - every hour_line/pre_tax_deductions/
    * post_tax_social entry still carries its own Field<number> provenance, so a consumer (the API
    * response, then the result panel) can render the full chain per-line without a second lookup
@@ -309,23 +437,36 @@ export interface TierAResult {
   payout_range?: { low: number; high: number };
 }
 
+/** CX2a: the hour grid can refuse to produce hour_lines at all (an unknown overtime threshold or an
+ * unstated Saturday/Sunday/holiday percent) - this is a stated gap BEFORE the engine ever runs, not
+ * an engine-level 'incomplete' outcome (payslip-model.ts's own IncompletePayslipComputation is about
+ * unknown DEDUCTIONS, a different gap). Kept as its own status so the frontend can render "we need
+ * one more thing from you" distinctly from "here is your incomplete tax computation". */
+export type TierABlockedResult = Extract<TierAGridResult, { status: 'blocked' }>;
+export type TierAComputeResult = TierABlockedResult | TierAComputedResult;
+
 /**
- * The Tier A entry point: builds the period, runs the shared engine, and - only for the "estimate"
+ * The Tier A entry point: resolves the hour grid first (CX2a - refuses to guess a threshold or a
+ * weekend/holiday percent), builds the period, runs the shared engine, and - only for the "estimate"
  * deduction mode - applies the sector-premium range (AZ1) to net and payout afterward. A higher
  * assumed premium means a lower net, so the range's HIGH percent produces the LOW end of the net
  * range and vice versa; this is a direct EUR subtraction from the already-computed wage_net/payout,
  * not a second pass through pre_tax_deductions/taxable_base/tax (AZ5).
  */
-export function computeTierAResult(input: TierAInput, rates: PayslipComputationRates): TierAResult {
-  const period = buildTierAPeriod(input);
+export function computeTierAResult(input: TierAInput, rates: PayslipComputationRates): TierAComputeResult {
+  const grid = resolveTierAHourGrid(input);
+  if (grid.status === 'blocked') return grid;
+
+  const period = buildTierAPeriod(input, grid);
   const outcome = computePayslipPeriod(period, rates, input.apply_loonheffingskorting);
 
   if (input.deductions.mode !== 'estimate' || outcome.status !== 'complete') {
-    return { period, outcome };
+    return { status: 'computed', period, outcome };
   }
 
   const sectorPremiumEstimate = estimateSectorPremiumRange(outcome.result.gross_total);
   return {
+    status: 'computed',
     period,
     outcome,
     sector_premium_estimate: sectorPremiumEstimate,

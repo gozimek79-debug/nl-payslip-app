@@ -3,20 +3,25 @@ import { AlertTriangle, Calculator as CalculatorIcon, Plus, ShieldCheck, Trash2 
 import { translations, type Lang } from './translations.ts';
 
 /**
- * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3). Replaces the old Calculator.tsx as
- * the app's default calculator: that one silently taxed the full gross whenever the user had no
+ * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3, §5b). Replaces the old Calculator.tsx
+ * as the app's default calculator: that one silently taxed the full gross whenever the user had no
  * pension/PAWW/sector-premium figures (the live 8% overstatement bug this whole architecture change
  * exists to fix). This component talks to POST /api/tier-a/calculate and renders exactly what that
  * route returns - the full chain with per-line provenance, an explicit "cannot determine net" state
  * when deductions are skipped, and a net RANGE (not a single fabricated number) for "estimate".
  *
- * Language-regression round (audit BJ): every user-facing string here now resolves through
- * translations[lang].tierA, honouring the PL/EN switch - the previous version hardcoded Dutch
- * strings and discarded the `lang` prop entirely (`const t = copy.pl`, despite `copy.pl`'s own
- * content being Dutch, not Polish - a double confusion). BK: every line that names a deduction
- * category also renders the Dutch term the backend supplies (`description`, per audit BK3 - Tier
- * A's own canonical name for that category), never translated, alongside the translated label -
- * that Dutch term is what the user will actually find printed on their own payslip.
+ * CX2a (audit "CK RESTATED, THEN FINISH TIER A" round): the flat "hours worked" field is gone,
+ * replaced by a day grid (Mon-Sun, regular/overtime hours + a holiday flag) - the missing piece named
+ * explicitly in that round: "Tier A cannot express a Saturday, a Sunday or a public holiday". Built
+ * on the SAME hour-grid.ts backend module Tier C's multi-employer work already tested (CD/CR), not a
+ * second implementation. Monthly/4-weekly periods reuse one grid component behind a week selector
+ * (CM1), and the grid starts empty (CM2) - no assumed "typical week". Single-employer only (CR3): no
+ * tabs, no employer column, since that dimension is Tier C's, not Tier A's.
+ *
+ * The pre-existing free-form "surcharge lines" (Olympia's real "Loon onregelm. uren 100%/50%", "ADV
+ * toeslag") are UNCHANGED in concept, just renamed - they are period-level CAO allowances a worker
+ * states directly by hours+percent, genuinely independent of which weekday they fell on, and forcing
+ * them into the day grid would ask a question the worker's payslip doesn't answer either.
  */
 
 type PeriodType = 'week' | '4-weekly' | 'month';
@@ -29,11 +34,27 @@ interface Field<T> {
   value: T | null;
 }
 
-interface OvertimeLineForm {
+type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+const DAY_KEYS: DayKey[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+interface DayHoursForm {
+  regular_hours: string;
+  overtime_hours: string;
+  is_public_holiday: boolean;
+}
+
+type WeekGridForm = Record<DayKey, DayHoursForm>;
+
+function emptyWeekGrid(): WeekGridForm {
+  const grid = {} as WeekGridForm;
+  for (const day of DAY_KEYS) grid[day] = { regular_hours: '', overtime_hours: '', is_public_holiday: false };
+  return grid;
+}
+
+interface SurchargeLineForm {
   description: string;
   hours: string;
   percent: string;
-  addsHours: boolean;
 }
 
 interface PreTaxDeductionLine {
@@ -109,7 +130,8 @@ type SanityWarning =
   | { code: 'net_exceeds_gross'; wage_net: number; gross_total: number }
   | { code: 'effective_rate_exceeds_gross_rate'; effective_rate: number; hourly_rate: number };
 
-interface TierAResponse {
+interface ComputedResponse {
+  status: 'computed';
   period: TierAPeriodResponse;
   outcome: Outcome;
   sector_premium_estimate: SectorPremiumEstimate | null;
@@ -118,6 +140,17 @@ interface TierAResponse {
   warnings: SanityWarning[];
   taxRatesSource: 'database' | 'static';
 }
+
+type GridCategory = 'overtime_tier_1' | 'overtime_tier_2' | 'saturday' | 'sunday' | 'holiday';
+
+interface BlockedResponse {
+  status: 'blocked';
+  reason: 'overtime_threshold_unknown' | 'category_percent_missing';
+  days_affected?: DayKey[];
+  categories?: GridCategory[];
+}
+
+type TierAResponse = ComputedResponse | BlockedResponse;
 
 type TierACopy = (typeof translations)['pl']['tierA'];
 
@@ -152,6 +185,20 @@ function missingFieldLabel(t: TierACopy, field: string): string {
   return field;
 }
 
+function dayLabel(t: TierACopy, day: DayKey): string {
+  return { mon: t.dayMon, tue: t.dayTue, wed: t.dayWed, thu: t.dayThu, fri: t.dayFri, sat: t.daySat, sun: t.daySun }[day];
+}
+
+function gridCategoryLabel(t: TierACopy, category: GridCategory): string {
+  return {
+    overtime_tier_1: t.categoryOvertimeTier1,
+    overtime_tier_2: t.categoryOvertimeTier2,
+    saturday: t.categorySaturday,
+    sunday: t.categorySunday,
+    holiday: t.categoryHoliday,
+  }[category];
+}
+
 function sanitizeDecimal(value: string): string {
   return value.replace(/[^0-9.,-]/g, '');
 }
@@ -173,13 +220,45 @@ function parseDecimal(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseNullableDecimal(value: string): number | null {
+  if (value.trim() === '') return null;
+  const parsed = Number(value.trim().replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function weekGridToApi(grid: WeekGridForm) {
+  const api = {} as Record<DayKey, { regular_hours: number; overtime_hours: number; is_public_holiday: boolean }>;
+  for (const day of DAY_KEYS) {
+    api[day] = {
+      regular_hours: parseDecimal(grid[day].regular_hours),
+      overtime_hours: parseDecimal(grid[day].overtime_hours),
+      is_public_holiday: grid[day].is_public_holiday,
+    };
+  }
+  return api;
+}
+
+function weeksForPeriod(periodType: PeriodType, current: WeekGridForm[]): WeekGridForm[] {
+  const target = periodType === 'week' ? 1 : 4;
+  if (current.length === target) return current;
+  if (current.length > target) return current.slice(0, target);
+  return [...current, ...Array.from({ length: target - current.length }, emptyWeekGrid)];
+}
+
 export function TierACalculator({ lang }: { lang: Lang }) {
   const t = translations[lang].tierA;
 
   const [periodType, setPeriodType] = useState<PeriodType>('week');
-  const [hoursWorked, setHoursWorked] = useState('40');
   const [hourlyRate, setHourlyRate] = useState('15.58');
-  const [overtimeLines, setOvertimeLines] = useState<OvertimeLineForm[]>([]);
+  const [weekGrids, setWeekGrids] = useState<WeekGridForm[]>([emptyWeekGrid()]);
+  const [activeWeek, setActiveWeek] = useState(0);
+  const [overtimeThreshold, setOvertimeThreshold] = useState('');
+  const [overtimeTier1Percent, setOvertimeTier1Percent] = useState('');
+  const [overtimeTier2Percent, setOvertimeTier2Percent] = useState('');
+  const [saturdayPercent, setSaturdayPercent] = useState('');
+  const [sundayPercent, setSundayPercent] = useState('');
+  const [holidayPercent, setHolidayPercent] = useState('');
+  const [surchargeLines, setSurchargeLines] = useState<SurchargeLineForm[]>([]);
   const [applyLoonheffingskorting, setApplyLoonheffingskorting] = useState(true);
   const [travelAllowance, setTravelAllowance] = useState('0');
   const [vakantiegeldMode, setVakantiegeldMode] = useState<VakantiegeldMode>('accruing');
@@ -193,14 +272,32 @@ export function TierACalculator({ lang }: { lang: Lang }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  function addOvertimeLine() {
-    setOvertimeLines(current => [...current, { description: '', hours: '', percent: '', addsHours: false }]);
+  function changePeriodType(next: PeriodType) {
+    setPeriodType(next);
+    setWeekGrids(current => weeksForPeriod(next, current));
+    setActiveWeek(0);
   }
-  function updateOvertimeLine(index: number, patch: Partial<OvertimeLineForm>) {
-    setOvertimeLines(current => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+
+  function updateDay(weekIndex: number, day: DayKey, patch: Partial<DayHoursForm>) {
+    setWeekGrids(current => current.map((grid, i) => (i === weekIndex ? { ...grid, [day]: { ...grid[day], ...patch } } : grid)));
   }
-  function removeOvertimeLine(index: number) {
-    setOvertimeLines(current => current.filter((_, i) => i !== index));
+
+  function addWeek() {
+    setWeekGrids(current => (current.length >= 5 ? current : [...current, emptyWeekGrid()]));
+  }
+  function removeWeek(index: number) {
+    setWeekGrids(current => (current.length <= 1 ? current : current.filter((_, i) => i !== index)));
+    setActiveWeek(current => Math.max(0, Math.min(current, weekGrids.length - 2)));
+  }
+
+  function addSurchargeLine() {
+    setSurchargeLines(current => [...current, { description: '', hours: '', percent: '' }]);
+  }
+  function updateSurchargeLine(index: number, patch: Partial<SurchargeLineForm>) {
+    setSurchargeLines(current => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
+  }
+  function removeSurchargeLine(index: number) {
+    setSurchargeLines(current => current.filter((_, i) => i !== index));
   }
 
   async function calculate(event: React.FormEvent) {
@@ -209,11 +306,17 @@ export function TierACalculator({ lang }: { lang: Lang }) {
     setError('');
     const body = {
       period_type: periodType,
-      hours_worked: parseDecimal(hoursWorked),
       hourly_rate: parseDecimal(hourlyRate),
-      overtime_lines: overtimeLines
+      week_grids: weekGrids.map(weekGridToApi),
+      overtime_tier_threshold_hours: parseNullableDecimal(overtimeThreshold),
+      overtime_tier_1_percent: parseNullableDecimal(overtimeTier1Percent),
+      overtime_tier_2_percent: parseNullableDecimal(overtimeTier2Percent),
+      saturday_percent: parseNullableDecimal(saturdayPercent),
+      sunday_percent: parseNullableDecimal(sundayPercent),
+      holiday_percent: parseNullableDecimal(holidayPercent),
+      surcharge_lines: surchargeLines
         .filter(line => line.hours.trim() !== '')
-        .map(line => ({ description: line.description || t.defaultLineDescription, hours: parseDecimal(line.hours), percent: parseDecimal(line.percent), adds_hours: line.addsHours })),
+        .map(line => ({ description: line.description || t.defaultLineDescription, hours: parseDecimal(line.hours), percent: parseDecimal(line.percent) })),
       apply_loonheffingskorting: applyLoonheffingskorting,
       travel_allowance: parseDecimal(travelAllowance),
       vakantiegeld: vakantiegeldMode === 'none' ? { mode: 'none' } : { mode: vakantiegeldMode, percent: parseDecimal(vakantiegeldPercent) },
@@ -237,7 +340,14 @@ export function TierACalculator({ lang }: { lang: Lang }) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? t.error);
+      if (!res.ok) {
+        // CX2d/CONVENTIONS.md: the backend sends error_code + params, never a sentence - resolved
+        // here, in the interface language, instead of displaying backend prose (which was Polish
+        // regardless of `lang` before this round).
+        const code = data.error_code as string | undefined;
+        const message = code === 'invalid_input' ? t.errorInvalidInput : code === 'tax_rates_unavailable' ? t.errorRatesUnavailable : t.error;
+        throw new Error(message);
+      }
       setResponse(data as TierAResponse);
     } catch (err) {
       setError(err instanceof Error ? err.message : t.error);
@@ -246,6 +356,8 @@ export function TierACalculator({ lang }: { lang: Lang }) {
       setLoading(false);
     }
   }
+
+  const currentWeek = weekGrids[activeWeek] ?? emptyWeekGrid();
 
   return (
     <section className="flow-page calc-page">
@@ -259,42 +371,117 @@ export function TierACalculator({ lang }: { lang: Lang }) {
           <h2><CalculatorIcon size={20}/> {t.inputsTitle}</h2>
 
           <label className="calc-select-label">{t.period}
-            <select value={periodType} onChange={event => setPeriodType(event.target.value as PeriodType)}>
+            <select value={periodType} onChange={event => changePeriodType(event.target.value as PeriodType)}>
               <option value="week">{t.periodWeek}</option>
               <option value="4-weekly">{t.period4w}</option>
               <option value="month">{t.periodMonth}</option>
             </select>
           </label>
 
-          <div className="fields-grid">
-            <label>{t.hoursWorked}
-              <div className="money-input"><span>h</span><input required inputMode="decimal" value={hoursWorked} onChange={event => setHoursWorked(sanitizeDecimal(event.target.value))}/></div>
-            </label>
-            <label>{t.hourlyRate}
-              <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => setHourlyRate(sanitizeDecimal(event.target.value))}/></div>
-            </label>
+          <label>{t.hourlyRate}
+            <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => setHourlyRate(sanitizeDecimal(event.target.value))}/></div>
+          </label>
+
+          <h3 className="calc-subheading">{t.gridTitle}</h3>
+          <p className="form-note">{t.gridHint}</p>
+
+          {weekGrids.length > 1 && (
+            <div className="calc-week-tabs">
+              {weekGrids.map((_, i) => (
+                <button type="button" key={i} className={i === activeWeek ? 'week-tab active' : 'week-tab'} onClick={() => setActiveWeek(i)}>
+                  {t.weekSelectorLabel(i + 1)}
+                </button>
+              ))}
+              {periodType === 'month' && weekGrids.length < 5 && (
+                <button type="button" className="secondary" onClick={addWeek}><Plus size={14}/> {t.addWeek}</button>
+              )}
+              {periodType === 'month' && weekGrids.length > 4 && (
+                <button type="button" className="secondary" onClick={() => removeWeek(activeWeek)}><Trash2 size={14}/> {t.removeWeek}</button>
+              )}
+            </div>
+          )}
+
+          <div className="hour-grid-table">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  {DAY_KEYS.map(day => <th key={day}>{dayLabel(t, day)}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th>{t.gridRegular}</th>
+                  {DAY_KEYS.map(day => (
+                    <td key={day}>
+                      <input inputMode="decimal" className="grid-hour-input" value={currentWeek[day].regular_hours}
+                        onChange={event => updateDay(activeWeek, day, { regular_hours: sanitizeDecimal(event.target.value) })}/>
+                    </td>
+                  ))}
+                </tr>
+                <tr>
+                  <th>{t.gridOvertime}</th>
+                  {DAY_KEYS.map(day => (
+                    <td key={day}>
+                      <input inputMode="decimal" className="grid-hour-input" value={currentWeek[day].overtime_hours}
+                        onChange={event => updateDay(activeWeek, day, { overtime_hours: sanitizeDecimal(event.target.value) })}/>
+                    </td>
+                  ))}
+                </tr>
+                <tr>
+                  <th>{t.gridHoliday}</th>
+                  {DAY_KEYS.map(day => (
+                    <td key={day}>
+                      <input type="checkbox" checked={currentWeek[day].is_public_holiday}
+                        onChange={event => updateDay(activeWeek, day, { is_public_holiday: event.target.checked })}/>
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
           </div>
 
-          <h3 className="calc-subheading">{t.overtimeTitle}</h3>
-          {overtimeLines.map((line, index) => (
+          <h3 className="calc-subheading">{t.overtimeThresholdTitle}</h3>
+          <label>{t.overtimeThresholdLabel}
+            <div className="money-input"><span>h</span><input inputMode="decimal" value={overtimeThreshold} onChange={event => setOvertimeThreshold(sanitizeDecimal(event.target.value))}/></div>
+          </label>
+          <p className="form-note">{t.overtimeThresholdHint}</p>
+          <div className="fields-grid">
+            <label>{t.overtimeTier1Percent}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier1Percent} onChange={event => setOvertimeTier1Percent(sanitizeDecimal(event.target.value))}/></div>
+            </label>
+            <label>{t.overtimeTier2Percent}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier2Percent} onChange={event => setOvertimeTier2Percent(sanitizeDecimal(event.target.value))}/></div>
+            </label>
+            <label>{t.saturdayPercent}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={saturdayPercent} onChange={event => setSaturdayPercent(sanitizeDecimal(event.target.value))}/></div>
+            </label>
+            <label>{t.sundayPercent}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={sundayPercent} onChange={event => setSundayPercent(sanitizeDecimal(event.target.value))}/></div>
+            </label>
+            <label>{t.holidayPercentLabel}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={holidayPercent} onChange={event => setHolidayPercent(sanitizeDecimal(event.target.value))}/></div>
+            </label>
+          </div>
+          <p className="form-note">{t.percentHint}</p>
+
+          <h3 className="calc-subheading">{t.surchargeTitle}</h3>
+          <p className="form-note">{t.surchargeHint}</p>
+          {surchargeLines.map((line, index) => (
             <div className="fields-grid" key={index}>
               <label>{t.lineDescription}
-                <input value={line.description} onChange={event => updateOvertimeLine(index, { description: event.target.value })}/>
+                <input value={line.description} onChange={event => updateSurchargeLine(index, { description: event.target.value })}/>
               </label>
               <label>{t.lineHours}
-                <div className="money-input"><span>h</span><input inputMode="decimal" value={line.hours} onChange={event => updateOvertimeLine(index, { hours: sanitizeDecimal(event.target.value) })}/></div>
+                <div className="money-input"><span>h</span><input inputMode="decimal" value={line.hours} onChange={event => updateSurchargeLine(index, { hours: sanitizeDecimal(event.target.value) })}/></div>
               </label>
               <label>{t.linePercent}
-                <div className="money-input"><span>%</span><input inputMode="decimal" value={line.percent} onChange={event => updateOvertimeLine(index, { percent: sanitizeDecimal(event.target.value) })}/></div>
+                <div className="money-input"><span>%</span><input inputMode="decimal" value={line.percent} onChange={event => updateSurchargeLine(index, { percent: sanitizeDecimal(event.target.value) })}/></div>
               </label>
-              <label className="calc-toggle">
-                <input type="checkbox" checked={line.addsHours} onChange={event => updateOvertimeLine(index, { addsHours: event.target.checked })}/>
-                {line.addsHours ? t.addsHours : t.surchargeOnly}
-              </label>
-              <button type="button" className="secondary" onClick={() => removeOvertimeLine(index)}><Trash2 size={14}/></button>
+              <button type="button" className="secondary" onClick={() => removeSurchargeLine(index)}><Trash2 size={14}/></button>
             </div>
           ))}
-          <button type="button" className="secondary" onClick={addOvertimeLine}><Plus size={14}/> {t.addLine}</button>
+          <button type="button" className="secondary" onClick={addSurchargeLine}><Plus size={14}/> {t.addLine}</button>
 
           <div className="calc-toggles">
             <label className="calc-toggle"><input type="checkbox" checked={applyLoonheffingskorting} onChange={event => setApplyLoonheffingskorting(event.target.checked)}/> {t.loonheffingskorting}</label>
@@ -351,7 +538,24 @@ export function TierACalculator({ lang }: { lang: Lang }) {
         </aside>
       </div>
 
-      {response && (() => {
+      {response && response.status === 'blocked' && (
+        <div className="calc-result" id="tier-a-result">
+          <div className="notice-card">
+            <AlertTriangle/>
+            <div>
+              <h3>{t.blockedTitle}</h3>
+              {response.reason === 'overtime_threshold_unknown' && (
+                <p>{t.blockedThresholdBody((response.days_affected ?? []).map(d => dayLabel(t, d)).join(', '))}</p>
+              )}
+              {response.reason === 'category_percent_missing' && (
+                <p>{t.blockedPercentBody((response.categories ?? []).map(c => gridCategoryLabel(t, c)).join(', '))}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {response && response.status === 'computed' && (() => {
         const displayFigures = getDisplayFigures(response.outcome);
         return (
         <div className="calc-result" id="tier-a-result">
@@ -426,6 +630,12 @@ export function TierACalculator({ lang }: { lang: Lang }) {
               </div>
             </div>
           )}
+
+          {/* CA3/CA5 (audit "CK RESTATED, THEN FINISH TIER A" round): visible on every result, in
+              every language, not a tooltip - the owner's requirement (spec §5a) that reliability be
+              stated at the point of use. */}
+          <p className="form-note calc-reliability-note">{t.reliabilityNote}</p>
+          <p className="form-note calc-reliability-note">{t.permanentLimitationNote}</p>
         </div>
         );
       })()}

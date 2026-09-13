@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, BookOpen, Calculator as CalculatorIcon, Check, Clock, FileText, LockKeyhole, Sparkles, ShieldCheck, Upload } from 'lucide-react';
 import { recognizePayslip, renderPageImages } from './local-ocr.ts';
 import { TierACalculator } from './TierACalculator.tsx';
+import { TierBFlow } from './TierBFlow.tsx';
 import { StepProgress } from './StepProgress.tsx';
 import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
@@ -16,9 +17,9 @@ import { translations, type Lang } from './translations.ts';
  * flow already delivers PRO's promise ("nothing withheld - real numbers from your payslip"), even
  * though it does not yet run through payslip-model.ts's shared engine (Tier C proper is still not
  * started, per spec §9/BE2 - this is a routing bridge onto existing functionality, not a claim that
- * Tier C is built). 'z_umowy' (Tier B) has no existing functionality to route to - it renders an
- * honest "coming soon" state rather than a stub that looks functional (per BE2's own standard,
- * applied consistently to every not-yet-built tier/module).
+ * Tier C is built). 'z_umowy' (Tier B, audit "CONSOLIDATED ASSIGNMENT" round §3) now routes to
+ * TierBFlow - contract upload pre-fills the same TierACalculator component Tier A uses, marked
+ * contract_extracted and fully correctable, per §3.1's "nothing more than pre-fill Tier A" scope.
  */
 type Mode = 'kalkulator' | 'analiza' | 'slownik' | 'account';
 type KalkulatorTier = 'szybki' | 'z_umowy' | 'pro' | null;
@@ -270,9 +271,8 @@ export function App() {
             <button type="button" className="tier-card" onClick={() => setKalkulatorTier('szybki')}>
               <CalculatorIcon size={22}/><h3>{t.kalkulatorHome.szybkiName}</h3><p className="tier-need">{t.kalkulatorHome.szybkiNeed}</p><small className="form-note">{t.kalkulatorHome.szybkiLimit}</small>
             </button>
-            <button type="button" className="tier-card tier-card-disabled" onClick={() => setKalkulatorTier('z_umowy')}>
+            <button type="button" className="tier-card" onClick={() => setKalkulatorTier('z_umowy')}>
               <FileText size={22}/><h3>{t.kalkulatorHome.zUmowyName}</h3><p className="tier-need">{t.kalkulatorHome.zUmowyNeed}</p><small className="form-note">{t.kalkulatorHome.zUmowyLimit}</small>
-              <span className="tier-badge"><Clock size={12}/> {t.kalkulatorHome.comingSoon}</span>
             </button>
             <button type="button" className="tier-card" onClick={() => setKalkulatorTier('pro')}>
               <ShieldCheck size={22}/><h3>{t.kalkulatorHome.proName}</h3><p className="tier-need">{t.kalkulatorHome.proNeed}</p><small className="form-note">{t.kalkulatorHome.proLimit}</small>
@@ -288,10 +288,10 @@ export function App() {
         </>
       )}
       {mode === 'kalkulator' && kalkulatorTier === 'z_umowy' && (
-        <section className="flow-page">
+        <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
-          <div className="notice-card"><Clock/><div><h3>{t.comingSoon.title}</h3><p>{t.comingSoon.body}</p></div></div>
-        </section>
+          <TierBFlow lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>
+        </>
       )}
       {mode === 'analiza' && analizaModule === null && (
         <section className="flow-page">

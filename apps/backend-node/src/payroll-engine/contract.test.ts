@@ -17,6 +17,7 @@ function baseExtraction(overrides: Partial<ContractExtraction> = {}): ContractEx
     probationPeriodWeeks: null,
     noticePeriodWeeks: null,
     thirtyPercentRuling: false,
+    overtimeTierThresholdHours: null,
     redactedFields: [],
     ...overrides,
   };
@@ -48,5 +49,55 @@ test('proeftijd/opzegtermijn checks use the contract start date even when minimu
   return analyzeContract(baseExtraction({ probationPeriodWeeks: 6 }), 14.99).then((analysis) => {
     assert.equal(analysis.maxAllowedProbationWeeks, 8.7); // indefinite contract -> long-contract limit
     assert.equal(analysis.probationExceedsLimit, false);
+  });
+});
+
+/**
+ * ============================================================================================
+ * Tier B (audit "CONSOLIDATED ASSIGNMENT" round, §3.3): the FIRST real contract fixture in this
+ * repo - the Olympia Fase A agreement, read directly this round (contract TERMS only; per the
+ * standing privacy rule, name/address/DOB/IBAN/phone from that document are never reproduced here
+ * or anywhere else - only the financial/contractual figures below).
+ * ============================================================================================
+ */
+function olympiaContractExtraction(overrides: Partial<ContractExtraction> = {}): ContractExtraction {
+  return baseExtraction({
+    contractType: 'Uitzendovereenkomst fase A',
+    employerName: 'Olympia Services B.V.',
+    functionTitle: 'Magazijnmedewerker',
+    startDate: '2026-09-01',
+    endDate: '2026-10-04',
+    hoursPerWeek: 16, // 64 hours per 4 weeks, as printed - not converted to a "typical" week
+    hourlyRate: 15.55,
+    monthlySalary: null,
+    caoName: 'ABU-CLA',
+    pensionFund: 'StiPP',
+    probationPeriodWeeks: null, // confirmed: this Phase A agreement states no separate proeftijd clause at all - the agency clause (Art. 1.6) serves that flexibility role instead
+    noticePeriodWeeks: null, // see §3.3 finding below - the stated notice concept doesn't map cleanly, so it is left unknown rather than guessed
+    thirtyPercentRuling: false,
+    overtimeTierThresholdHours: null, // the real finding: confirmed absent, see test below
+    redactedFields: [],
+    ...overrides,
+  });
+}
+
+test("§3.3: the real Olympia contract does NOT state an overtime tier threshold - it lists percentage tiers, never the hour boundary between them", () => {
+  // Article 2.9 of the real document lists: Overwerkuren 130%/150%/200%, and Onregelmatige uren
+  // 20%/50%/75%/100%/200% - a schedule of RATES, never a sentence stating "after N hours the rate
+  // steps up". hour-grid.ts's resolveOvertimeTierThreshold() has carried a 'contract_stated'
+  // provenance slot since last round with nothing to feed it - this fixture is the direct evidence
+  // that, for THIS real document, that slot would correctly stay null, not get a guessed value.
+  const extraction = olympiaContractExtraction();
+  assert.equal(extraction.overtimeTierThresholdHours, null);
+});
+
+test('§3.2: this contract IS above minimum wage and DOES verify cleanly on the one figure it states plainly', () => {
+  // Confirms the mapping gap is specific to the threshold, not a wholesale extraction failure -
+  // hourlyRate (15.55) is stated directly and unambiguously, and the existing minimum-wage check
+  // (built for Module 2, reused here only to prove baseExtraction-style fixtures still behave)
+  // correctly verifies it against a real 2026 rate.
+  return analyzeContract(olympiaContractExtraction(), 14.99).then((analysis) => {
+    assert.equal(analysis.minimumWageVerifiable, true);
+    assert.equal(analysis.isBelowMinimumWage, false);
   });
 });

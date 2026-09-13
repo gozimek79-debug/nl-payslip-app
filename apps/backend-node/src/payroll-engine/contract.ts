@@ -14,6 +14,18 @@ export interface ContractExtraction {
   probationPeriodWeeks: number | null;
   noticePeriodWeeks: number | null;
   thirtyPercentRuling: boolean;
+  /** Tier B (audit "CONSOLIDATED ASSIGNMENT" round, §3.3): the ONE new field this round adds, and
+   * deliberately the only one. Checked against a real reference contract (Olympia's own Fase A
+   * agreement) before being added, per §2.2/§2.3 - that document lists overtime PERCENTAGE tiers
+   * (Overwerkuren 130/150/200%, Onregelmatige uren 20/50/75/100/200%) but never states the HOUR
+   * boundary between them; hour-grid.ts's own `contract_stated` provenance slot on
+   * OvertimeTierThreshold has existed since last round with nothing feeding it. This field is that
+   * feed - stays null when a contract doesn't state it (confirmed: the one real document checked
+   * does not), never guessed from the percentage list alone. Weekend/Saturday/Sunday percentages are
+   * NOT added here yet - the same real document doesn't state them in a day-bound form either (its
+   * percentages are generic tiers, not "Saturday = X%"), and one document isn't enough evidence to
+   * design that schema without guessing its shape (§2.4). */
+  overtimeTierThresholdHours: number | null;
   /** Nazwy pól, które zostały odrzucone/wyzerowane po stronie serwera, bo wyglądały na dane osobowe. */
   redactedFields: string[];
 }

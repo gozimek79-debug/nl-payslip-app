@@ -343,6 +343,8 @@ button.danger:disabled{opacity:.6;cursor:not-allowed}
 .grid-hour-input{width:52px;padding:8px 4px;border:1px solid rgba(20,37,31,.16);border-radius:8px;background:rgba(255,255,255,.7);color:var(--text-primary);text-align:center;outline:0}
 .grid-hour-input:focus{border-color:var(--loonto-primary);box-shadow:var(--focus-ring)}
 .calc-reliability-note{font-style:italic}
+.contract-badge{font-style:italic;font-weight:600;color:var(--loonto-primary)}
+.calc-honest-limit{text-align:left;font-weight:600}
 .calc-side-notice p{margin:8px 0}
 .calc-result{margin-top:34px}
 .calc-wml-warning{display:flex;align-items:center;gap:8px;margin-bottom:18px}

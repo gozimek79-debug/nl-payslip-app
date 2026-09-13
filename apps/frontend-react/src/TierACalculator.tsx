@@ -245,14 +245,47 @@ function weeksForPeriod(periodType: PeriodType, current: WeekGridForm[]): WeekGr
   return [...current, ...Array.from({ length: target - current.length }, emptyWeekGrid)];
 }
 
-export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
+/** Tier B (audit "CONSOLIDATED ASSIGNMENT" round, §3.1): a contract states weekly hours, not a
+ * day-by-day breakdown - this is a starting point only (spread evenly Mon-Fri), not a claim about
+ * which days the worker actually works. Fully editable, exactly like every other pre-filled field. */
+function gridFromWeeklyHours(hoursPerWeek: number): WeekGridForm {
+  const grid = emptyWeekGrid();
+  const perDay = Math.round((hoursPerWeek / 5) * 100) / 100;
+  for (const day of ['mon', 'tue', 'wed', 'thu', 'fri'] as DayKey[]) {
+    grid[day] = { ...grid[day], regular_hours: String(perDay) };
+  }
+  return grid;
+}
+
+/** Tier B: which Tier A fields a contract extraction can pre-fill, and nothing more (§3.1 - "Tier A
+ * ships when" isn't reopened; Tier B only feeds it). */
+export interface TierAContractPrefill {
+  hourly_rate?: number;
+  hours_per_week?: number;
+  overtime_tier_threshold_hours?: number;
+}
+
+export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', contractPrefill }: {
+  lang: Lang;
+  onNavigateToDictionary: () => void;
+  /** 'B' when this render is Tier B (contract-prefilled) rather than plain Tier A - changes only
+   * the reliability wording (§3.4) and whether contract-provenance badges render; the calculator
+   * itself, per spec §2, is the same component and engine either way. */
+  tierMode?: 'A' | 'B';
+  contractPrefill?: TierAContractPrefill;
+}) {
   const t = translations[lang].tierA;
 
   const [periodType, setPeriodType] = useState<PeriodType>('week');
-  const [hourlyRate, setHourlyRate] = useState('15.58');
-  const [weekGrids, setWeekGrids] = useState<WeekGridForm[]>([emptyWeekGrid()]);
+  const [hourlyRate, setHourlyRate] = useState(() => (contractPrefill?.hourly_rate !== undefined ? String(contractPrefill.hourly_rate) : '15.58'));
+  const [weekGrids, setWeekGrids] = useState<WeekGridForm[]>(() => [contractPrefill?.hours_per_week !== undefined ? gridFromWeeklyHours(contractPrefill.hours_per_week) : emptyWeekGrid()]);
   const [activeWeek, setActiveWeek] = useState(0);
-  const [overtimeThreshold, setOvertimeThreshold] = useState('');
+  const [overtimeThreshold, setOvertimeThreshold] = useState(() => (contractPrefill?.overtime_tier_threshold_hours !== undefined ? String(contractPrefill.overtime_tier_threshold_hours) : ''));
+  const [contractProvenance, setContractProvenance] = useState({
+    hourlyRate: contractPrefill?.hourly_rate !== undefined,
+    grid: contractPrefill?.hours_per_week !== undefined,
+    threshold: contractPrefill?.overtime_tier_threshold_hours !== undefined,
+  });
   const [overtimeTier1Percent, setOvertimeTier1Percent] = useState('');
   const [overtimeTier2Percent, setOvertimeTier2Percent] = useState('');
   const [saturdayPercent, setSaturdayPercent] = useState('');
@@ -280,6 +313,7 @@ export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; 
 
   function updateDay(weekIndex: number, day: DayKey, patch: Partial<DayHoursForm>) {
     setWeekGrids(current => current.map((grid, i) => (i === weekIndex ? { ...grid, [day]: { ...grid[day], ...patch } } : grid)));
+    setContractProvenance(current => (current.grid ? { ...current, grid: false } : current));
   }
 
   function addWeek() {
@@ -378,11 +412,11 @@ export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; 
             </select>
           </label>
 
-          <label>{t.hourlyRate}
-            <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => setHourlyRate(sanitizeDecimal(event.target.value))}/></div>
+          <label>{t.hourlyRate} {contractProvenance.hourlyRate && <span className="form-note contract-badge">({t.fromContract})</span>}
+            <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => { setHourlyRate(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, hourlyRate: false })); }}/></div>
           </label>
 
-          <h3 className="calc-subheading">{t.gridTitle}</h3>
+          <h3 className="calc-subheading">{t.gridTitle} {contractProvenance.grid && <span className="form-note contract-badge">({t.fromContract})</span>}</h3>
           <p className="form-note">{t.gridHint}</p>
 
           {weekGrids.length > 1 && (
@@ -441,9 +475,9 @@ export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; 
             </table>
           </div>
 
-          <h3 className="calc-subheading">{t.overtimeThresholdTitle}</h3>
+          <h3 className="calc-subheading">{t.overtimeThresholdTitle} {contractProvenance.threshold && <span className="form-note contract-badge">({t.fromContract})</span>}</h3>
           <label>{t.overtimeThresholdLabel}
-            <div className="money-input"><span>h</span><input inputMode="decimal" value={overtimeThreshold} onChange={event => setOvertimeThreshold(sanitizeDecimal(event.target.value))}/></div>
+            <div className="money-input"><span>h</span><input inputMode="decimal" value={overtimeThreshold} onChange={event => { setOvertimeThreshold(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, threshold: false })); }}/></div>
           </label>
           <p className="form-note">{t.overtimeThresholdHint}</p>
           <div className="fields-grid">
@@ -504,6 +538,10 @@ export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; 
 
           <h3 className="calc-subheading">{t.deductionsTitle}</h3>
           <p className="form-note">{t.deductionsHint}</p>
+          {/* §3.4: Tier B's honest limit, on screen where the user is about to answer the deduction
+              question - not a tooltip. A contract improves rate/hours/percentages; it never contains
+              pension/PAWW/sector-premium figures, so this question still applies exactly as in Tier A. */}
+          {tierMode === 'B' && <p className="form-note calc-honest-limit">{t.tierBHonestLimit}</p>}
           <div className="calc-toggles">
             <label className="calc-toggle"><input type="radio" name="ded" checked={deductionMode === 'enter'} onChange={() => setDeductionMode('enter')}/> {t.deductionEnter}</label>
             <label className="calc-toggle"><input type="radio" name="ded" checked={deductionMode === 'estimate'} onChange={() => setDeductionMode('estimate')}/> {t.deductionEstimate}</label>
@@ -672,8 +710,10 @@ export function TierACalculator({ lang, onNavigateToDictionary }: { lang: Lang; 
 
           {/* CA3/CA5 (audit "CK RESTATED, THEN FINISH TIER A" round): visible on every result, in
               every language, not a tooltip - the owner's requirement (spec §5a) that reliability be
-              stated at the point of use. */}
-          <p className="form-note calc-reliability-note">{t.reliabilityNote}</p>
+              stated at the point of use. §3.4: Tier B gets its own reliability sentence ("based on
+              your contract; deduction rates still not yours") - the permanent limitation is
+              tier-agnostic and unchanged. */}
+          <p className="form-note calc-reliability-note">{tierMode === 'B' ? t.reliabilityNoteB : t.reliabilityNote}</p>
           <p className="form-note calc-reliability-note">{t.permanentLimitationNote}</p>
         </div>
         );

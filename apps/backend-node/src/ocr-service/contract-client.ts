@@ -16,7 +16,7 @@ Zwróć WYŁĄCZNIE dane dotyczące warunków zatrudnienia istotne dla wynagrodz
 Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown, bez komentarzy):
 {"ct":string|null,"emp":string|null,"fn":string|null,"sd":string|null,"ed":string|null,
 "hpw":number|null,"hr":number|null,"ms":number|null,"cao":string|null,"pf":string|null,
-"pp":number|null,"np":number|null,"tpr":boolean}
+"pp":number|null,"np":number|null,"tpr":boolean,"ott":number|null}
 
 Znaczenie kluczy: ct=typ umowy (np. "Bepaalde tijd"/"Onbepaalde tijd"/"Uitzendovereenkomst fase A"),
 emp=WYŁĄCZNIE nazwa firmy pracodawcy (nigdy nazwisko osoby), fn=nazwa stanowiska/funkcji,
@@ -24,7 +24,10 @@ sd=data rozpoczęcia (YYYY-MM-DD), ed=data zakończenia jeśli określona (YYYY-
 hpw=godziny w tygodniu, hr=stawka godzinowa w EUR (null jeśli umowa miesięczna), ms=wynagrodzenie
 miesięczne brutto w EUR (null jeśli stawka godzinowa), cao=nazwa układu zbiorowego (CAO),
 pf=nazwa funduszu emerytalnego, pp=długość okresu próbnego w tygodniach, np=okres wypowiedzenia
-w tygodniach, tpr=czy umowa wspomina o uldze 30% (30%-regeling).
+w tygodniach, tpr=czy umowa wspomina o uldze 30% (30%-regeling). ott=próg nadgodzin: liczba godzin
+PO KTÓRYCH stawka nadgodzin rośnie na wyższy próg (NIE lista procentów samych w sobie - szukaj
+zdania mówiącego "po X godzinach" albo podobnego; jeśli umowa wymienia tylko same procenty
+nadgodzin bez podanej liczby godzin granicznej, zwróć null - nie zgaduj tej wartości).
 
 Kropka jako separator dziesiętny. Brak danej = null (nie 0, nie pusty string).
 `.trim();
@@ -87,6 +90,7 @@ export async function extractContract(imageDataUrls: string[]): Promise<Contract
     probationPeriodWeeks: toNullableNumber(parsed.pp),
     noticePeriodWeeks: toNullableNumber(parsed.np),
     thirtyPercentRuling: parsed.tpr === true,
+    overtimeTierThresholdHours: toNullableNumber(parsed.ott),
     redactedFields,
   };
 }

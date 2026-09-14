@@ -57,6 +57,8 @@ export function TierBFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         const translated = code === 'vision_unavailable' ? t.errorVisionUnavailable
           : code === 'invalid_input' ? t.errorInvalidInput
           : code === 'extraction_failed' ? t.errorExtractionFailed
+          : code === 'rate_limit_unknown' ? t.errorRateLimitUnknown
+          : code === 'rate_limit_exceeded' ? t.errorRateLimitExceeded
           : t.error;
         throw new Error(translated);
       }

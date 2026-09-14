@@ -4,22 +4,10 @@ import multer from 'multer';
 import { z } from 'zod';
 import { query, transaction } from '../database.js';
 import { currentUser } from '../auth.js';
-import { extractPayslipFieldsFromImage, extractFullPayslip } from '../ocr-service/ocr-client.js';
-import { explainPayslipAnalysis, explainFullPayslip, translatePayslipTerms } from '../ai-service/ai-client.js';
+import { extractPayslipFieldsFromImage } from '../ocr-service/ocr-client.js';
+import { explainPayslipAnalysis } from '../ai-service/ai-client.js';
 import { isGroqConfigured, isVisionConfigured } from '../ai-service/groq.js';
-import { validateFullPayslip } from '../payroll-engine/full-payslip.js';
 import { ipRateLimit } from '../rate-limiter.js';
-import { getMinimumWageAt } from '../rules-repository.js';
-
-// Resolves the payslip's own reference date for rules-DB lookups (audit N4). Falls back to today
-// only when the AI could not read a usable period-end date - a stated date always wins.
-function resolvePayslipReferenceDate(periodEndDate: string | null): Date {
-  if (periodEndDate) {
-    const parsed = new Date(periodEndDate);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
-  }
-  return new Date();
-}
 
 const router = express.Router();
 // AI-invoking endpoints (Groq inference cost): 10 requests / 5 min per IP.
@@ -65,11 +53,6 @@ const explainSchema = z.object({
     arithmetic: z.record(z.string(), z.unknown()),
     notices: z.array(z.string()),
   }),
-  language: z.enum(['pl', 'en']).optional(),
-});
-
-const analyzeFullSchema = z.object({
-  images: z.array(imageDataUrlSchema).min(1).max(5),
   language: z.enum(['pl', 'en']).optional(),
 });
 
@@ -247,53 +230,6 @@ router.post('/explain', aiRateLimit, async (req, res) => {
   } catch (error) {
     console.error('Groq explain error', error);
     return res.status(502).json({ error: 'Nie udało się uzyskać interpretacji AI. Spróbuj ponownie.' });
-  }
-});
-
-router.post('/analyze-full', aiRateLimit, async (req, res) => {
-  if (!isVisionConfigured()) {
-    return res.status(503).json({ error: 'Pełna analiza AI jest chwilowo niedostępna (brak modelu wizyjnego u dostawcy).' });
-  }
-  const parsed = analyzeFullSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe dane obrazu.', details: parsed.error.flatten() });
-  const language = parsed.data.language ?? 'pl';
-  try {
-    const extraction = await extractFullPayslip(parsed.data.images);
-    const referenceDate = resolvePayslipReferenceDate(extraction.periodEndDate);
-    const applicableMinimumWage = await getMinimumWageAt(referenceDate);
-    const validation = validateFullPayslip(extraction, applicableMinimumWage);
-
-    const uniqueTerms = Array.from(new Set([
-      ...extraction.lineItems.flatMap((item) => [item.section, item.description]),
-      ...(extraction.contractType ? [extraction.contractType] : []),
-    ]));
-    const termMap = new Map<string, string>();
-    try {
-      const translated = await translatePayslipTerms(uniqueTerms, language);
-      uniqueTerms.forEach((term, index) => termMap.set(term, translated[index] ?? term));
-    } catch (error) {
-      console.error('Groq translate error', error);
-    }
-    const display = (term: string): string => {
-      const translated = termMap.get(term);
-      return !translated || translated === term ? term : `${translated} (${term})`;
-    };
-    const displayExtraction = {
-      ...extraction,
-      contractType: extraction.contractType ? display(extraction.contractType) : null,
-      lineItems: extraction.lineItems.map((item) => ({ ...item, section: display(item.section), description: display(item.description) })),
-    };
-
-    let explanation = '';
-    try {
-      explanation = await explainFullPayslip(extraction, validation, language);
-    } catch (error) {
-      console.error('Groq full-payslip explain error', error);
-    }
-    return res.json({ extraction: displayExtraction, validation, explanation });
-  } catch (error) {
-    console.error('Groq full-payslip OCR error', error);
-    return res.status(502).json({ error: 'Nie udało się odczytać dokumentu przez AI. Spróbuj ponownie.' });
   }
 });
 

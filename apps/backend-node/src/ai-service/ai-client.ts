@@ -36,22 +36,6 @@ Wszystkie kwoty w danych są w euro — zawsze używaj symbolu € (nigdy zł an
 Odpowiadaj zwięźle (maksymalnie 5-7 zdań), bez list punktowanych.
 `.trim();
 
-const FULL_PAYSLIP_SYSTEM_PROMPT = `
-Jesteś ekspertem ds. holenderskiego prawa pracy, analizującym pełny odczyt paska wypłaty (wszystkie pozycje, nie tylko podsumowanie).
-Otrzymasz JSON z polami "extraction" (wszystkie pozycje odczytane z dokumentu przez OCR/AI) oraz "validation" (wynik automatycznej kontroli arytmetycznej i zgodności z WML).
-Nie wykonuj własnych obliczeń — komentujesz wyłącznie dane z JSON-a.
-
-Twoim zadaniem jest:
-1. Krótko podsumować strukturę wynagrodzenia: z jakich głównych pozycji (bruto, dodatki, potrącenia, ubezpieczenia, podatek) składa się wynik netto.
-2. Jeśli "validation.discrepancies" nie jest puste, wyraźnie i konkretnie omówić każdą niezgodność (o którą pozycję chodzi i jaka jest różnica), po polsku zrozumiale.
-3. Jeśli "validation.wmlViolation" jest true, wyraźnie ostrzec o naruszeniu ustawowego minimum wynagrodzenia.
-4. Wyjaśnić maksymalnie 2-3 najmniej oczywiste pozycje z listy "extraction.lineItems" (np. czym jest dana składka/premia), używając terminów niderlandzkich w nawiasach.
-5. Zakończyć jedną praktyczną wskazówką, o co warto zapytać pracodawcę lub co sprawdzić.
-
-Wszystkie kwoty są w euro — zawsze używaj symbolu € (nigdy zł ani PLN).
-Odpowiadaj w 2-4 zwięzłych akapitach, bez list punktowanych w odpowiedzi (pisz prozą).
-`.trim();
-
 async function chat(systemPrompt: string, language: Language, payload: unknown, maxTokens = 700): Promise<string> {
   const completion = await groqClient().chat.completions.create({
     model: TEXT_MODEL,
@@ -71,10 +55,6 @@ export async function explainPayslipAnalysis(context: unknown, language: Languag
 
 export async function explainCalculatorResult(input: unknown, result: unknown, language: Language = 'pl'): Promise<string> {
   return chat(CALCULATOR_SYSTEM_PROMPT, language, { input, result });
-}
-
-export async function explainFullPayslip(extraction: unknown, validation: unknown, language: Language = 'pl'): Promise<string> {
-  return chat(FULL_PAYSLIP_SYSTEM_PROMPT, language, { extraction, validation }, 1200);
 }
 
 const CONTRACT_SYSTEM_PROMPT = `

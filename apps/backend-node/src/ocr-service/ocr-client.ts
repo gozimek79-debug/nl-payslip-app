@@ -1,5 +1,4 @@
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
-import type { FullPayslipExtraction } from '../payroll-engine/full-payslip.js';
 import type { TierCExtraction, TierCHourLine, TierCDeductionLine, TierCNetLine, TierCReservationLine, TierCPeriodType } from '../payroll-engine/tier-c.js';
 import type { HourLineCategory, TaxTreatment, PreTaxDeductionCategory, PostTaxSocialCategory, NetDeductionCategory, ReservationType } from '../payroll-engine/payslip-model.js';
 import { sanitizeText } from './pii-patterns.js';
@@ -113,95 +112,10 @@ export async function extractPayslipFieldsFromImage(imageDataUrl: string): Promi
   };
 }
 
-// Klucze skrócone celowo — model wizyjny Groq ma bardzo niski limit tokenów wyjściowych
-// na darmowym planie (1000/min), a pełny pasek wypłaty może mieć kilkanaście pozycji.
-const FULL_SYSTEM_PROMPT = `
-Jesteś systemem ekstrakcji danych wyspecjalizowanym w holenderskich paskach wypłaty (salarisspecificatie),
-które mogą pochodzić od różnych dostawców oprogramowania płacowego i mieć różne układy oraz nazwy pozycji.
-
-Przeanalizuj WSZYSTKIE strony dokumentu i wypisz KAŻDĄ pojedynczą pozycję z tabeli płacowej, od pierwszej do ostatniej
-sekcji na dokumencie — dokument zwykle kończy się sekcją "Netto" (dodatki/potrącenia netto, np. reiskostenvergoeding,
-inhouding, personeelsvereniging) TUŻ PRZED wierszem "Totaal netto"/"Totalen". NIE KOŃCZ odpowiedzi, dopóki nie
-przetworzysz również tej ostatniej sekcji — pominięcie jej jest błędem krytycznym.
-Pomijaj wyłącznie wiersze będące czystymi podsumowaniami/subtotalami sekcji (bez własnego opisu pozycji, np. sam
-wiersz z liczbami bez nazwy).
-
-Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown, bez komentarzy, KRÓTKIE klucze) o strukturze:
-{"per":string|null,"ped":string|null,"hr":number|null,"mw":number|null,"hpw":number|null,"ct":string|null,"tpr":boolean,
-"li":[{"s":string,"d":string,"q":number|null,"r":number|null,"p":number|null,"x":number|null}],
-"rtg":number|null,"rtn":number|null,"rnp":number|null}
-
-Znaczenie kluczy: per=okres jako opisany na dokumencie (np. "week 36" albo "2026-8"), ped=OSTATNI dzień
-okresu rozliczeniowego jako data ISO YYYY-MM-DD (np. dla "week 36 2026" to 2026-09-06; dla miesiąca
-sierpień 2026 to 2026-08-31) — wywnioskuj z numeru tygodnia/miesiąca i roku widocznych na dokumencie,
-hr=stawka godzinowa, mw=minimumloon WYDRUKOWANE na dokumencie (do celów informacyjnych — może być
-nieaktualne, nie licz z tego żadnej zgodności), hpw=godziny/tydzień, ct=typ umowy,
-tpr=aktywna ulga 30% (true tylko jeśli wyraźnie widoczna), li=lista pozycji, s=sekcja, d=opis pozycji,
-q=ilość/liczba godzin, r=stawka za jednostkę, p=kwota Betaling (zawsze dodatnia), x=kwota Inhouding (zawsze dodatnia),
-rtg=wydrukowana suma brutto, rtn=wydrukowana suma netto, rnp=faktycznie wypłacona kwota (Betalen/Per Bank).
-
-Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0); opisy pozycji ("d") maks. kilka słów,
-bez zbędnych dopisków.
-`.trim();
-
 function toNullableNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-export async function extractFullPayslip(imageDataUrls: string[]): Promise<FullPayslipExtraction> {
-  const completion = await groqClient().chat.completions.create({
-    model: VISION_MODEL,
-    temperature: 0,
-    max_tokens: 1000,
-    messages: [
-      { role: 'system', content: FULL_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tego paska wypłaty i zwróć zwarty JSON zgodny z opisaną strukturą.` },
-          ...imageDataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-        ],
-      },
-    ],
-  });
-
-  const raw = completion.choices[0]?.message?.content ?? '{}';
-  const hitLengthLimit = completion.choices[0]?.finish_reason === 'length';
-  const { value, truncated: parseNeededRepair } = extractJsonWithTruncationFlag(raw);
-  const parsed = value as Record<string, unknown>;
-  const rawLineItems = Array.isArray(parsed.li) ? parsed.li : [];
-  // Audit R7/J3: the extraction schema deliberately has no employee-name/address fields, but a
-  // free-text line description has no such schema-level protection - the same regex safety net
-  // used on the contract path catches it here too, independent of prompt compliance.
-  const redactedFields: string[] = [];
-
-  return {
-    truncated: hitLengthLimit || parseNeededRepair,
-    period: typeof parsed.per === 'string' ? parsed.per : null,
-    periodEndDate: typeof parsed.ped === 'string' ? parsed.ped : null,
-    hourlyRate: toNullableNumber(parsed.hr),
-    minimumWage: toNullableNumber(parsed.mw),
-    hoursPerWeek: toNullableNumber(parsed.hpw),
-    contractType: typeof parsed.ct === 'string' ? parsed.ct : null,
-    thirtyPercentRuling: parsed.tpr === true,
-    lineItems: rawLineItems.map((item, index) => {
-      const record = item as Record<string, unknown>;
-      return {
-        section: sanitizeText(record.s, `lineItems[${index}].section`, redactedFields) ?? 'Inne',
-        description: sanitizeText(record.d, `lineItems[${index}].description`, redactedFields) ?? '',
-        quantity: toNullableNumber(record.q),
-        rate: toNullableNumber(record.r),
-        payment: toNullableNumber(record.p),
-        deduction: toNullableNumber(record.x),
-      };
-    }),
-    redactedFields,
-    reportedTotalGross: toNullableNumber(parsed.rtg),
-    reportedTotalNet: toNullableNumber(parsed.rtn),
-    reportedNetPaid: toNullableNumber(parsed.rnp),
-  };
 }
 
 /**

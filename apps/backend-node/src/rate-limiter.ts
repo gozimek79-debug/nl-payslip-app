@@ -92,11 +92,14 @@ export function ipRateLimit(routeName: string, limit: number, windowSeconds: num
     const key = `${routeName}:${req.ip ?? 'unknown'}`;
     const outcome = await checkRateLimit(key, limit, windowSeconds);
     if (outcome === 'denied' || (outcome === 'unknown' && onUnknown === 'deny')) {
+      // §2.6/CONVENTIONS.md: error_code, never a prebaked sentence - found this round (Tier C
+      // Stage 2) while verifying tier-c.controller.ts's own error paths: this middleware runs
+      // BEFORE any route handler, so its hardcoded Polish response bypassed every controller-level
+      // i18n fix already made (tier-a, contracts, tier-c) whenever the rate-limit check itself
+      // failed - the exact same defect class, one layer lower, on every AI-rate-limited route.
       const status = outcome === 'unknown' ? 503 : 429;
-      const message = outcome === 'unknown'
-        ? 'Ta funkcja jest chwilowo niedostępna (nie można zweryfikować limitu żądań). Spróbuj ponownie za chwilę.'
-        : 'Zbyt wiele żądań z tego adresu. Spróbuj ponownie za chwilę.';
-      res.status(status).json({ error: message });
+      const errorCode = outcome === 'unknown' ? 'rate_limit_unknown' : 'rate_limit_exceeded';
+      res.status(status).json({ error_code: errorCode });
       return;
     }
     next();

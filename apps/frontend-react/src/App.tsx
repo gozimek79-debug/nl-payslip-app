@@ -115,9 +115,11 @@ export function App() {
             <button type="button" className="tier-card" onClick={() => setKalkulatorTier('szybki')}>
               <CalculatorIcon size={22}/><h3>{t.kalkulatorHome.szybkiName}</h3><p className="tier-need">{t.kalkulatorHome.szybkiNeed}</p><small className="form-note">{t.kalkulatorHome.szybkiLimit}</small>
             </button>
-            <button type="button" className="tier-card" onClick={() => setKalkulatorTier('z_umowy')}>
-              <FileText size={22}/><h3>{t.kalkulatorHome.zUmowyName}</h3><p className="tier-need">{t.kalkulatorHome.zUmowyNeed}</p><small className="form-note">{t.kalkulatorHome.zUmowyLimit}</small>
-            </button>
+            {/* 2.0a (audit "CONSOLIDATED ASSIGNMENT" v8): Tier B withdrawn by owner decision - its
+                one distinctive contribution (a contract stating the overtime threshold) did not
+                hold on the one real document available. Card hidden, nothing deleted - TierBFlow.tsx
+                and the 'z_umowy' route below still exist; the contract upload/extraction/pre-fill
+                logic is what "returns as part of PRO" per spec §4, not rebuilt from scratch. */}
             <button type="button" className="tier-card" onClick={() => setKalkulatorTier('pro')}>
               <ShieldCheck size={22}/><h3>{t.kalkulatorHome.proName}</h3><p className="tier-need">{t.kalkulatorHome.proNeed}</p><small className="form-note">{t.kalkulatorHome.proLimit}</small>
             </button>

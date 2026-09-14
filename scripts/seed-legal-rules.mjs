@@ -44,6 +44,15 @@
 //     this round. Re-verifying these against wetten.overheid.nl is recommended before relying on
 //     this seed as authoritative.
 //
+//   reiskostenvergoeding_onbelast
+//     VERIFIED this session (2.0d, audit "CONSOLIDATED ASSIGNMENT" v8), by fetching the
+//     belastingdienst.nl page directly (not resting on WebSearch convergence alone, per §2.2):
+//     the untaxed per-kilometre travel reimbursement maximum rises from EUR 0.23 to EUR 0.25,
+//     with retroactive force from 1 January 2026. Not consumed by any code path yet - the two
+//     checks that would use it (excess-over-cap is taxable; a fixed-daily amount implying an
+//     over-cap effective per-km rate) are explicitly deferred to Tier C Stage 4. Only the cap
+//     itself, with its validity date, is in scope this round.
+//
 //   cao_abu_uitzendkrachten
 //     AUDIT V3 (round 5): this rule previously carried placeholder Saturday/Sunday percentages
 //     (25%/50%) explicitly flagged as unverified. Per your own NEW FINDING 2 from round 4: the ABU
@@ -151,6 +160,28 @@ const RULES = [
           ],
         },
         source_url: 'https://wetten.overheid.nl/BWBR0005290/#Boek7_Titeldeel10_Afdeling2_Artikel672',
+      },
+    ],
+  },
+  {
+    code: 'reiskostenvergoeding_onbelast',
+    title: 'Maximale onbelaste reiskostenvergoeding per kilometer (2.0d, audit "CONSOLIDATED ASSIGNMENT" v8)',
+    versions: [
+      {
+        // VERIFIED this session against belastingdienst.nl directly (WebFetch, not WebSearch alone,
+        // per §2.2 - two WebSearch calls had already converged on this figure but that is
+        // corroboration, not verification): "Het kabinet verhoogt de onbelaste vergoeding van
+        // € 0,23 naar € 0,25 per kilometer", met terugwerkende kracht vanaf 1 januari 2026. Not
+        // consumed by any code path yet - the two checks that would use this (excess-over-cap is
+        // taxable wage; a fixed-daily amount implying an over-cap effective per-km rate) are
+        // explicitly deferred to Tier C Stage 4. This round only adds the cap to the rules database
+        // with its validity date, per "it goes in the rules database like every other statutory
+        // value" - the same "exists as a documented value, not yet wired up" shape as
+        // cao_abu_uitzendkrachten above.
+        valid_from: '2026-01-01',
+        valid_to: null,
+        parameters: { max_untaxed_per_km: 0.25 },
+        source_url: 'https://www.belastingdienst.nl/wps/wcm/connect/bldcontentnl/berichten/nieuws/verhoging-onbelaste-kilometervergoeding-hoe-verwerkt-u-dit-in-de-loonaangifte',
       },
     ],
   },

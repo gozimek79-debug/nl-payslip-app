@@ -57,6 +57,47 @@ interface SurchargeLineForm {
   percent: string;
 }
 
+/**
+ * 2.0d (audit "CONSOLIDATED ASSIGNMENT" v8, spec §5d): employers reimburse commuting in
+ * materially different ways, and a payslip's single untaxed-addition line does not reveal which
+ * rule produced it - the app must ask, not assume. Computed client-side into a single EUR figure
+ * that feeds `travel_allowance` exactly as before (no backend contract change - TierAInput never
+ * needed to know the FORM, only the resulting amount). The untaxed per-km cap and the two checks
+ * that depend on it (spec §5d) are explicitly deferred to Tier C stage 4 - this is the input form
+ * only, not the compliance check.
+ */
+type TravelMode = 'none' | 'per_km' | 'fixed_per_day';
+type TravelDistanceType = 'one_way' | 'return';
+interface TravelForm {
+  mode: TravelMode;
+  ratePerKm: string;
+  distance: string;
+  distanceType: TravelDistanceType;
+  amountPerDay: string;
+  days: string;
+}
+
+/** Distance entered as one-way must be doubled before multiplying by days - the exact "wrong
+ * reading doubles or halves the figure" risk spec §5d names. `days` here is DAYS TRAVELLED, never
+ * fiscal days (a real, confirmed auditor error on the real reference document: fiscale dagen 5 vs
+ * 6 actual days worked, which would have produced a false 15 EUR "discrepancy" against a payslip
+ * that was correct - the distinction matters even in this free-calculator input, not only in a
+ * future Tier C check). */
+function computeTravelAllowance(form: TravelForm): number {
+  const rate = parseDecimal(form.ratePerKm);
+  const distance = parseDecimal(form.distance);
+  const amountPerDay = parseDecimal(form.amountPerDay);
+  const days = parseDecimal(form.days);
+  if (form.mode === 'per_km') {
+    const roundTripDistance = form.distanceType === 'one_way' ? distance * 2 : distance;
+    return Math.round(rate * roundTripDistance * days * 100) / 100;
+  }
+  if (form.mode === 'fixed_per_day') {
+    return Math.round(amountPerDay * days * 100) / 100;
+  }
+  return 0;
+}
+
 interface PreTaxDeductionLine {
   category: string;
   description: string;
@@ -293,7 +334,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
   const [holidayPercent, setHolidayPercent] = useState('');
   const [surchargeLines, setSurchargeLines] = useState<SurchargeLineForm[]>([]);
   const [applyLoonheffingskorting, setApplyLoonheffingskorting] = useState(true);
-  const [travelAllowance, setTravelAllowance] = useState('0');
+  const [travelForm, setTravelForm] = useState<TravelForm>({ mode: 'none', ratePerKm: '', distance: '', distanceType: 'one_way', amountPerDay: '', days: '' });
   const [vakantiegeldMode, setVakantiegeldMode] = useState<VakantiegeldMode>('accruing');
   const [vakantiegeldPercent, setVakantiegeldPercent] = useState('8');
   const [deductionMode, setDeductionMode] = useState<DeductionMode>('estimate');
@@ -352,7 +393,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
         .filter(line => line.hours.trim() !== '')
         .map(line => ({ description: line.description || t.defaultLineDescription, hours: parseDecimal(line.hours), percent: parseDecimal(line.percent) })),
       apply_loonheffingskorting: applyLoonheffingskorting,
-      travel_allowance: parseDecimal(travelAllowance),
+      travel_allowance: computeTravelAllowance(travelForm),
       vakantiegeld: vakantiegeldMode === 'none' ? { mode: 'none' } : { mode: vakantiegeldMode, percent: parseDecimal(vakantiegeldPercent) },
       deductions: {
         mode: deductionMode,
@@ -520,9 +561,47 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
           <div className="calc-toggles">
             <label className="calc-toggle"><input type="checkbox" checked={applyLoonheffingskorting} onChange={event => setApplyLoonheffingskorting(event.target.checked)}/> {t.loonheffingskorting}</label>
           </div>
-          <label>{t.travelAllowance}
-            <div className="money-input"><span>€</span><input inputMode="decimal" value={travelAllowance} onChange={event => setTravelAllowance(sanitizeDecimal(event.target.value))}/></div>
-          </label>
+          <h3 className="calc-subheading">{t.travelAllowance}</h3>
+          <div className="calc-toggles">
+            <label className="calc-toggle"><input type="radio" name="travel" checked={travelForm.mode === 'none'} onChange={() => setTravelForm(f => ({ ...f, mode: 'none' }))}/> {t.travelNone}</label>
+            <label className="calc-toggle"><input type="radio" name="travel" checked={travelForm.mode === 'per_km'} onChange={() => setTravelForm(f => ({ ...f, mode: 'per_km' }))}/> {t.travelPerKm}</label>
+            <label className="calc-toggle"><input type="radio" name="travel" checked={travelForm.mode === 'fixed_per_day'} onChange={() => setTravelForm(f => ({ ...f, mode: 'fixed_per_day' }))}/> {t.travelFixedPerDay}</label>
+          </div>
+          {travelForm.mode === 'per_km' && (
+            <div className="fields-grid">
+              <label>{t.travelRatePerKm}
+                <div className="money-input"><span>€</span><input inputMode="decimal" value={travelForm.ratePerKm} onChange={event => setTravelForm(f => ({ ...f, ratePerKm: sanitizeDecimal(event.target.value) }))}/></div>
+              </label>
+              <label>{t.travelDistance}
+                <div className="money-input"><span>km</span><input inputMode="decimal" value={travelForm.distance} onChange={event => setTravelForm(f => ({ ...f, distance: sanitizeDecimal(event.target.value) }))}/></div>
+              </label>
+              <label className="calc-select-label">{t.travelDistanceType}
+                <select value={travelForm.distanceType} onChange={event => setTravelForm(f => ({ ...f, distanceType: event.target.value as TravelDistanceType }))}>
+                  <option value="one_way">{t.travelOneWay}</option>
+                  <option value="return">{t.travelReturn}</option>
+                </select>
+              </label>
+              <label>{t.travelDaysTravelled}
+                <div className="money-input"><span>#</span><input inputMode="decimal" value={travelForm.days} onChange={event => setTravelForm(f => ({ ...f, days: sanitizeDecimal(event.target.value) }))}/></div>
+              </label>
+            </div>
+          )}
+          {travelForm.mode === 'fixed_per_day' && (
+            <div className="fields-grid">
+              <label>{t.travelAmountPerDay}
+                <div className="money-input"><span>€</span><input inputMode="decimal" value={travelForm.amountPerDay} onChange={event => setTravelForm(f => ({ ...f, amountPerDay: sanitizeDecimal(event.target.value) }))}/></div>
+              </label>
+              <label>{t.travelDaysTravelled}
+                <div className="money-input"><span>#</span><input inputMode="decimal" value={travelForm.days} onChange={event => setTravelForm(f => ({ ...f, days: sanitizeDecimal(event.target.value) }))}/></div>
+              </label>
+            </div>
+          )}
+          {travelForm.mode !== 'none' && (
+            <>
+              <p className="form-note">{t.travelDaysHint}</p>
+              <p className="form-note"><strong>{t.travelComputed}: {money(computeTravelAllowance(travelForm))}</strong></p>
+            </>
+          )}
 
           <h3 className="calc-subheading">{t.vakantiegeldTitle}</h3>
           <div className="calc-toggles">

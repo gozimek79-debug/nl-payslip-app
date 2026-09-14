@@ -20,6 +20,9 @@ interface ContractExtraction {
   probationPeriodWeeks: number | null;
   noticePeriodWeeks: number | null;
   thirtyPercentRuling: boolean;
+  overtimeTierThresholdHours: number | null;
+  guaranteedHours: number | null;
+  guaranteedHoursPeriodWeeks: number | null;
   redactedFields: string[];
 }
 
@@ -33,10 +36,18 @@ interface ContractAnalysisResult {
   flags: ContractFlag[];
 }
 
-interface ContractResponse { extraction: ContractExtraction; analysis: ContractAnalysisResult; explanation: string }
+interface ImplausibleField { field: 'hoursPerWeek' | 'hourlyRate'; extractedValue: number; code: string; bound: number }
+
+interface ContractResponse { extraction: ContractExtraction; analysis: ContractAnalysisResult; explanation: string; implausibleFields: ImplausibleField[] }
 
 export function ContractAnalysis({ lang }: { lang: Lang }) {
   const t = translations[lang].contract;
+  // This flow hits the exact same /api/contracts/analyze endpoint TierBFlow.tsx does, so its
+  // error_code -> message mapping is reused rather than duplicated a third time (the `contract`
+  // translation block has no error-code strings of its own - `error_code` was added to this
+  // controller in a round that only updated TierBFlow.tsx's consumer, not this still-live one; a
+  // real gap, fixed here rather than left for whoever next touches this file).
+  const errorMessages = translations[lang].tierB;
   const progressLabels = translations[lang].progress;
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
@@ -54,8 +65,17 @@ export function ContractAnalysis({ lang }: { lang: Lang }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ images, language: lang }),
       });
-      const data = await response.json() as ContractResponse & { error?: string };
-      if (!response.ok) throw new Error(data.error ?? 'Error');
+      const data = await response.json() as ContractResponse & { error_code?: string };
+      if (!response.ok) {
+        const code = data.error_code;
+        const translated = code === 'vision_unavailable' ? errorMessages.errorVisionUnavailable
+          : code === 'invalid_input' ? errorMessages.errorInvalidInput
+          : code === 'extraction_failed' ? errorMessages.errorExtractionFailed
+          : code === 'rate_limit_unknown' ? errorMessages.errorRateLimitUnknown
+          : code === 'rate_limit_exceeded' ? errorMessages.errorRateLimitExceeded
+          : errorMessages.error;
+        throw new Error(translated);
+      }
       setResult(data); setUploadState('accepted'); setMessage('');
     } catch (error) {
       setUploadState('error'); setMessage(error instanceof Error ? error.message : 'Error');
@@ -134,6 +154,14 @@ export function ContractAnalysis({ lang }: { lang: Lang }) {
         {result.extraction.redactedFields.length > 0 && (
           <div className="status error"><AlertTriangle size={16}/> {t.redactedNotice}</div>
         )}
+
+        {/* 2.0b: a plausibility bound was crossed - the value is already nulled out server-side
+            (never silently used), and this asks rather than accuses, per stage 1's own pattern. */}
+        {result.implausibleFields.map((flag) => (
+          <div className="status error" key={flag.field}>
+            <AlertTriangle size={16}/> {t.implausibleNotice(flag.field === 'hoursPerWeek' ? t.hoursPerWeek : t.hourlyRate, flag.extractedValue, flag.bound)}
+          </div>
+        ))}
 
         <div className="notice-card">
           <Info/>

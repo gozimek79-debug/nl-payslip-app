@@ -26,6 +26,13 @@ export interface ContractExtraction {
    * percentages are generic tiers, not "Saturday = X%"), and one document isn't enough evidence to
    * design that schema without guessing its shape (§2.4). */
   overtimeTierThresholdHours: number | null;
+  /** 2.0c (audit "CONSOLIDATED ASSIGNMENT" v8): Art. 2.4 of the real Olympia contract states a real
+   * entitlement the model had no field for - "64,00 hours per 4 weken" payable even if the hirer
+   * offers fewer hours (a guarantee, distinct from `hoursPerWeek` which is just a rate/scheduling
+   * figure with no such backing). Field added now so PRO can use it later; the check itself (worked
+   * hours against this guarantee) is explicitly deferred, not built this round. */
+  guaranteedHours: number | null;
+  guaranteedHoursPeriodWeeks: number | null;
   /** Nazwy pól, które zostały odrzucone/wyzerowane po stronie serwera, bo wyglądały na dane osobowe. */
   redactedFields: string[];
 }
@@ -69,6 +76,55 @@ const STATIC_OPZEGTERMIJN: OpzegtermijnRules = {
   ],
 };
 const WEEKS_PER_MONTH = 4.33;
+
+/**
+ * ============================================================================================
+ * 2.0b (audit "CONSOLIDATED ASSIGNMENT" v8) - PLAUSIBILITY BOUNDS, a failure mode tolerance design
+ * cannot reach. The live model read the real contract's "64 hours per 4 weeks" as something that
+ * came out unit-wrong and period-wrong - digits right, everything else not. No tolerance check
+ * catches that, because the digits ARE right; this is §2.1's "unknown, never zero" rule applied to
+ * a different failure class: a value that is confidently, precisely WRONG, not merely absent.
+ *
+ * `hoursPerWeek` <= 168 (24h x 7 days - the actual physical ceiling, not a labour-law figure) and
+ * `hourlyRate` <= 200 are implausibility screens, not statutory bounds - they exist to catch a unit/
+ * period confusion in the reading, not to encode a legal maximum. 200 EUR/hour has no source and
+ * needs none: it is a "this cannot be right" backstop for THIS product's population (agency/temp
+ * workers), not a claim about what any real contract could legally state.
+ *
+ * Hours-per-day (<=24) and days-per-week (<=7) bounds already exist structurally elsewhere - the
+ * Tier A hour grid's own zod schema caps regular/overtime hours at 24 per cell
+ * (tier-a.controller.ts's dayHoursSchema), and the grid's fixed 7-day shape makes a days-per-week
+ * bound automatic. Contract extraction has no per-day/per-week grid, only aggregate hoursPerWeek -
+ * these two bounds are the ones actually missing, and the only ones added here.
+ * ============================================================================================
+ */
+export interface ImplausibleField {
+  field: 'hoursPerWeek' | 'hourlyRate';
+  extractedValue: number;
+  code: 'exceeds_physical_hours_per_week' | 'exceeds_plausible_hourly_rate';
+  bound: number;
+}
+
+const MAX_PLAUSIBLE_HOURS_PER_WEEK = 168; // 24 x 7 - a physical ceiling, not a labour-law figure
+const MAX_PLAUSIBLE_HOURLY_RATE = 200; // an implausibility screen for this product's population, not a legal maximum
+
+/**
+ * Checks raw extraction against the bounds above and returns what to flag - does NOT mutate the
+ * extraction itself. The caller (contract.controller.ts) is responsible for nulling the flagged
+ * field before it reaches anything downstream (analyzeContract's minimum-wage math, a Tier A
+ * pre-fill) and for surfacing the question this implies (stage 1's middle-band pattern: a plausible
+ * misread asks, it does not silently get used and does not silently get discarded either).
+ */
+export function checkContractPlausibility(extraction: Pick<ContractExtraction, 'hoursPerWeek' | 'hourlyRate'>): ImplausibleField[] {
+  const flags: ImplausibleField[] = [];
+  if (extraction.hoursPerWeek !== null && extraction.hoursPerWeek > MAX_PLAUSIBLE_HOURS_PER_WEEK) {
+    flags.push({ field: 'hoursPerWeek', extractedValue: extraction.hoursPerWeek, code: 'exceeds_physical_hours_per_week', bound: MAX_PLAUSIBLE_HOURS_PER_WEEK });
+  }
+  if (extraction.hourlyRate !== null && extraction.hourlyRate > MAX_PLAUSIBLE_HOURLY_RATE) {
+    flags.push({ field: 'hourlyRate', extractedValue: extraction.hourlyRate, code: 'exceeds_plausible_hourly_rate', bound: MAX_PLAUSIBLE_HOURLY_RATE });
+  }
+  return flags;
+}
 
 /**
  * Derives an hourly-equivalent wage from whatever the contract actually states. Per audit

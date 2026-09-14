@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeContract, resolveReferenceDate, type ContractExtraction } from './contract.js';
+import { analyzeContract, checkContractPlausibility, resolveReferenceDate, type ContractExtraction } from './contract.js';
 
 function baseExtraction(overrides: Partial<ContractExtraction> = {}): ContractExtraction {
   return {
@@ -18,6 +18,8 @@ function baseExtraction(overrides: Partial<ContractExtraction> = {}): ContractEx
     noticePeriodWeeks: null,
     thirtyPercentRuling: false,
     overtimeTierThresholdHours: null,
+    guaranteedHours: null,
+    guaranteedHoursPeriodWeeks: null,
     redactedFields: [],
     ...overrides,
   };
@@ -76,10 +78,18 @@ function olympiaContractExtraction(overrides: Partial<ContractExtraction> = {}):
     noticePeriodWeeks: null, // see §3.3 finding below - the stated notice concept doesn't map cleanly, so it is left unknown rather than guessed
     thirtyPercentRuling: false,
     overtimeTierThresholdHours: null, // the real finding: confirmed absent, see test below
+    guaranteedHours: 64, // Art. 2.4: "64,00 hours per 4 weken" payable even if the hirer offers fewer
+    guaranteedHoursPeriodWeeks: 4,
     redactedFields: [],
     ...overrides,
   });
 }
+
+test('2.0c: the real Olympia contract states a guaranteed-hours clause (Art. 2.4) - 64 hours per 4 weeks', () => {
+  const extraction = olympiaContractExtraction();
+  assert.equal(extraction.guaranteedHours, 64);
+  assert.equal(extraction.guaranteedHoursPeriodWeeks, 4);
+});
 
 test("§3.3: the real Olympia contract does NOT state an overtime tier threshold - it lists percentage tiers, never the hour boundary between them", () => {
   // Article 2.9 of the real document lists: Overwerkuren 130%/150%/200%, and Onregelmatige uren
@@ -100,4 +110,43 @@ test('§3.2: this contract IS above minimum wage and DOES verify cleanly on the 
     assert.equal(analysis.minimumWageVerifiable, true);
     assert.equal(analysis.isBelowMinimumWage, false);
   });
+});
+
+/**
+ * ============================================================================================
+ * 2.0b - plausibility bounds. Direct evidence this exists for a real, observed failure: the live
+ * model read the Olympia contract's "64,00 uren per 4 weken" and produced something unit/period-
+ * wrong (confirmed live, this round) - a class of error no tolerance check catches, because the
+ * digits themselves were right.
+ * ============================================================================================
+ */
+
+test('2.0b: an hours-per-week figure past the physical ceiling (168 = 24x7) is flagged, not silently used', () => {
+  // Reproduces the shape of the real failure: a per-4-week figure (64) misread as if it were a
+  // larger unit (e.g. treated as days, or left unconverted across a longer period) landing well
+  // past what a single week can physically hold.
+  const flags = checkContractPlausibility({ hoursPerWeek: 256, hourlyRate: 15.55 });
+  assert.deepEqual(flags, [{ field: 'hoursPerWeek', extractedValue: 256, code: 'exceeds_physical_hours_per_week', bound: 168 }]);
+});
+
+test('2.0b: the real, correct Olympia figure (16 hours/week, from 64 per 4 weeks correctly converted) is NOT flagged', () => {
+  const flags = checkContractPlausibility({ hoursPerWeek: 16, hourlyRate: 15.55 });
+  assert.deepEqual(flags, []);
+});
+
+test('2.0b: an implausible hourly rate is flagged independently of hours', () => {
+  const flags = checkContractPlausibility({ hoursPerWeek: 16, hourlyRate: 1555 }); // e.g. a decimal-point misread
+  assert.deepEqual(flags, [{ field: 'hourlyRate', extractedValue: 1555, code: 'exceeds_plausible_hourly_rate', bound: 200 }]);
+});
+
+test('2.0b: null fields (nothing extracted) never get flagged - absence is not implausibility', () => {
+  const flags = checkContractPlausibility({ hoursPerWeek: null, hourlyRate: null });
+  assert.deepEqual(flags, []);
+});
+
+test('2.0b: both fields can be flagged at once, independently', () => {
+  const flags = checkContractPlausibility({ hoursPerWeek: 999, hourlyRate: 9999 });
+  assert.equal(flags.length, 2);
+  assert.ok(flags.some((f) => f.field === 'hoursPerWeek'));
+  assert.ok(flags.some((f) => f.field === 'hourlyRate'));
 });

@@ -1,7 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { extractContract } from '../ocr-service/contract-client.js';
-import { analyzeContract } from '../payroll-engine/contract.js';
+import { analyzeContract, checkContractPlausibility } from '../payroll-engine/contract.js';
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
 import { getMinimumWageAt } from '../rules-repository.js';
@@ -31,7 +31,17 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
 
   const language = parsed.data.language ?? 'pl';
   try {
-    const extraction = await extractContract(parsed.data.images);
+    const rawExtraction = await extractContract(parsed.data.images);
+    // 2.0b: plausibility bounds, checked and nulled BEFORE anything downstream (the minimum-wage
+    // math below, a future Tier A pre-fill) can use an implausible value - the exact failure mode a
+    // tolerance check cannot reach (digits right, unit/period wrong). Flagged fields are returned
+    // separately (`implausibleFields`) so the frontend can ask, per stage 1's middle-band pattern,
+    // rather than either silently trusting or silently discarding the misread value.
+    const implausibleFields = checkContractPlausibility(rawExtraction);
+    const extraction = implausibleFields.reduce(
+      (acc, flag) => ({ ...acc, [flag.field]: null }),
+      rawExtraction,
+    );
     // Two different questions need two different reference dates (audit R2, a regression from
     // last round's B2 fix): proeftijd/opzegtermijn ask "was this contract term legal when signed"
     // -> the contract's own start date (analyzeContract still resolves that internally, unchanged).
@@ -72,7 +82,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       console.error('Groq contract explain error', error);
     }
 
-    return res.json({ extraction: displayExtraction, analysis, explanation });
+    return res.json({ extraction: displayExtraction, analysis, explanation, implausibleFields });
   } catch (error) {
     console.error('Groq contract OCR error', error);
     return res.status(502).json({ error_code: 'extraction_failed' });

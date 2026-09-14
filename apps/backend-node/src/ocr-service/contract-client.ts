@@ -16,18 +16,30 @@ Zwróć WYŁĄCZNIE dane dotyczące warunków zatrudnienia istotne dla wynagrodz
 Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown, bez komentarzy):
 {"ct":string|null,"emp":string|null,"fn":string|null,"sd":string|null,"ed":string|null,
 "hpw":number|null,"hr":number|null,"ms":number|null,"cao":string|null,"pf":string|null,
-"pp":number|null,"np":number|null,"tpr":boolean,"ott":number|null}
+"pp":number|null,"np":number|null,"tpr":boolean,"ott":number|null,"gh":number|null,"ghpw":number|null}
 
 Znaczenie kluczy: ct=typ umowy (np. "Bepaalde tijd"/"Onbepaalde tijd"/"Uitzendovereenkomst fase A"),
 emp=WYŁĄCZNIE nazwa firmy pracodawcy (nigdy nazwisko osoby), fn=nazwa stanowiska/funkcji,
 sd=data rozpoczęcia (YYYY-MM-DD), ed=data zakończenia jeśli określona (YYYY-MM-DD lub null),
-hpw=godziny w tygodniu, hr=stawka godzinowa w EUR (null jeśli umowa miesięczna), ms=wynagrodzenie
+hr=stawka godzinowa w EUR (null jeśli umowa miesięczna), ms=wynagrodzenie
 miesięczne brutto w EUR (null jeśli stawka godzinowa), cao=nazwa układu zbiorowego (CAO),
 pf=nazwa funduszu emerytalnego, pp=długość okresu próbnego w tygodniach, np=okres wypowiedzenia
 w tygodniach, tpr=czy umowa wspomina o uldze 30% (30%-regeling). ott=próg nadgodzin: liczba godzin
 PO KTÓRYCH stawka nadgodzin rośnie na wyższy próg (NIE lista procentów samych w sobie - szukaj
 zdania mówiącego "po X godzinach" albo podobnego; jeśli umowa wymienia tylko same procenty
 nadgodzin bez podanej liczby godzin granicznej, zwróć null - nie zgaduj tej wartości).
+
+hpw=godziny W TYGODNIU. UWAGA - umowy uitzendkracht CZĘSTO podają liczbę godzin za DŁUŻSZY okres,
+np. "64,00 uren per 4 weken" (64 godziny na 4 TYGODNIE, nie 64 godziny na tydzień i nie 64 dni).
+W takim przypadku PRZELICZ na tydzień: hpw = 64 / 4 = 16. NIGDY nie zwracaj liczby dni jako godzin
+i nigdy nie zwracaj liczby z dłuższego okresu bez podzielenia przez liczbę tygodni tego okresu.
+Jeśli nie jesteś pewien jednostki lub okresu, zwróć null zamiast zgadywać.
+
+gh=liczba godzin z takiej klauzuli "gwarantowanych godzin" TAK JAK WYDRUKOWANA, BEZ przeliczania
+(np. dla "64,00 uren per 4 weken" gh=64) - to jest zobowiązanie pracodawcy do wypłaty za tę liczbę
+godzin nawet jeśli zleceniodawca zaoferuje mniej, osobne pojęcie od hpw. ghpw=liczba tygodni tego
+okresu (np. 4 dla "per 4 weken", 1 dla "per week"). Zwróć oba jako null, jeśli umowa nie zawiera
+takiej klauzuli o gwarancji godzin.
 
 Kropka jako separator dziesiętny. Brak danej = null (nie 0, nie pusty string).
 `.trim();
@@ -91,6 +103,8 @@ export async function extractContract(imageDataUrls: string[]): Promise<Contract
     noticePeriodWeeks: toNullableNumber(parsed.np),
     thirtyPercentRuling: parsed.tpr === true,
     overtimeTierThresholdHours: toNullableNumber(parsed.ott),
+    guaranteedHours: toNullableNumber(parsed.gh),
+    guaranteedHoursPeriodWeeks: toNullableNumber(parsed.ghpw),
     redactedFields,
   };
 }

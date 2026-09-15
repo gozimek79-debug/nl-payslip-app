@@ -58,7 +58,7 @@ interface CompleteResult {
 type Outcome = { status: 'complete'; result: CompleteResult } | { status: 'incomplete'; missing_fields: string[]; tax_is_upper_bound: boolean; gross_total: number; taxable_base: number; table_tax_after_korting: number; bt_tax: number; total_tax: number };
 
 type DiscrepancyCode = 'table_tax_mismatch' | 'bt_tax_mismatch' | 'algemene_heffingskorting_mismatch' | 'arbeidskorting_mismatch' | 'net_mismatch' | 'payout_mismatch' | 'minimum_wage_stale_on_document' | 'minimum_wage_violation';
-interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed: number; residual: number | null; tolerance: number; confirmation_upper: number; status: 'confirm' | 'finding' }
+interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed: number; residual: number | null; tolerance: number; confirmation_upper: number; status: 'confirm' | 'finding'; printed_label: string | null }
 
 interface AnalyzeResponse {
   period: TierCPeriodResponse;
@@ -83,11 +83,11 @@ function money(value: number): string {
   return `€${value.toFixed(2)}`;
 }
 
-/** The six discrepancy codes are aggregate, whole-document reference figures (a payslip's own
- * "Loonheffing" / "Netto" summary lines), not one specific hour_line/deduction with its own captured
- * as-printed label - TierCExtraction captures the printed VALUE for these but not the printed LABEL
- * text itself (a real, separate gap, not papered over here - see this round's NEW FINDINGS). These
- * are translated generic terms, not a claim that this is what the document itself prints. */
+/** The six aggregate discrepancy codes are whole-document reference figures (a payslip's own
+ * "Loonheffing" / "Netto" summary lines). This generic, translated term is always shown; when the
+ * extraction also captured this specific document's own label for the figure (Discrepancy.printed_
+ * label, closed this round - previously a real, disclosed gap), the caller appends it via t.dutchTerm,
+ * the same "translated (NL: as-printed)" pattern already used for hour_lines/deductions below. */
 function discrepancyLabel(t: TierCCopy, code: DiscrepancyCode): string {
   return {
     table_tax_mismatch: t.codeTableTax,
@@ -334,6 +334,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <div key={d.code} className={`discrepancy-item ${status}`}>
                   <p>
                     <strong>{discrepancyLabel(t, d.code)}</strong>{' '}
+                    {d.printed_label && <span className="form-note nl-term">({t.dutchTerm(d.printed_label)})</span>}{' '}
                     <span className="form-note">({t.weRead(money(d.printed))})</span>
                   </p>
                   {status === 'confirm' && disposition.kind === 'unanswered' ? (

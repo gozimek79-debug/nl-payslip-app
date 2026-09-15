@@ -47,6 +47,11 @@ export interface Discrepancy {
   /** NEW this round: beyond `tolerance` but within this, `status` is 'confirm'. */
   confirmation_upper: number;
   status: DiscrepancyStatus;
+  /** Stage 2 body ("Dutch terms as printed... not canonical"): the label PayslipPeriod carries for
+   * this figure, exactly as printed on the source document - null when the document has no distinct
+   * label for it (never a canonical stand-in; the consumer falls back to a generic translated term
+   * in that case, per CONVENTIONS.md - the sentence-building stays in the interface, not here). */
+  printed_label: string | null;
 }
 
 /**
@@ -110,13 +115,14 @@ const pushable = (
   printed: number | null,
   tolerance: number,
   confirmationUpper: number,
+  printedLabel: string | null = null,
 ): Discrepancy | null => {
   if (printed === null) return null; // nothing printed to check against - not a discrepancy, an absence
   const residual = Math.round((computed - printed) * 100) / 100;
   const magnitude = Math.abs(residual);
   if (magnitude <= tolerance) return null; // silent - the original BP4 guarantee, unchanged
   const status: DiscrepancyStatus = magnitude <= confirmationUpper ? 'confirm' : 'finding';
-  return { code, computed, printed, residual, tolerance, confirmation_upper: confirmationUpper, status };
+  return { code, computed, printed, residual, tolerance, confirmation_upper: confirmationUpper, status, printed_label: printedLabel };
 };
 
 /**
@@ -140,23 +146,23 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
 
   if (outcome.status === 'complete') {
     const { result } = outcome;
-    push(pushable('table_tax_mismatch', result.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper));
-    push(pushable('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER));
-    push(pushable('algemene_heffingskorting_mismatch', result.algemene_heffingskorting, period.printed_algemene_heffingskorting, heffingskortingTolerance, heffingskortingConfirmationUpper));
-    push(pushable('arbeidskorting_mismatch', result.arbeidskorting, period.printed_arbeidskorting, heffingskortingTolerance, heffingskortingConfirmationUpper));
+    push(pushable('table_tax_mismatch', result.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper, period.printed_table_tax_label));
+    push(pushable('bt_tax_mismatch', result.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER, period.printed_bt_tax_label));
+    push(pushable('algemene_heffingskorting_mismatch', result.algemene_heffingskorting, period.printed_algemene_heffingskorting, heffingskortingTolerance, heffingskortingConfirmationUpper, period.printed_algemene_heffingskorting_label));
+    push(pushable('arbeidskorting_mismatch', result.arbeidskorting, period.printed_arbeidskorting, heffingskortingTolerance, heffingskortingConfirmationUpper, period.printed_arbeidskorting_label));
     // CL: net_mismatch/payout_mismatch were declared for two rounds with nothing pushing them - a
     // net_lines misclassification (a reimbursement read as a deduction) would silently pass "no
     // discrepancy" with only the four checks above. Reuses tableTolerance (not a fresh number): both
     // figures are downstream of table_tax_after_korting, so they inherit its own rounding residual
     // one-for-one and cannot be held to a tighter band than the figure they're built from. Same
     // reasoning extends to the confirmation edge.
-    push(pushable('net_mismatch', result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper));
-    push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper));
+    push(pushable('net_mismatch', result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
+    push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper, period.printed_payout_label));
   } else {
     // Incomplete: table_tax/bt_tax are still present (as an upper bound, or fully correct if only
     // post-tax was unknown - see IncompletePayslipComputation's own doc comment), net/payout are not.
-    push(pushable('table_tax_mismatch', outcome.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper));
-    push(pushable('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER));
+    push(pushable('table_tax_mismatch', outcome.table_tax_after_korting, period.printed_table_tax, tableTolerance, tableConfirmationUpper, period.printed_table_tax_label));
+    push(pushable('bt_tax_mismatch', outcome.bt_tax, period.printed_bt_tax, BT_TAX_TOLERANCE, BT_TAX_CONFIRMATION_UPPER, period.printed_bt_tax_label));
   }
 
   // Minimum wage: audit N4/BP1 point 4 - `wml_applicable` must already be resolved from the rules

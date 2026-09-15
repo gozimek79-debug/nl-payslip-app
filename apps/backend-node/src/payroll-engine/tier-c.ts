@@ -153,6 +153,16 @@ export interface TierCExtraction {
   printed_arbeidskorting: number | null;
   reported_total_net: number | null;
   reported_net_paid: number | null;
+  /** Stage 2 body ("Dutch terms as printed... not canonical"): the as-printed label next to each of
+   * the six reference figures above, captured verbatim exactly like hour_lines[].description already
+   * is - null (never a guessed canonical term) when the document has no distinct label for that
+   * figure. See discrepancy.ts's Discrepancy.printed_label for where this surfaces to the user. */
+  printed_table_tax_label: string | null;
+  printed_bt_tax_label: string | null;
+  printed_algemene_heffingskorting_label: string | null;
+  printed_arbeidskorting_label: string | null;
+  printed_net_label: string | null;
+  printed_payout_label: string | null;
   truncated: boolean;
   redacted_fields: string[];
 }
@@ -267,5 +277,11 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     // TierCExtraction, comparePeriodToDocument declared codes for them, but nothing connected the two.
     printed_net: extraction.reported_total_net,
     printed_payout: extraction.reported_net_paid,
+    printed_table_tax_label: extraction.printed_table_tax_label,
+    printed_bt_tax_label: extraction.printed_bt_tax_label,
+    printed_algemene_heffingskorting_label: extraction.printed_algemene_heffingskorting_label,
+    printed_arbeidskorting_label: extraction.printed_arbeidskorting_label,
+    printed_net_label: extraction.printed_net_label,
+    printed_payout_label: extraction.printed_payout_label,
   };
 }

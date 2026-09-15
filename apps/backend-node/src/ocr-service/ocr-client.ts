@@ -148,7 +148,8 @@ Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown) o strukturze:
 "pa":[{"d":string,"a":number}],
 "rl":[{"t":string,"o":number,"p":number}],
 "ptt":number|null,"pbt":number|null,"pahk":number|null,"pak":number|null,
-"rtn":number|null,"rnp":number|null}
+"rtn":number|null,"rnp":number|null,
+"ptl":string|null,"pbl":string|null,"phl":string|null,"pkl":string|null,"pnl":string|null,"ppl":string|null}
 
 Znaczenie pól: per=okres jako opisany na dokumencie, ped=OSTATNI dzień okresu jako data ISO YYYY-MM-DD,
 pt=typ okresu ("w"=tydzień, "4w"=4 tygodnie, "m"=miesiąc), ic=czy to KOREKTA/herziening (true tylko
@@ -192,6 +193,12 @@ ptt=wydrukowana kwota "loonheffing"/podatek wg tabeli, pbt=wydrukowana kwota pod
 tarief (jeśli osobna linia), pahk=wydrukowana algemene heffingskorting (jeśli widoczna osobno),
 pak=wydrukowana arbeidskorting (jeśli widoczna osobno), rtn=wydrukowana suma netto, rnp=faktycznie
 wypłacona kwota.
+
+ptl/pbl/phl/pkl/pnl/ppl=DOKŁADNA etykieta wydrukowana na TYM dokumencie obok odpowiednio ptt/pbt/pahk/
+pak/rtn/rnp (np. "Loonheffing", "Bijzondere beloningen", "Algemene heffingskorting", "Arbeidskorting",
+"Netto loon", "Uit te betalen") - skopiuj TAK JAK WYDRUKOWANA, nigdy nie tłumacz i nie ujednolicaj do
+kanonicznej nazwy. null, jeśli dana kwota nie ma własnej, osobnej etykiety na dokumencie (np. jest
+częścią zbiorczego bloku podsumowania bez własnego podpisu).
 
 Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0 i nie zgadywanie); "d" to opis
 DOKŁADNIE jak wydrukowany na dokumencie, nigdy tłumaczony ani skracany ponad потrzebę.
@@ -374,6 +381,16 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     printed_arbeidskorting: toNullableNumber(parsed.pak),
     reported_total_net: toNullableNumber(parsed.rtn),
     reported_net_paid: toNullableNumber(parsed.rnp),
+    // Stage 2 body ("Dutch terms as printed... not canonical"): the as-printed label for each of the
+    // six reference figures above, captured the same way hl[].d already is - verbatim, never a
+    // canonical/translated stand-in. null (not a guess) whenever the document has no distinct label
+    // of its own for that figure.
+    printed_table_tax_label: sanitizeText(parsed.ptl, 'ptl', redactedFields),
+    printed_bt_tax_label: sanitizeText(parsed.pbl, 'pbl', redactedFields),
+    printed_algemene_heffingskorting_label: sanitizeText(parsed.phl, 'phl', redactedFields),
+    printed_arbeidskorting_label: sanitizeText(parsed.pkl, 'pkl', redactedFields),
+    printed_net_label: sanitizeText(parsed.pnl, 'pnl', redactedFields),
+    printed_payout_label: sanitizeText(parsed.ppl, 'ppl', redactedFields),
     truncated: hitLengthLimit || parseNeededRepair,
     redacted_fields: redactedFields,
   };

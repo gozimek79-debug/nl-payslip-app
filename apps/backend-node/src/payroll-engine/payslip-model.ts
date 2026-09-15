@@ -186,6 +186,17 @@ export interface PayslipPeriod {
    * .payout_amount, the line a worker actually sees land in their account). */
   printed_net: number | null;
   printed_payout: number | null;
+
+  /** As-printed label for each figure above, exactly as it appears on the source document (never a
+   * canonical/translated stand-in) - null for a manually-entered period (Tier A has no document to
+   * read a label from) or when the document prints no distinct label for that figure. Only Tier C
+   * populates these today; discrepancy.ts carries them onto each Discrepancy for display. */
+  printed_table_tax_label: string | null;
+  printed_bt_tax_label: string | null;
+  printed_algemene_heffingskorting_label: string | null;
+  printed_arbeidskorting_label: string | null;
+  printed_net_label: string | null;
+  printed_payout_label: string | null;
 }
 
 export interface TaxBracket {

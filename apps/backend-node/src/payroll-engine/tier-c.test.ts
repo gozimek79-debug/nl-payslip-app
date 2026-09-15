@@ -93,6 +93,12 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
     printed_arbeidskorting: null,
     reported_total_net: null,
     reported_net_paid: null,
+    printed_table_tax_label: null,
+    printed_bt_tax_label: null,
+    printed_algemene_heffingskorting_label: null,
+    printed_arbeidskorting_label: null,
+    printed_net_label: null,
+    printed_payout_label: null,
     truncated: false,
     redacted_fields: [],
     ...overrides,
@@ -315,6 +321,42 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   // Stage 1: a 12.28 EUR residual is 24x the weekly tolerance (0.50) - nowhere near plausible
   // single-line extraction noise (confirmation band tops out at 1.5x). Must stay 'finding'.
   assert.equal(tableTaxDiscrepancy?.status, 'finding', `expected 'finding' for OTTO's real 12.28 EUR gap, got ${tableTaxDiscrepancy?.status}`);
+});
+
+/**
+ * Stage 2 body ("Dutch terms as printed... not canonical"): the printed_*_label plumbing. Uses a
+ * synthetic fixture, deliberately NOT one of the four real documents above - no real-document text
+ * for these six labels has been confirmed yet (per §2.2, that requires a real vision extraction to
+ * observe, not something to assert from memory), so this tests only that the mechanism carries
+ * whatever the extraction reports through to the discrepancy the user sees, verbatim, and degrades to
+ * null (never a fabricated canonical term) when the extraction did not capture one.
+ */
+test('2.0-body: an as-printed label captured by extraction reaches the discrepancy exactly as given', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'Test regular hours', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    printed_table_tax: 50, // far outside tolerance on purpose, so a discrepancy is guaranteed to push
+    printed_table_tax_label: 'Loonheffing', // synthetic - not asserted to be what any real document prints
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  const tableTax = discrepancies.find((d) => d.code === 'table_tax_mismatch');
+  assert.ok(tableTax, 'expected a table_tax_mismatch discrepancy given the deliberately wide gap');
+  assert.equal(tableTax?.printed_label, 'Loonheffing');
+});
+
+test('2.0-body: no label captured -> printed_label is null, never a guessed canonical term', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'Test regular hours', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    printed_table_tax: 50,
+    // printed_table_tax_label left at baseExtraction's default: null
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  const tableTax = discrepancies.find((d) => d.code === 'table_tax_mismatch');
+  assert.ok(tableTax);
+  assert.equal(tableTax?.printed_label, null);
 });
 
 /**

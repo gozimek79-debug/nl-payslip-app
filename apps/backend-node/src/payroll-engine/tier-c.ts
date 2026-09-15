@@ -124,6 +124,11 @@ export interface TierCReservationLine {
 export interface TierCExtraction {
   period_label: string | null;
   period_end_date: string | null;
+  /** Stage 2b (audit v12): the date the payslip states it was PAID, distinct from period_end_date -
+   * a real document (Olympia) can print a period-end date whose YEAR was misread while a separately-
+   * printed payment date is correct (or vice versa); comparing the two is one of extraction-
+   * consistency.ts's checks. null when the document prints no separate payment date. */
+  payment_date: string | null;
   period_type: TierCPeriodType | null;
   is_correction: boolean;
   version: number;

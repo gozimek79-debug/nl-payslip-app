@@ -138,7 +138,7 @@ Przeanalizuj WSZYSTKIE strony dokumentu, od pierwszej do ostatniej sekcji (dokum
 sekcją "Netto" tuż przed wierszem "Totaal netto"/"Totalen" - NIE pomijaj jej).
 
 Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown) o strukturze:
-{"per":string|null,"ped":string|null,"pt":"w"|"4w"|"m"|null,"ic":boolean,"ver":number,
+{"per":string|null,"ped":string|null,"pd":string|null,"pt":"w"|"4w"|"m"|null,"ic":boolean,"ver":number,
 "emp":string[],"hir":string|null,"hpw":number|null,"mw":number|null,"btp":number|null,"btj":number|null,
 "hl":[{"d":string,"h":number|null,"r":number|null,"pc":number|null,"a":number,"c":string,"tt":string,"ah":boolean,"ei":number}],
 "pdl":[{"d":string,"a":number,"c":string,"b":number|null,"pc":number|null}],
@@ -151,7 +151,16 @@ Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown) o strukturze:
 "rtn":number|null,"rnp":number|null,
 "ptl":string|null,"pbl":string|null,"phl":string|null,"pkl":string|null,"pnl":string|null,"ppl":string|null}
 
-Znaczenie pól: per=okres jako opisany na dokumencie, ped=OSTATNI dzień okresu jako data ISO YYYY-MM-DD,
+Znaczenie pól: per=okres jako opisany na dokumencie DOKŁADNIE tak jak wydrukowany (np. "week 36/2026",
+nigdy nie zamieniaj na wymyślony zakres dat, jeśli dokument podaje numer tygodnia/miesiąca wprost).
+ped=OSTATNI dzień OKRESU ROZLICZENIOWEGO jako data ISO YYYY-MM-DD - to jest jeden tydzień/4 tygodnie/
+miesiąc, NIGDY zakres wielu okresów (np. cała ważność umowy czy zakres z nagłówka niezwiązany z tą
+konkretną wypłatą). Jeśli dokument podaje numer tygodnia (np. "week 36" albo "W36") ORAZ rok, oblicz
+ped z TEGO roku i tygodnia - nie zgaduj roku z innego miejsca dokumentu, jeśli się różni. pd=data
+WYPŁATY/druku dokumentu jeśli wydrukowana osobno (np. "betaaldatum", "datum", pole przy numerze
+wypłaty) - to jest INNA data niż ped; null jeśli nie widać osobnej daty wypłaty. Rok w ped i rok w pd
+zwykle się zgadzają - jeśli Twój odczyt daje różne lata, sprawdź OBIE daty jeszcze raz, to częsty
+sygnał błędnego odczytu roku.
 pt=typ okresu ("w"=tydzień, "4w"=4 tygodnie, "m"=miesiąc), ic=czy to KOREKTA/herziening (true tylko
 gdy wyraźnie oznaczone), ver=numer wersji dokumentu (1, jeśli nie widać innego), emp=nazwa(-y)
 pracodawcy jak wydrukowane (może być więcej niż jedna - np. dwa równoległe zatrudnienia), hir=nazwa
@@ -173,9 +182,14 @@ godzinach. ei=numer pracodawcy z listy "emp" (0 dla pierwszego), do którego nal
 
 pdl=potrącenia PRZED opodatkowaniem (StiPP/pensioen, PAWW, Ziektewet/AZW/WGA-Gat/WHK - to co
 pomniejsza podstawę opodatkowania): c="p"=pensja/StiPP, "w"=PAWW, "z"=Ziektewet/AZW (składka
-sektorowa), "g"=WGA-Gat, "o"=inne. b=baza z której liczono (jeśli wydrukowana), pc=procent.
+sektorowa), "g"=WGA-Gat, "o"=inne. WAŻNE: jeśli opis linii zawiera "StiPP", "pensioen" lub
+"pensioenpremie" - ZAWSZE c="p", nigdy "o", nawet jeśli reszta etykiety jest niejasna lub zawiera
+literówkę OCR. To samo dla "PAWW"->c="w" i "Ziektewet"/"AZW"->c="z". "o" jest tylko dla linii, które
+NIE pasują do żadnego z tych czterech słów kluczowych. b=baza z której liczono (jeśli wydrukowana),
+pc=procent.
 sdl=potrącenia PO opodatkowaniu (WGA, gediff. WGA, WHK własny wkład - jeśli te linie występują PO
-podatku na dokumencie, nie przed): c="wg"=WGA, "gw"=gediff. WGA, "wh"=WHK, "o"=inne.
+podatku na dokumencie, nie przed): c="wg"=WGA, "gw"=gediff. WGA, "wh"=WHK, "o"=inne. Ta sama zasada:
+etykieta zawierająca "WHK"/"WGA" dostaje właściwy kod, nie "o".
 
 etx=kwota redukcji podstawy z tytułu regulacji ET/extraterritorialne (jeśli obecna - szukaj "ET",
 "extraterritoriale", "nieopodatkowana część wynagrodzenia"), etr=zwroty netto ET (np. verblijfskosten,
@@ -191,8 +205,15 @@ okresie, p=wypłacono w tym okresie (0 jeśli to czysta rezerwacja).
 
 ptt=wydrukowana kwota "loonheffing"/podatek wg tabeli, pbt=wydrukowana kwota podatku wg bijzonder
 tarief (jeśli osobna linia), pahk=wydrukowana algemene heffingskorting (jeśli widoczna osobno),
-pak=wydrukowana arbeidskorting (jeśli widoczna osobno), rtn=wydrukowana suma netto, rnp=faktycznie
-wypłacona kwota.
+pak=wydrukowana arbeidskorting (jeśli widoczna osobno).
+
+rtn=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest suma PRZED
+doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty. rnp=wydrukowana kwota przy
+etykiecie "Totaal"/"Netto te betalen"/"Uit te betalen" - to jest OSTATECZNA kwota wypłaty, PO
+doliczeniu tych zwrotów/dodatków, zwykle inna liczba niż rtn i zwykle niżej na dokumencie. Jeśli
+widzisz na dokumencie DWIE różne liczby w tej okolicy, "Totaal netto" zawsze idzie do rtn, a ta niżej
+oznaczona po prostu "Totaal" (albo z dopiskiem po zwrotach/reiskosten) zawsze idzie do rnp - NIGDY nie
+zwracaj tej samej liczby dla obu, chyba że dokument naprawdę drukuje tylko jedną sumę netto.
 
 ptl/pbl/phl/pkl/pnl/ppl=DOKŁADNA etykieta wydrukowana na TYM dokumencie obok odpowiednio ptt/pbt/pahk/
 pak/rtn/rnp (np. "Loonheffing", "Bijzondere beloningen", "Algemene heffingskorting", "Arbeidskorting",
@@ -358,6 +379,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
   return {
     period_label: typeof parsed.per === 'string' ? parsed.per : null,
     period_end_date: typeof parsed.ped === 'string' ? parsed.ped : null,
+    payment_date: typeof parsed.pd === 'string' ? parsed.pd : null,
     period_type: mapPeriodType(parsed.pt),
     is_correction: toBoolean(parsed.ic),
     version: typeof parsed.ver === 'number' && parsed.ver > 0 ? parsed.ver : 1,

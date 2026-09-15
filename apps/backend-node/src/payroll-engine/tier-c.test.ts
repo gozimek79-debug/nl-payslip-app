@@ -70,6 +70,7 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
   return {
     period_label: null,
     period_end_date: null,
+    payment_date: null,
     period_type: 'week',
     is_correction: false,
     version: 1,

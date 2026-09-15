@@ -3,6 +3,7 @@ import { getCurrentRule, getMinimumWageAt } from '../rules-repository.js';
 import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from '../payroll-engine/calculator.js';
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
+import { checkExtractionConsistency } from '../payroll-engine/extraction-consistency.js';
 import { mapExtractionToPeriod, type TierCExtraction } from '../payroll-engine/tier-c.js';
 import { isVisionConfigured } from '../ai-service/groq.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
@@ -81,9 +82,28 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     }
 
     const outcome = computePayslipPeriod(period, fetched.rates, true);
+
+    // Stage 2b (audit v12, §Stage 2b): the §Stage 2a live test showed three "discrepancies" that were
+    // entirely OUR extraction's own errors, presented exactly as a real employer violation would be -
+    // the three-band classifier separates noise from findings BY MAGNITUDE, and a systematic
+    // extraction failure also produces large residuals. This gate runs BEFORE comparePeriodToDocument
+    // and, if the extraction fails its own internal-consistency checks, short-circuits to a distinct
+    // response shape that never reaches a discrepancy list at all.
+    const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+    if (consistencyIssues.length > 0) {
+      return res.json({
+        status: 'unreliable',
+        issues: consistencyIssues,
+        period,
+        truncated: extraction.truncated,
+        redactedFields: extraction.redacted_fields,
+      });
+    }
+
     const discrepancies = comparePeriodToDocument(period, outcome);
 
     return res.json({
+      status: 'ok',
       period,
       outcome,
       discrepancies,
@@ -122,8 +142,19 @@ router.post('/recompute', async (req, res) => {
   }
 
   const outcome = computePayslipPeriod(period, fetched.rates, true);
+
+  // Same gate as /analyze (Stage 2b): a correction to one printed_* field does not itself prove the
+  // rest of the extraction is trustworthy. No payment_date travels with a bare PayslipPeriod (it is
+  // extraction-only, per tier-c.ts), so the year-mismatch check simply does not re-fire here - the
+  // checks that DO still apply (zero-tax, period length from the label, category, both totals
+  // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
+  const consistencyIssues = checkExtractionConsistency(null, period, outcome);
+  if (consistencyIssues.length > 0) {
+    return res.json({ status: 'unreliable', issues: consistencyIssues });
+  }
+
   const discrepancies = comparePeriodToDocument(period, outcome);
-  return res.json({ outcome, discrepancies, taxRatesSource: fetched.source });
+  return res.json({ status: 'ok', outcome, discrepancies, taxRatesSource: fetched.source });
 });
 
 export default router;

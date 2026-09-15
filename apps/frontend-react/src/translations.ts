@@ -230,7 +230,17 @@ const pl = {
     heldForLaterNote: 'To są odłożone dla Ciebie pieniądze. Sprawdź, czy je otrzymasz po zakończeniu zlecenia.',
     heldForLaterLink: 'Dowiedz się więcej w Słowniku',
     discrepanciesTitle: 'Lista rozbieżności',
-    discrepanciesFindingsCount: (n: number) => n === 0 ? 'Na razie brak stwierdzonych rozbieżności - tylko pytania do potwierdzenia poniżej.' : `${n} stwierdzona rozbieżność wymaga uwagi.`,
+    discrepanciesFindingsCount: (n: number) => {
+      if (n === 0) return 'Na razie brak stwierdzonych rozbieżności - tylko pytania do potwierdzenia poniżej.';
+      // Stage 2b, "small, visible": Polish count agreement - 1 is singular, 2-4 (except 12-14) is
+      // the "few" form, everything else (0, 5+, and 12-14) is the "many"/genitive form. Was hardcoded
+      // to the singular pattern regardless of n, so "3" read as grammatically wrong as "1 cats".
+      const mod10 = n % 10;
+      const mod100 = n % 100;
+      if (n === 1) return `${n} stwierdzona rozbieżność wymaga uwagi.`;
+      if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return `${n} stwierdzone rozbieżności wymagają uwagi.`;
+      return `${n} stwierdzonych rozbieżności wymaga uwagi.`;
+    },
     codeTableTax: 'Podatek wg tabeli', codeBtTax: 'Podatek wg stawki specjalnej (BT)',
     codeAlgemeneHeffingskorting: 'Algemene heffingskorting', codeArbeidskorting: 'Arbeidskorting',
     codeNet: 'Netto (przed korektami wypłaty)', codePayout: 'Kwota do wypłaty', codeMinimumWage: 'Minimalne wynagrodzenie (wydrukowane)',
@@ -241,6 +251,15 @@ const pl = {
     findingBody: (computed: string, printed: string) => `Obliczyliśmy ${computed}, dokument pokazuje ${printed}.`,
     reliabilityNoteC: 'PRO: oparte na rzeczywistych stawkach Twojego pracodawcy, z Twojego własnego paska wypłaty.',
     permanentLimitationNote: 'Każdy pracodawca liczy nieco inaczej - żaden poziom kalkulatora nie gwarantuje dokładnej kwoty.',
+    unreliableTitle: 'Nie udało się wiarygodnie odczytać tego dokumentu',
+    unreliableBody: 'Zanim porównamy odczyt z dokumentem, sprawdzamy, czy sam odczyt ma sens. Ta kontrola nie przeszła - poniżej widać, co wygląda źle. Lista rozbieżności nie jest pokazywana, dopóki to się nie zgadza.',
+    issueZeroTax: (taxableBase: string, printedTax: string) => `Obliczony podatek wg tabeli wyszedł 0,00 przy podstawie opodatkowania ${taxableBase} - a dokument pokazuje wydrukowany podatek ${printedTax}. To niemożliwe przy tej podstawie; odczyt okresu jest prawdopodobnie błędny.`,
+    issuePeriodYear: (periodEndDate: string, paymentDate: string) => `Koniec okresu odczytaliśmy jako ${periodEndDate}, a datę wypłaty jako ${paymentDate} - różne lata na tym samym dokumencie.`,
+    issuePeriodLength: (impliedDays: number, minDays: number, maxDays: number) => `Zakres dat na dokumencie sugeruje okres ${impliedDays} dni, co nie pasuje do typu okresu (oczekiwano ${minDays}-${maxDays} dni).`,
+    issueDeductionMiscategorized: (description: string, suggestedCategory: string) => `Pozycja "${description}" wygląda jak "${suggestedCategory}", ale trafiła do kategorii "inne".`,
+    issueTotalsNet: (impliedNet: string, printedNet: string, residual: string) => `Z odczytanych kwot (brutto minus potrącenia minus podatek) wychodzi ${impliedNet}, a dokument pokazuje netto ${printedNet} (różnica ${residual}). Własna arytmetyka dokumentu się nie zgadza.`,
+    issueTotalsPayout: (impliedPayout: string, printedPayout: string, residual: string) => `Z netto plus dodatki/potrącenia netto wychodzi ${impliedPayout}, a dokument pokazuje wypłatę ${printedPayout} (różnica ${residual}).`,
+    startOver: 'Spróbuj ponownie z innym plikiem',
   },
 } satisfies Record<string, Record<string, unknown>>;
 
@@ -485,6 +504,15 @@ const en: typeof pl = {
     findingBody: (computed: string, printed: string) => `We computed ${computed}, the document shows ${printed}.`,
     reliabilityNoteC: "PRO: based on your employer's actual rates, from your own payslip.",
     permanentLimitationNote: 'Every employer computes slightly differently - no calculator tier promises an exact figure.',
+    unreliableTitle: 'We could not read this document reliably',
+    unreliableBody: "Before comparing our reading against your document, we check whether the reading itself makes sense. That check failed - see what looked wrong below. The discrepancy list is not shown until this is resolved.",
+    issueZeroTax: (taxableBase: string, printedTax: string) => `The computed table tax came out at €0.00 on a taxable base of ${taxableBase} - but the document prints a table tax of ${printedTax}. That's not possible at this base; the period was likely read incorrectly.`,
+    issuePeriodYear: (periodEndDate: string, paymentDate: string) => `We read the period end date as ${periodEndDate} and the payment date as ${paymentDate} - different years on the same document.`,
+    issuePeriodLength: (impliedDays: number, minDays: number, maxDays: number) => `The date range printed on the document implies a ${impliedDays}-day period, which doesn't match the stated period type (expected ${minDays}-${maxDays} days).`,
+    issueDeductionMiscategorized: (description: string, suggestedCategory: string) => `The line "${description}" looks like "${suggestedCategory}", but it was filed under "other".`,
+    issueTotalsNet: (impliedNet: string, printedNet: string, residual: string) => `The read figures (gross minus deductions minus tax) work out to ${impliedNet}, but the document shows a net of ${printedNet} (difference ${residual}). The document's own arithmetic doesn't add up as read.`,
+    issueTotalsPayout: (impliedPayout: string, printedPayout: string, residual: string) => `Net plus net additions/deductions works out to ${impliedPayout}, but the document shows a payout of ${printedPayout} (difference ${residual}).`,
+    startOver: 'Try again with a different file',
   },
 };
 

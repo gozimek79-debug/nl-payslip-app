@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { AlertTriangle, HelpCircle, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, HelpCircle, ShieldCheck, Upload } from 'lucide-react';
 import { renderPageImages } from './local-ocr.ts';
 import { StepProgress } from './StepProgress.tsx';
 import { translations, type Lang } from './translations.ts';
@@ -60,7 +60,8 @@ type Outcome = { status: 'complete'; result: CompleteResult } | { status: 'incom
 type DiscrepancyCode = 'table_tax_mismatch' | 'bt_tax_mismatch' | 'algemene_heffingskorting_mismatch' | 'arbeidskorting_mismatch' | 'net_mismatch' | 'payout_mismatch' | 'minimum_wage_stale_on_document' | 'minimum_wage_violation';
 interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed: number; residual: number | null; tolerance: number; confirmation_upper: number; status: 'confirm' | 'finding'; printed_label: string | null }
 
-interface AnalyzeResponse {
+interface OkResponse {
+  status: 'ok';
   period: TierCPeriodResponse;
   outcome: Outcome;
   discrepancies: Discrepancy[];
@@ -68,6 +69,37 @@ interface AnalyzeResponse {
   redactedFields: string[];
   taxRatesSource: 'database' | 'static';
 }
+
+/** Stage 2b (audit v12): the pre-comparison consistency gate's issue shape, mirroring
+ * extraction-consistency.ts's discriminated union exactly - codes plus numeric params, never a
+ * prebaked sentence (§2.6), so this file builds every issue's copy via translations.ts. */
+type ConsistencyIssue =
+  | { code: 'zero_tax_nonzero_base'; taxable_base: number; printed_table_tax: number }
+  | { code: 'period_year_mismatch'; period_end_date: string; payment_date: string }
+  | { code: 'period_length_mismatch'; period_type: 'week' | '4-weekly' | 'month'; implied_days: number; expected_min_days: number; expected_max_days: number }
+  | { code: 'deduction_miscategorized'; placement: 'pre_tax' | 'post_tax'; description: string; suggested_category: string }
+  | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
+  | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number };
+
+interface UnreliableResponse {
+  status: 'unreliable';
+  issues: ConsistencyIssue[];
+  period: TierCPeriodResponse;
+  truncated: boolean;
+  redactedFields: string[];
+}
+
+type AnalyzeResponse = OkResponse | UnreliableResponse;
+
+/** Only issues with one clear printed_* numeric target get a correction input (reusing the same
+ * /recompute mechanism Stage 1's discrepancy correction already uses) - the others (period shape,
+ * category) have no single field a text box could safely edit, so they surface as diagnosis only;
+ * either way, the gate above still blocks the discrepancy list from appearing at all. */
+const CORRECTABLE_ISSUE_FIELD: Partial<Record<ConsistencyIssue['code'], keyof TierCPeriodResponse>> = {
+  zero_tax_nonzero_base: 'printed_table_tax',
+  totals_do_not_reconcile_net: 'printed_net',
+  totals_do_not_reconcile_payout: 'printed_payout',
+};
 
 /** Stage 1's confirm/correct/unanswered state machine, tracked client-side per discrepancy code
  * (each code appears at most once in one period's discrepancy list). 'confirmed': the user verified
@@ -99,6 +131,25 @@ function discrepancyLabel(t: TierCCopy, code: DiscrepancyCode): string {
     minimum_wage_stale_on_document: t.codeMinimumWage,
     minimum_wage_violation: t.codeMinimumWage,
   }[code];
+}
+
+/** Stage 2b: builds each consistency issue's sentence from its code + numeric params, per §2.6 -
+ * the backend never sends prose, only the discriminated union extraction-consistency.ts defines. */
+function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
+  switch (issue.code) {
+    case 'zero_tax_nonzero_base':
+      return t.issueZeroTax(money(issue.taxable_base), money(issue.printed_table_tax));
+    case 'period_year_mismatch':
+      return t.issuePeriodYear(issue.period_end_date, issue.payment_date);
+    case 'period_length_mismatch':
+      return t.issuePeriodLength(issue.implied_days, issue.expected_min_days, issue.expected_max_days);
+    case 'deduction_miscategorized':
+      return t.issueDeductionMiscategorized(issue.description, issue.suggested_category);
+    case 'totals_do_not_reconcile_net':
+      return t.issueTotalsNet(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
+    case 'totals_do_not_reconcile_payout':
+      return t.issueTotalsPayout(money(issue.implied_payout), money(issue.printed_payout), money(issue.residual));
+  }
 }
 
 function provenanceLabel(t: TierCCopy, provenance: string): string {
@@ -152,8 +203,24 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     setDispositions(current => ({ ...current, [code]: { kind: 'confirmed' } }));
   }
 
+  async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[] })> {
+    const correctedPeriod = { ...basePeriod, [field]: value };
+    const res = await fetch('/api/tier-c/recompute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ period: correctedPeriod }),
+    });
+    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; issues?: ConsistencyIssue[]; taxRatesSource?: 'database' | 'static'; error_code?: string };
+    if (!res.ok || !data.status) throw new Error(t.error);
+    if (data.status === 'unreliable') {
+      if (!data.issues) throw new Error(t.error);
+      return { status: 'unreliable', period: correctedPeriod, issues: data.issues };
+    }
+    if (!data.outcome || !data.discrepancies || !data.taxRatesSource) throw new Error(t.error);
+    return { status: 'ok', period: correctedPeriod, outcome: data.outcome, discrepancies: data.discrepancies, taxRatesSource: data.taxRatesSource };
+  }
+
   async function correctDiscrepancy(code: DiscrepancyCode) {
-    if (!response) return;
+    if (!response || response.status !== 'ok') return; // this control only renders inside the 'ok' discrepancy list
     const raw = correctionInputs[code];
     const value = Number((raw ?? '').trim().replace(',', '.'));
     if (!Number.isFinite(value)) return;
@@ -169,24 +236,55 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
       minimum_wage_violation: null,
     };
     const field = fieldByCode[code];
-    if (!field) return;
+    if (!field || !response.period) return;
 
     setRecomputing(code);
-    const correctedPeriod = { ...response.period, [field]: value };
     try {
-      const res = await fetch('/api/tier-c/recompute', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ period: correctedPeriod }),
-      });
-      const data = await res.json() as { outcome?: Outcome; discrepancies?: Discrepancy[]; error_code?: string };
-      if (!res.ok || !data.outcome || !data.discrepancies) throw new Error(t.error);
-      setResponse({ ...response, period: correctedPeriod, outcome: data.outcome, discrepancies: data.discrepancies });
+      const result = await recomputeWithCorrection(response.period, field, value);
+      // A "corrected" discrepancy can turn out to still be unreliable (Stage 2b: the same gate
+      // applies after a correction, not only before the first attempt) - fall through to the
+      // unreliable view rather than pretending the discrepancy list is still the right thing to show.
+      if (result.status === 'unreliable') {
+        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, truncated: false, redactedFields: [] });
+        return;
+      }
+      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, truncated: response.truncated, redactedFields: response.redactedFields, taxRatesSource: result.taxRatesSource });
       setDispositions(current => ({ ...current, [code]: { kind: 'corrected', correctedTo: value } }));
     } catch {
       setMessage(t.error);
     } finally {
       setRecomputing(null);
     }
+  }
+
+  async function correctIssue(issueCode: ConsistencyIssue['code']) {
+    if (!response) return;
+    const field = CORRECTABLE_ISSUE_FIELD[issueCode];
+    const raw = correctionInputs[issueCode];
+    const value = Number((raw ?? '').trim().replace(',', '.'));
+    if (!field || !Number.isFinite(value)) return;
+
+    setRecomputing(issueCode);
+    try {
+      const result = await recomputeWithCorrection(response.period, field, value);
+      if (result.status === 'unreliable') {
+        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, truncated: false, redactedFields: [] });
+        return;
+      }
+      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, truncated: false, redactedFields: [], taxRatesSource: 'static' });
+      setDispositions({});
+    } catch {
+      setMessage(t.error);
+    } finally {
+      setRecomputing(null);
+    }
+  }
+
+  function startOver() {
+    setResponse(null);
+    setDispositions({});
+    setCorrectionInputs({});
+    setMessage('');
   }
 
   if (!response) {
@@ -222,6 +320,55 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
           </button>
           {message && <div className={`status ${uploadState}`} role="status">{message}</div>}
         </div>
+      </section>
+    );
+  }
+
+  if (response.status === 'unreliable') {
+    return (
+      <section className="flow-page">
+        <button className="back plain-button" onClick={startOver}><ArrowLeft size={17}/>{t.startOver}</button>
+        <div className="flow-heading">
+          <span className="step">Tier C</span>
+          <h1>{t.unreliableTitle}</h1>
+        </div>
+
+        {response.redactedFields.length > 0 && <div className="status error"><AlertTriangle size={16}/> {t.redactedNotice}</div>}
+        {response.truncated && <div className="status error"><AlertTriangle size={16}/> {t.truncatedNotice}</div>}
+
+        <div className="notice-card">
+          <AlertTriangle/>
+          <div><p>{t.unreliableBody}</p></div>
+        </div>
+
+        <div className="notice-card discrepancy-card">
+          <AlertTriangle/>
+          <div>
+            {response.issues.map((issue, i) => {
+              const field = CORRECTABLE_ISSUE_FIELD[issue.code];
+              return (
+                <div key={i} className="discrepancy-item finding">
+                  <p>{issueMessage(t, issue)}</p>
+                  {field && (
+                    <>
+                      <label>{t.correctionLabel}
+                        <div className="money-input">
+                          <span>€</span>
+                          <input inputMode="decimal" value={correctionInputs[issue.code] ?? ''} onChange={event => setCorrectionInputs(c => ({ ...c, [issue.code]: event.target.value.replace(/[^0-9.,-]/g, '') }))}/>
+                        </div>
+                      </label>
+                      <button type="button" className="secondary" disabled={recomputing === issue.code} onClick={() => void correctIssue(issue.code)}>
+                        {recomputing === issue.code ? t.recomputing : t.correctSubmit}
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {message && <div className="status error" role="status">{message}</div>}
+        <button className="secondary" onClick={startOver}>{t.startOver}</button>
       </section>
     );
   }

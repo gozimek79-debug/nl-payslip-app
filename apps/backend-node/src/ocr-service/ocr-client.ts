@@ -1,4 +1,5 @@
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
+import { tierCVisionClient, tierCVisionModel } from '../ai-service/tier-c-vision-provider.js';
 import type { TierCExtraction, TierCHourLine, TierCDeductionLine, TierCNetLine, TierCReservationLine, TierCPeriodType } from '../payroll-engine/tier-c.js';
 import type { HourLineCategory, TaxTreatment, PreTaxDeductionCategory, PostTaxSocialCategory, NetDeductionCategory, ReservationType } from '../payroll-engine/payslip-model.js';
 import { sanitizeText } from './pii-patterns.js';
@@ -122,107 +123,125 @@ function toNullableNumber(value: unknown): number | null {
  * Tier C's extraction (audit BP1) - a genuinely wider schema than extractFullPayslip() above, since
  * populating PayslipPeriod (payslip-model.ts) needs per-line category/tax_treatment/adds_hours that
  * the old flat lineItems list never captured (see tier-c.ts's own mapping-gap comment block for the
- * full field-by-field account of what is and is not reliably extractable this way). NOT
- * independently verified against a live model call in this round - the mapping/computation/
- * discrepancy pipeline downstream of this is fully tested against hand-built fixtures shaped as this
- * function's own output (tier-c.test.ts), since an AI vision call cannot be run deterministically in
- * a test environment; this specific function's real-world reliability is the acknowledged open risk.
+ * full field-by-field account of what is and is not reliably extractable this way).
  *
- * Short keys and terse category codes throughout, same reason as extractFullPayslip's own comment:
- * the vision model's OUTPUT token budget is the binding constraint, not the (much cheaper) input
- * system-prompt length - so the codes are explained verbosely here and requested tersely in the JSON.
+ * Stage 2c (audit v13): the abbreviated single/two-letter JSON keys and category codes this prompt
+ * used through round v12 existed ONLY because Groq's free-tier vision model (qwen/qwen3.8-27b) caps
+ * OUTPUT at 1000 tokens/minute (confirmed in this repo's own prior audit report) - not because short
+ * keys extract better. That cap goes away with a paid model (tier-c-vision-provider.ts), so the keys
+ * below now match TierCExtraction's own field names directly: one fewer translation layer, and one
+ * less place for a key to silently drift from what tier-c.ts actually expects. The EXPLANATORY
+ * guidance text is otherwise unchanged from v12 - Stage 2c's own instruction is to stop patching
+ * prompts for extraction quality, not to touch the parts already earning their keep.
  */
 const TIER_C_SYSTEM_PROMPT = `
 Jesteś systemem ekstrakcji danych wyspecjalizowanym w holenderskich paskach wypłaty (salarisspecificatie).
 Przeanalizuj WSZYSTKIE strony dokumentu, od pierwszej do ostatniej sekcji (dokument zwykle kończy się
 sekcją "Netto" tuż przed wierszem "Totaal netto"/"Totalen" - NIE pomijaj jej).
 
-Zwróć WYŁĄCZNIE zwarty obiekt JSON (bez spacji, bez markdown) o strukturze:
-{"per":string|null,"ped":string|null,"pd":string|null,"pt":"w"|"4w"|"m"|null,"ic":boolean,"ver":number,
-"emp":string[],"hir":string|null,"hpw":number|null,"mw":number|null,"btp":number|null,"btj":number|null,
-"hl":[{"d":string,"h":number|null,"r":number|null,"pc":number|null,"a":number,"c":string,"tt":string,"ah":boolean,"ei":number}],
-"pdl":[{"d":string,"a":number,"c":string,"b":number|null,"pc":number|null}],
-"sdl":[{"d":string,"a":number,"c":string,"pc":number|null}],
-"etx":number|null,"etr":[{"d":string,"a":number}],
-"nl":[{"d":string,"a":number,"c":string}],
-"pa":[{"d":string,"a":number}],
-"rl":[{"t":string,"o":number,"p":number}],
-"ptt":number|null,"pbt":number|null,"pahk":number|null,"pak":number|null,
-"rtn":number|null,"rnp":number|null,
-"ptl":string|null,"pbl":string|null,"phl":string|null,"pkl":string|null,"pnl":string|null,"ppl":string|null}
+Zwróć WYŁĄCZNIE obiekt JSON (bez markdown) o strukturze:
+{"period_label":string|null,"period_end_date":string|null,"payment_date":string|null,
+"period_type":"week"|"4-weekly"|"month"|null,"is_correction":boolean,"version":number,
+"employer_names":string[],"hirer_name":string|null,"hours_per_week":number|null,
+"minimum_wage_printed":number|null,
+"bijzonder_tarief_printed_percent":number|null,"bijzonder_tarief_jaarloon":number|null,
+"hour_lines":[{"description":string,"hours":number|null,"rate":number|null,"percent":number|null,"amount":number,"category":string,"tax_treatment":string,"adds_hours":boolean,"employer_index":number}],
+"pre_tax_deduction_lines":[{"description":string,"amount":number,"category":string,"base":number|null,"percent":number|null}],
+"post_tax_deduction_lines":[{"description":string,"amount":number,"category":string,"percent":number|null}],
+"et_exchange_amount":number|null,"et_reimbursement_lines":[{"description":string,"amount":number}],
+"net_lines":[{"description":string,"amount":number,"category":string}],
+"payout_adjustment_lines":[{"description":string,"amount":number}],
+"reservation_lines":[{"type":string,"accrued":number,"paid_out":number}],
+"printed_table_tax":number|null,"printed_bt_tax":number|null,
+"printed_algemene_heffingskorting":number|null,"printed_arbeidskorting":number|null,
+"reported_total_net":number|null,"reported_net_paid":number|null,
+"printed_table_tax_label":string|null,"printed_bt_tax_label":string|null,
+"printed_algemene_heffingskorting_label":string|null,"printed_arbeidskorting_label":string|null,
+"printed_net_label":string|null,"printed_payout_label":string|null}
 
-Znaczenie pól: per=okres jako opisany na dokumencie DOKŁADNIE tak jak wydrukowany (np. "week 36/2026",
-nigdy nie zamieniaj na wymyślony zakres dat, jeśli dokument podaje numer tygodnia/miesiąca wprost).
-ped=OSTATNI dzień OKRESU ROZLICZENIOWEGO jako data ISO YYYY-MM-DD - to jest jeden tydzień/4 tygodnie/
-miesiąc, NIGDY zakres wielu okresów (np. cała ważność umowy czy zakres z nagłówka niezwiązany z tą
-konkretną wypłatą). Jeśli dokument podaje numer tygodnia (np. "week 36" albo "W36") ORAZ rok, oblicz
-ped z TEGO roku i tygodnia - nie zgaduj roku z innego miejsca dokumentu, jeśli się różni. pd=data
-WYPŁATY/druku dokumentu jeśli wydrukowana osobno (np. "betaaldatum", "datum", pole przy numerze
-wypłaty) - to jest INNA data niż ped; null jeśli nie widać osobnej daty wypłaty. Rok w ped i rok w pd
-zwykle się zgadzają - jeśli Twój odczyt daje różne lata, sprawdź OBIE daty jeszcze raz, to częsty
-sygnał błędnego odczytu roku.
-pt=typ okresu ("w"=tydzień, "4w"=4 tygodnie, "m"=miesiąc), ic=czy to KOREKTA/herziening (true tylko
-gdy wyraźnie oznaczone), ver=numer wersji dokumentu (1, jeśli nie widać innego), emp=nazwa(-y)
-pracodawcy jak wydrukowane (może być więcej niż jedna - np. dwa równoległe zatrudnienia), hir=nazwa
-zleceniodawcy/opdrachtgever jeśli WYRAŹNIE inna niż pracodawca, hpw=godziny/tydzień z umowy, mw=minimumloon
-WYDRUKOWANE, btp=procent bijzonder tarief. Może być wydrukowany jako JEDNA liczba (np. "50,47%") ALBO
-jako DWIE składowe rozdzielone znakiem "+" (np. "35,75 + 4,45%") - w tym drugim przypadku ZSUMUJ obie
-liczby i zwróć JEDNĄ wartość (35,75+4,45=40,20), nigdy tylko jedną z dwóch połówek. btj=jaarloon/roczny
+Znaczenie pól: period_label=okres jako opisany na dokumencie DOKŁADNIE tak jak wydrukowany (np. "week
+36/2026", nigdy nie zamieniaj na wymyślony zakres dat, jeśli dokument podaje numer tygodnia/miesiąca
+wprost). period_end_date=OSTATNI dzień OKRESU ROZLICZENIOWEGO jako data ISO YYYY-MM-DD - to jest jeden
+tydzień/4 tygodnie/miesiąc, NIGDY zakres wielu okresów (np. cała ważność umowy czy zakres z nagłówka
+niezwiązany z tą konkretną wypłatą). Jeśli dokument podaje numer tygodnia (np. "week 36" albo "W36")
+ORAZ rok, oblicz period_end_date z TEGO roku i tygodnia - nie zgaduj roku z innego miejsca dokumentu,
+jeśli się różni. payment_date=data WYPŁATY/druku dokumentu jeśli wydrukowana osobno (np.
+"betaaldatum", "datum", pole przy numerze wypłaty) - to jest INNA data niż period_end_date; null jeśli
+nie widać osobnej daty wypłaty. Rok w period_end_date i rok w payment_date zwykle się zgadzają - jeśli
+Twój odczyt daje różne lata, sprawdź OBIE daty jeszcze raz, to częsty sygnał błędnego odczytu roku.
+period_type=typ okresu, is_correction=czy to KOREKTA/herziening (true tylko gdy wyraźnie oznaczone),
+version=numer wersji dokumentu (1, jeśli nie widać innego), employer_names=nazwa(-y) pracodawcy jak
+wydrukowane (może być więcej niż jedna - np. dwa równoległe zatrudnienia), hirer_name=nazwa
+zleceniodawcy/opdrachtgever jeśli WYRAŹNIE inna niż pracodawca, hours_per_week=godziny/tydzień z umowy,
+minimum_wage_printed=minimumloon WYDRUKOWANE, bijzonder_tarief_printed_percent=procent bijzonder
+tarief. Może być wydrukowany jako JEDNA liczba (np. "50,47%") ALBO jako DWIE składowe rozdzielone
+znakiem "+" (np. "35,75 + 4,45%") - w tym drugim przypadku ZSUMUJ obie liczby i zwróć JEDNĄ wartość
+(35,75+4,45=40,20), nigdy tylko jedną z dwóch połówek. bijzonder_tarief_jaarloon=jaarloon/roczny
 dochód użyty do ustalenia stawki bijzonder tarief, jeśli wydrukowany wprost (np. "Jaarloon BT: 38.000,00"
 albo "Jaarloon bijz. beloning 46074") - null jeśli nie widać takiej wartości.
 
-hl=linie godzinowe/brutto: d=opis TAK JAK WYDRUKOWANY (nie tłumacz), h=liczba godzin, r=stawka za
-godzinę, pc=procent dodatku (np. 100 dla "100%"), a=kwota, c=kategoria jednym znakiem: "r"=zwykłe
-godziny, "o"=nadgodziny (nowe, dodatkowe godziny), "i"=dodatek za nieregularne godziny (na już
-policzonych godzinach), "a"=dodatek ADV, "x"=inne. tt=sposób opodatkowania: "t"=tabela (zwykła stawka
-podatkowa), "b"=bijzonder tarief/specjalna stawka, "u"=nie wiadomo z dokumentu (NIGDY nie zgaduj "t"
-jako domyślne - nadgodziny i dodatki bywają opodatkowane tabelą, nie tylko BT). ah=true tylko jeśli to
-GENUINE dodatkowe godziny (prawdziwe nadgodziny), false jeśli to dodatek/toeslag na już policzonych
-godzinach. ei=numer pracodawcy z listy "emp" (0 dla pierwszego), do którego należy ta linia.
+hour_lines=linie godzinowe/brutto: description=opis TAK JAK WYDRUKOWANY (nie tłumacz), hours=liczba
+godzin, rate=stawka za godzinę, percent=procent dodatku (np. 100 dla "100%"), amount=kwota,
+category=jedna z: "regular"=zwykłe godziny, "overtime"=nadgodziny (nowe, dodatkowe godziny),
+"irregular_surcharge"=dodatek za nieregularne godziny (na już policzonych godzinach),
+"adv_compensation"=dodatek ADV, "other"=inne. tax_treatment=sposób opodatkowania: "table"=tabela
+(zwykła stawka podatkowa), "bt"=bijzonder tarief/specjalna stawka, "unknown"=nie wiadomo z dokumentu
+(NIGDY nie zgaduj "table" jako domyślne - nadgodziny i dodatki bywają opodatkowane tabelą, nie tylko
+BT). adds_hours=true tylko jeśli to GENUINE dodatkowe godziny (prawdziwe nadgodziny), false jeśli to
+dodatek/toeslag na już policzonych godzinach. employer_index=numer pracodawcy z listy
+"employer_names" (0 dla pierwszego), do którego należy ta linia.
 
-pdl=potrącenia PRZED opodatkowaniem (StiPP/pensioen, PAWW, Ziektewet/AZW/WGA-Gat/WHK - to co
-pomniejsza podstawę opodatkowania): c="p"=pensja/StiPP, "w"=PAWW, "z"=Ziektewet/AZW (składka
-sektorowa), "g"=WGA-Gat, "o"=inne. WAŻNE: jeśli opis linii zawiera "StiPP", "pensioen" lub
-"pensioenpremie" - ZAWSZE c="p", nigdy "o", nawet jeśli reszta etykiety jest niejasna lub zawiera
-literówkę OCR. To samo dla "PAWW"->c="w" i "Ziektewet"/"AZW"->c="z". "o" jest tylko dla linii, które
-NIE pasują do żadnego z tych czterech słów kluczowych. b=baza z której liczono (jeśli wydrukowana),
-pc=procent.
-sdl=potrącenia PO opodatkowaniu (WGA, gediff. WGA, WHK własny wkład - jeśli te linie występują PO
-podatku na dokumencie, nie przed): c="wg"=WGA, "gw"=gediff. WGA, "wh"=WHK, "o"=inne. Ta sama zasada:
-etykieta zawierająca "WHK"/"WGA" dostaje właściwy kod, nie "o".
+pre_tax_deduction_lines=potrącenia PRZED opodatkowaniem (StiPP/pensioen, PAWW, Ziektewet/AZW/WGA-Gat/
+WHK - to co pomniejsza podstawę opodatkowania): category=jedna z "pension"=pensja/StiPP,
+"paww"=PAWW, "ziektewet"=Ziektewet/AZW (składka sektorowa), "wga_gat"=WGA-Gat, "other"=inne. WAŻNE:
+jeśli opis linii zawiera "StiPP", "pensioen" lub "pensioenpremie" - ZAWSZE category="pension", nigdy
+"other", nawet jeśli reszta etykiety jest niejasna lub zawiera literówkę OCR. To samo dla
+"PAWW"->"paww" i "Ziektewet"/"AZW"->"ziektewet". "other" jest tylko dla linii, które NIE pasują do
+żadnego z tych czterech słów kluczowych. base=baza z której liczono (jeśli wydrukowana), percent=procent.
+post_tax_deduction_lines=potrącenia PO opodatkowaniu (WGA, gediff. WGA, WHK własny wkład - jeśli te
+linie występują PO podatku na dokumencie, nie przed): category=jedna z "wga", "gediff_wga", "whk",
+"other". Ta sama zasada: etykieta zawierająca "WHK"/"WGA" dostaje właściwą kategorię, nie "other".
 
-etx=kwota redukcji podstawy z tytułu regulacji ET/extraterritorialne (jeśli obecna - szukaj "ET",
-"extraterritoriale", "nieopodatkowana część wynagrodzenia"), etr=zwroty netto ET (np. verblijfskosten,
-huisvesting ET) jako lista {d,a}.
+et_exchange_amount=kwota redukcji podstawy z tytułu regulacji ET/extraterritorialne (jeśli obecna -
+szukaj "ET", "extraterritoriale", "nieopodatkowana część wynagrodzenia"), et_reimbursement_lines=
+zwroty netto ET (np. verblijfskosten, huisvesting ET) jako lista {description,amount}.
 
-nl=pozycje na poziomie netto (dodatki/potrącenia niepodatkowe): c="rm"=zwrot/dodatek (np.
-reiskosten), "l"=pożyczka, "h"=zakwaterowanie, "t"=przewóz, "hi"=ubezpieczenie zdrowotne,
-"u"=związek/personeelsvereniging, "o"=inne.
-pa=korekty wypłaty (np. "eerder betaald", "verrekening schuld") jako lista {d,a} - a może być ujemne.
-rl=rezerwacje (vakantiegeld/vakantiedagen NALICZANE w tym okresie, nie wypłacane): t="vg"=vakantiegeld,
-"vd"=vakantiedagen, "vb"=vakantiedagen bovenwettelijk, "vl"=verlofuren, "o"=inne. o=naliczono w tym
-okresie, p=wypłacono w tym okresie (0 jeśli to czysta rezerwacja).
+net_lines=pozycje na poziomie netto (dodatki/potrącenia niepodatkowe): category=jedna z
+"reimbursement"=zwrot/dodatek (np. reiskosten), "loan"=pożyczka, "housing"=zakwaterowanie,
+"transport"=przewóz, "health_insurance"=ubezpieczenie zdrowotne, "union"=związek/
+personeelsvereniging, "other"=inne.
+payout_adjustment_lines=korekty wypłaty (np. "eerder betaald", "verrekening schuld") jako lista
+{description,amount} - amount może być ujemne.
+reservation_lines=rezerwacje (vakantiegeld/vakantiedagen NALICZANE w tym okresie, nie wypłacane):
+type=jedna z "vakantiegeld", "vakantiedagen", "vakantiedagen_bovenwettelijk", "verlofuren", "other".
+accrued=naliczono w tym okresie, paid_out=wypłacono w tym okresie (0 jeśli to czysta rezerwacja).
 
-ptt=wydrukowana kwota "loonheffing"/podatek wg tabeli, pbt=wydrukowana kwota podatku wg bijzonder
-tarief (jeśli osobna linia), pahk=wydrukowana algemene heffingskorting (jeśli widoczna osobno),
-pak=wydrukowana arbeidskorting (jeśli widoczna osobno).
+printed_table_tax=wydrukowana kwota "loonheffing"/podatek wg tabeli, printed_bt_tax=wydrukowana kwota
+podatku wg bijzonder tarief (jeśli osobna linia), printed_algemene_heffingskorting=wydrukowana
+algemene heffingskorting (jeśli widoczna osobno), printed_arbeidskorting=wydrukowana arbeidskorting
+(jeśli widoczna osobno).
 
-rtn=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest suma PRZED
-doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty. rnp=wydrukowana kwota przy
-etykiecie "Totaal"/"Netto te betalen"/"Uit te betalen" - to jest OSTATECZNA kwota wypłaty, PO
-doliczeniu tych zwrotów/dodatków, zwykle inna liczba niż rtn i zwykle niżej na dokumencie. Jeśli
-widzisz na dokumencie DWIE różne liczby w tej okolicy, "Totaal netto" zawsze idzie do rtn, a ta niżej
-oznaczona po prostu "Totaal" (albo z dopiskiem po zwrotach/reiskosten) zawsze idzie do rnp - NIGDY nie
-zwracaj tej samej liczby dla obu, chyba że dokument naprawdę drukuje tylko jedną sumę netto.
+reported_total_net=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest
+suma PRZED doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty.
+reported_net_paid=wydrukowana kwota przy etykiecie "Totaal"/"Netto te betalen"/"Uit te betalen" - to
+jest OSTATECZNA kwota wypłaty, PO doliczeniu tych zwrotów/dodatków, zwykle inna liczba niż
+reported_total_net i zwykle niżej na dokumencie. Jeśli widzisz na dokumencie DWIE różne liczby w tej
+okolicy, "Totaal netto" zawsze idzie do reported_total_net, a ta niżej oznaczona po prostu "Totaal"
+(albo z dopiskiem po zwrotach/reiskosten) zawsze idzie do reported_net_paid - NIGDY nie zwracaj tej
+samej liczby dla obu, chyba że dokument naprawdę drukuje tylko jedną sumę netto.
 
-ptl/pbl/phl/pkl/pnl/ppl=DOKŁADNA etykieta wydrukowana na TYM dokumencie obok odpowiednio ptt/pbt/pahk/
-pak/rtn/rnp (np. "Loonheffing", "Bijzondere beloningen", "Algemene heffingskorting", "Arbeidskorting",
-"Netto loon", "Uit te betalen") - skopiuj TAK JAK WYDRUKOWANA, nigdy nie tłumacz i nie ujednolicaj do
-kanonicznej nazwy. null, jeśli dana kwota nie ma własnej, osobnej etykiety na dokumencie (np. jest
-częścią zbiorczego bloku podsumowania bez własnego podpisu).
+printed_table_tax_label/printed_bt_tax_label/printed_algemene_heffingskorting_label/
+printed_arbeidskorting_label/printed_net_label/printed_payout_label=DOKŁADNA etykieta wydrukowana na
+TYM dokumencie obok odpowiednio printed_table_tax/printed_bt_tax/printed_algemene_heffingskorting/
+printed_arbeidskorting/reported_total_net/reported_net_paid (np. "Loonheffing", "Bijzondere
+beloningen", "Algemene heffingskorting", "Arbeidskorting", "Netto loon", "Uit te betalen") - skopiuj
+TAK JAK WYDRUKOWANA, nigdy nie tłumacz i nie ujednolicaj do kanonicznej nazwy. null, jeśli dana kwota
+nie ma własnej, osobnej etykiety na dokumencie (np. jest częścią zbiorczego bloku podsumowania bez
+własnego podpisu).
 
-Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0 i nie zgadywanie); "d" to opis
-DOKŁADNIE jak wydrukowany na dokumencie, nigdy tłumaczony ani skracany ponad потrzebę.
+Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0 i nie zgadywanie);
+"description" to opis DOKŁADNIE jak wydrukowany na dokumencie, nigdy tłumaczony ani skracany ponad
+potrzebę.
 `.trim();
 
 function toBoolean(value: unknown): boolean {
@@ -234,71 +253,56 @@ function toStringArray(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === 'string');
 }
 
+/** Stage 2c: category/enum values are now the same strings TierCExtraction/payslip-model.ts already
+ * use - the model is asked for them directly (see the prompt above), so these are a validating
+ * passthrough (anything unrecognised - a hallucinated value, a typo - falls back to "other"/"unknown"
+ * rather than propagating a string the rest of the pipeline was never typed to accept). */
 function mapHourCategory(code: unknown): HourLineCategory {
-  if (code === 'o') return 'overtime';
-  if (code === 'i') return 'irregular_surcharge';
-  if (code === 'a') return 'adv_compensation';
-  if (code === 'r') return 'regular';
+  if (code === 'overtime' || code === 'irregular_surcharge' || code === 'adv_compensation' || code === 'regular') return code;
   return 'other';
 }
 
 function mapTaxTreatment(code: unknown): TaxTreatment {
-  if (code === 't') return 'table';
-  if (code === 'b') return 'bt';
+  if (code === 'table' || code === 'bt') return code;
   return 'unknown';
 }
 
 function mapPreTaxCategory(code: unknown): PreTaxDeductionCategory {
-  if (code === 'p') return 'pension';
-  if (code === 'w') return 'paww';
-  if (code === 'z') return 'ziektewet';
-  if (code === 'g') return 'wga_gat';
+  if (code === 'pension' || code === 'paww' || code === 'ziektewet' || code === 'wga_gat') return code;
   return 'other';
 }
 
 function mapPostTaxCategory(code: unknown): PostTaxSocialCategory {
-  if (code === 'wg') return 'wga';
-  if (code === 'gw') return 'gediff_wga';
-  if (code === 'wh') return 'whk';
+  if (code === 'wga' || code === 'gediff_wga' || code === 'whk') return code;
   return 'other';
 }
 
 function mapNetCategory(code: unknown): NetDeductionCategory | 'reimbursement' {
-  if (code === 'rm') return 'reimbursement';
-  if (code === 'l') return 'loan';
-  if (code === 'h') return 'housing';
-  if (code === 't') return 'transport';
-  if (code === 'hi') return 'health_insurance';
-  if (code === 'u') return 'union';
+  if (code === 'reimbursement' || code === 'loan' || code === 'housing' || code === 'transport' || code === 'health_insurance' || code === 'union') return code;
   return 'other';
 }
 
 function mapReservationType(code: unknown): ReservationType {
-  if (code === 'vg') return 'vakantiegeld';
-  if (code === 'vd') return 'vakantiedagen';
-  if (code === 'vb') return 'vakantiedagen_bovenwettelijk';
-  if (code === 'vl') return 'verlofuren';
+  if (code === 'vakantiegeld' || code === 'vakantiedagen' || code === 'vakantiedagen_bovenwettelijk' || code === 'verlofuren') return code;
   return 'other';
 }
 
 function mapPeriodType(code: unknown): TierCPeriodType | null {
-  if (code === 'w') return 'week';
-  if (code === '4w') return '4-weekly';
-  if (code === 'm') return 'month';
+  if (code === 'week' || code === '4-weekly' || code === 'month') return code;
   return null;
 }
 
 export async function extractTierCPayslip(imageDataUrls: string[]): Promise<TierCExtraction> {
-  const completion = await groqClient().chat.completions.create({
-    model: VISION_MODEL,
+  const completion = await tierCVisionClient().chat.completions.create({
+    model: tierCVisionModel(),
     temperature: 0,
-    max_tokens: 2000,
+    max_tokens: 4000,
     messages: [
       { role: 'system', content: TIER_C_SYSTEM_PROMPT },
       {
         role: 'user',
         content: [
-          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tego paska wypłaty i zwróć zwarty JSON zgodny z opisaną strukturą.` },
+          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tego paska wypłaty i zwróć JSON zgodny z opisaną strukturą.` },
           ...imageDataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
         ],
       },
@@ -306,38 +310,42 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
   });
 
   const raw = completion.choices[0]?.message?.content ?? '{}';
+  // Stage 2c: no more truncation-repair fallback for this path (extractJsonWithTruncationFlag stays
+  // in this file only for the orphaned extractPayslipFieldsFromImage() below - see this round's NEW
+  // FINDINGS). The 1000-token/minute free-tier cap that made partial responses routine is gone on a
+  // paid model; a response that fails to parse now is a genuine extraction failure, surfaced as one
+  // (the controller's existing try/catch -> extraction_failed), not silently patched back together.
   const hitLengthLimit = completion.choices[0]?.finish_reason === 'length';
-  const { value, truncated: parseNeededRepair } = extractJsonWithTruncationFlag(raw);
-  const parsed = value as Record<string, unknown>;
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
   const redactedFields: string[] = [];
 
-  const rawHourLines = Array.isArray(parsed.hl) ? parsed.hl : [];
+  const rawHourLines = Array.isArray(parsed.hour_lines) ? parsed.hour_lines : [];
   const hourLines: TierCHourLine[] = rawHourLines.map((item, index) => {
     const r = item as Record<string, unknown>;
     return {
-      employer_index: typeof r.ei === 'number' ? r.ei : 0,
-      description: sanitizeText(r.d, `hl[${index}].d`, redactedFields) ?? '',
-      hours: toNullableNumber(r.h),
-      rate: toNullableNumber(r.r),
-      percent: toNullableNumber(r.pc),
-      amount: toNumber(r.a),
-      category: mapHourCategory(r.c),
-      tax_treatment: mapTaxTreatment(r.tt),
-      adds_hours: toBoolean(r.ah),
+      employer_index: typeof r.employer_index === 'number' ? r.employer_index : 0,
+      description: sanitizeText(r.description, `hour_lines[${index}].description`, redactedFields) ?? '',
+      hours: toNullableNumber(r.hours),
+      rate: toNullableNumber(r.rate),
+      percent: toNullableNumber(r.percent),
+      amount: toNumber(r.amount),
+      category: mapHourCategory(r.category),
+      tax_treatment: mapTaxTreatment(r.tax_treatment),
+      adds_hours: toBoolean(r.adds_hours),
     };
   });
 
-  const mapDeductionLines = (raw: unknown, keyPrefix: string, categoryMapper: (code: unknown) => PreTaxDeductionCategory | PostTaxSocialCategory): TierCDeductionLine[] => {
+  const mapDeductionLines = (raw: unknown, keyPrefix: string, placement: 'pre_tax' | 'post_tax', categoryMapper: (code: unknown) => PreTaxDeductionCategory | PostTaxSocialCategory): TierCDeductionLine[] => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map((item, index) => {
       const r = item as Record<string, unknown>;
       return {
-        description: sanitizeText(r.d, `${keyPrefix}[${index}].d`, redactedFields) ?? '',
-        amount: toNumber(r.a),
-        category: categoryMapper(r.c),
-        placement: keyPrefix === 'pdl' ? ('pre_tax' as const) : ('post_tax' as const),
-        base: toNullableNumber(r.b),
-        percent: toNullableNumber(r.pc),
+        description: sanitizeText(r.description, `${keyPrefix}[${index}].description`, redactedFields) ?? '',
+        amount: toNumber(r.amount),
+        category: categoryMapper(r.category),
+        placement,
+        base: toNullableNumber(r.base),
+        percent: toNullableNumber(r.percent),
       };
     });
   };
@@ -347,73 +355,69 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     return list.map((item, index) => {
       const r = item as Record<string, unknown>;
       return {
-        description: sanitizeText(r.d, `${keyPrefix}[${index}].d`, redactedFields) ?? '',
-        amount: toNumber(r.a),
-        category: mapNetCategory(r.c),
+        description: sanitizeText(r.description, `${keyPrefix}[${index}].description`, redactedFields) ?? '',
+        amount: toNumber(r.amount),
+        category: mapNetCategory(r.category),
       };
     });
   };
 
-  const rawEtr = Array.isArray(parsed.etr) ? parsed.etr : [];
+  const rawEtr = Array.isArray(parsed.et_reimbursement_lines) ? parsed.et_reimbursement_lines : [];
   const etReimbursementLines: TierCNetLine[] = rawEtr.map((item, index) => {
     const r = item as Record<string, unknown>;
     return {
-      description: sanitizeText(r.d, `etr[${index}].d`, redactedFields) ?? '',
-      amount: toNumber(r.a),
+      description: sanitizeText(r.description, `et_reimbursement_lines[${index}].description`, redactedFields) ?? '',
+      amount: toNumber(r.amount),
       category: 'reimbursement' as const,
     };
   });
 
-  const rawPa = Array.isArray(parsed.pa) ? parsed.pa : [];
+  const rawPa = Array.isArray(parsed.payout_adjustment_lines) ? parsed.payout_adjustment_lines : [];
   const payoutAdjustmentLines = rawPa.map((item, index) => {
     const r = item as Record<string, unknown>;
-    return { description: sanitizeText(r.d, `pa[${index}].d`, redactedFields) ?? '', amount: toNumber(r.a) };
+    return { description: sanitizeText(r.description, `payout_adjustment_lines[${index}].description`, redactedFields) ?? '', amount: toNumber(r.amount) };
   });
 
-  const rawRl = Array.isArray(parsed.rl) ? parsed.rl : [];
+  const rawRl = Array.isArray(parsed.reservation_lines) ? parsed.reservation_lines : [];
   const reservationLines: TierCReservationLine[] = rawRl.map((item) => {
     const r = item as Record<string, unknown>;
-    return { type: mapReservationType(r.t), opgebouwd: toNumber(r.o), paid_out: toNumber(r.p) };
+    return { type: mapReservationType(r.type), opgebouwd: toNumber(r.accrued), paid_out: toNumber(r.paid_out) };
   });
 
   return {
-    period_label: typeof parsed.per === 'string' ? parsed.per : null,
-    period_end_date: typeof parsed.ped === 'string' ? parsed.ped : null,
-    payment_date: typeof parsed.pd === 'string' ? parsed.pd : null,
-    period_type: mapPeriodType(parsed.pt),
-    is_correction: toBoolean(parsed.ic),
-    version: typeof parsed.ver === 'number' && parsed.ver > 0 ? parsed.ver : 1,
-    employer_names: toStringArray(parsed.emp),
-    hirer_name: typeof parsed.hir === 'string' ? parsed.hir : null,
-    hours_per_week: toNullableNumber(parsed.hpw),
-    minimum_wage_printed: toNullableNumber(parsed.mw),
+    period_label: typeof parsed.period_label === 'string' ? parsed.period_label : null,
+    period_end_date: typeof parsed.period_end_date === 'string' ? parsed.period_end_date : null,
+    payment_date: typeof parsed.payment_date === 'string' ? parsed.payment_date : null,
+    period_type: mapPeriodType(parsed.period_type),
+    is_correction: toBoolean(parsed.is_correction),
+    version: typeof parsed.version === 'number' && parsed.version > 0 ? parsed.version : 1,
+    employer_names: toStringArray(parsed.employer_names),
+    hirer_name: typeof parsed.hirer_name === 'string' ? parsed.hirer_name : null,
+    hours_per_week: toNullableNumber(parsed.hours_per_week),
+    minimum_wage_printed: toNullableNumber(parsed.minimum_wage_printed),
     hour_lines: hourLines,
-    pre_tax_deduction_lines: mapDeductionLines(parsed.pdl, 'pdl', mapPreTaxCategory),
-    post_tax_deduction_lines: mapDeductionLines(parsed.sdl, 'sdl', mapPostTaxCategory),
-    bijzonder_tarief_printed_percent: toNullableNumber(parsed.btp),
-    bijzonder_tarief_jaarloon: toNullableNumber(parsed.btj),
-    et_exchange_amount: toNullableNumber(parsed.etx),
+    pre_tax_deduction_lines: mapDeductionLines(parsed.pre_tax_deduction_lines, 'pre_tax_deduction_lines', 'pre_tax', mapPreTaxCategory),
+    post_tax_deduction_lines: mapDeductionLines(parsed.post_tax_deduction_lines, 'post_tax_deduction_lines', 'post_tax', mapPostTaxCategory),
+    bijzonder_tarief_printed_percent: toNullableNumber(parsed.bijzonder_tarief_printed_percent),
+    bijzonder_tarief_jaarloon: toNullableNumber(parsed.bijzonder_tarief_jaarloon),
+    et_exchange_amount: toNullableNumber(parsed.et_exchange_amount),
     et_reimbursement_lines: etReimbursementLines,
-    net_lines: mapNetLines(parsed.nl, 'nl'),
+    net_lines: mapNetLines(parsed.net_lines, 'net_lines'),
     payout_adjustment_lines: payoutAdjustmentLines,
     reservation_lines: reservationLines,
-    printed_table_tax: toNullableNumber(parsed.ptt),
-    printed_bt_tax: toNullableNumber(parsed.pbt),
-    printed_algemene_heffingskorting: toNullableNumber(parsed.pahk),
-    printed_arbeidskorting: toNullableNumber(parsed.pak),
-    reported_total_net: toNullableNumber(parsed.rtn),
-    reported_net_paid: toNullableNumber(parsed.rnp),
-    // Stage 2 body ("Dutch terms as printed... not canonical"): the as-printed label for each of the
-    // six reference figures above, captured the same way hl[].d already is - verbatim, never a
-    // canonical/translated stand-in. null (not a guess) whenever the document has no distinct label
-    // of its own for that figure.
-    printed_table_tax_label: sanitizeText(parsed.ptl, 'ptl', redactedFields),
-    printed_bt_tax_label: sanitizeText(parsed.pbl, 'pbl', redactedFields),
-    printed_algemene_heffingskorting_label: sanitizeText(parsed.phl, 'phl', redactedFields),
-    printed_arbeidskorting_label: sanitizeText(parsed.pkl, 'pkl', redactedFields),
-    printed_net_label: sanitizeText(parsed.pnl, 'pnl', redactedFields),
-    printed_payout_label: sanitizeText(parsed.ppl, 'ppl', redactedFields),
-    truncated: hitLengthLimit || parseNeededRepair,
+    printed_table_tax: toNullableNumber(parsed.printed_table_tax),
+    printed_bt_tax: toNullableNumber(parsed.printed_bt_tax),
+    printed_algemene_heffingskorting: toNullableNumber(parsed.printed_algemene_heffingskorting),
+    printed_arbeidskorting: toNullableNumber(parsed.printed_arbeidskorting),
+    reported_total_net: toNullableNumber(parsed.reported_total_net),
+    reported_net_paid: toNullableNumber(parsed.reported_net_paid),
+    printed_table_tax_label: sanitizeText(parsed.printed_table_tax_label, 'printed_table_tax_label', redactedFields),
+    printed_bt_tax_label: sanitizeText(parsed.printed_bt_tax_label, 'printed_bt_tax_label', redactedFields),
+    printed_algemene_heffingskorting_label: sanitizeText(parsed.printed_algemene_heffingskorting_label, 'printed_algemene_heffingskorting_label', redactedFields),
+    printed_arbeidskorting_label: sanitizeText(parsed.printed_arbeidskorting_label, 'printed_arbeidskorting_label', redactedFields),
+    printed_net_label: sanitizeText(parsed.printed_net_label, 'printed_net_label', redactedFields),
+    printed_payout_label: sanitizeText(parsed.printed_payout_label, 'printed_payout_label', redactedFields),
+    truncated: hitLengthLimit,
     redacted_fields: redactedFields,
   };
 }

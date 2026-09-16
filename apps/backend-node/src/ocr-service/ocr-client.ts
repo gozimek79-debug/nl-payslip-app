@@ -311,7 +311,13 @@ async function logVisionProviderFailure(requestBody: unknown): Promise<void> {
   try {
     const modelsRes = await fetch(`${config.baseURL}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
     const modelsText = await modelsRes.text();
-    console.error('[vision-diagnostic] models-list status', modelsRes.status, 'body (first 800 chars):', modelsText.slice(0, 800));
+    let visionModelIds: string[] = [];
+    try {
+      const parsed = JSON.parse(modelsText) as { data?: Array<{ id: string; capabilities?: { vision?: boolean } }> };
+      visionModelIds = (parsed.data ?? []).filter((m) => m.capabilities?.vision).map((m) => m.id);
+    } catch { /* fall through to raw snippet below */ }
+    console.error('[vision-diagnostic] models-list status', modelsRes.status, 'vision-capable model IDs (live API, not docs):', JSON.stringify(visionModelIds));
+    if (visionModelIds.length === 0) console.error('[vision-diagnostic] raw body (first 500 chars):', modelsText.slice(0, 500));
   } catch (error) {
     console.error('[vision-diagnostic] models-list call itself failed:', error instanceof Error ? error.message : error);
   }

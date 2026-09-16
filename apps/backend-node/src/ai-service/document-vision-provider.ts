@@ -38,10 +38,19 @@ const PROVIDERS: Record<DocumentVisionProviderName, DocumentVisionProviderConfig
     euHosted: false,
   },
   mistral: {
-    label: 'Mistral La Plateforme (Mistral Large 3, EU-hosted) - decided reading model, v15',
+    label: 'Mistral La Plateforme (Mistral Medium, EU-hosted) - decided reading model, v15',
     baseURL: 'https://api.mistral.ai/v1',
     apiKeyEnvVar: 'MISTRAL_API_KEY',
-    defaultModel: 'mistral-large-3',
+    // v16: 'mistral-large-3' does not exist on Mistral's API - confirmed live in production
+    // (400 "Invalid model: mistral-large-3"), the model ID had been taken from secondary-source
+    // research last round without checking it against Mistral's own API, the exact §2.2 mistake
+    // this project keeps re-learning. Queried the live /v1/models endpoint directly (not docs, which
+    // separately name a "mistral-large-3-25-12" that ALSO does not appear in this account's own
+    // models list) and confirmed the vision-capable models that actually exist here: the
+    // mistral-medium-3/-latest family, the smaller mistral-small/ministral family, and the dedicated
+    // mistral-ocr-* document models. 'mistral-medium-latest' is the closest match to "frontier
+    // general model reading a document" that is CONFIRMED vision-capable on this account today.
+    defaultModel: 'mistral-medium-latest',
     modelEnvVar: 'MISTRAL_VISION_MODEL',
     euHosted: true,
   },

@@ -1,5 +1,6 @@
+import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
-import { documentVisionClient, documentVisionModel } from '../ai-service/document-vision-provider.js';
+import { documentVisionClient, documentVisionModel, activeDocumentVisionConfig } from '../ai-service/document-vision-provider.js';
 import type { TierCExtraction, TierCHourLine, TierCDeductionLine, TierCNetLine, TierCReservationLine, TierCPeriodType } from '../payroll-engine/tier-c.js';
 import type { HourLineCategory, TaxTreatment, PreTaxDeductionCategory, PostTaxSocialCategory, NetDeductionCategory, ReservationType } from '../payroll-engine/payslip-model.js';
 import { sanitizeText } from './pii-patterns.js';
@@ -292,8 +293,43 @@ function mapPeriodType(code: unknown): TierCPeriodType | null {
   return null;
 }
 
+/**
+ * TEMPORARY diagnostic (v16, live Mistral-cutover failure): the openai SDK's APIError only exposes
+ * `error.error` (see node_modules/openai/core/error.mjs: `errorResponse?.['error']`), an assumption
+ * baked in for OpenAI's own {error:{message,type,code,param}} shape. If a provider's error body
+ * doesn't have that top-level "error" key, the SDK silently produces "400 status code (no body)"
+ * even though a real body was returned - exactly what production logged. Rather than patch blind,
+ * this re-issues the SAME failed request via raw fetch (bypassing the SDK entirely) purely to log
+ * the actual response text server-side, plus a models-list auth/existence check - then re-throws the
+ * ORIGINAL error unchanged, so user-facing behavior is untouched. Never logs the API key. Remove once
+ * the real failure is identified and fixed.
+ */
+async function logVisionProviderFailure(requestBody: unknown): Promise<void> {
+  const config = activeDocumentVisionConfig();
+  const apiKey = process.env[config.apiKeyEnvVar];
+  if (!apiKey) { console.error('[vision-diagnostic] no API key configured for', config.name); return; }
+  try {
+    const modelsRes = await fetch(`${config.baseURL}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    const modelsText = await modelsRes.text();
+    console.error('[vision-diagnostic] models-list status', modelsRes.status, 'body (first 800 chars):', modelsText.slice(0, 800));
+  } catch (error) {
+    console.error('[vision-diagnostic] models-list call itself failed:', error instanceof Error ? error.message : error);
+  }
+  try {
+    const chatRes = await fetch(`${config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+    const chatText = await chatRes.text();
+    console.error('[vision-diagnostic] chat/completions raw status', chatRes.status, 'body (first 1500 chars):', chatText.slice(0, 1500));
+  } catch (error) {
+    console.error('[vision-diagnostic] raw chat/completions call itself failed:', error instanceof Error ? error.message : error);
+  }
+}
+
 export async function extractTierCPayslip(imageDataUrls: string[]): Promise<TierCExtraction> {
-  const completion = await documentVisionClient().chat.completions.create({
+  const requestBody: ChatCompletionCreateParamsNonStreaming = {
     model: documentVisionModel(),
     temperature: 0,
     max_tokens: 4000,
@@ -307,7 +343,14 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
         ],
       },
     ],
-  });
+  };
+  let completion;
+  try {
+    completion = await documentVisionClient().chat.completions.create(requestBody);
+  } catch (error) {
+    await logVisionProviderFailure(requestBody);
+    throw error;
+  }
 
   const raw = completion.choices[0]?.message?.content ?? '{}';
   // Stage 2c: no more truncation-repair fallback for this path (extractJsonWithTruncationFlag stays

@@ -1,5 +1,5 @@
 import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
-import { tierCVisionClient, tierCVisionModel } from '../ai-service/tier-c-vision-provider.js';
+import { documentVisionClient, documentVisionModel } from '../ai-service/document-vision-provider.js';
 import type { TierCExtraction, TierCHourLine, TierCDeductionLine, TierCNetLine, TierCReservationLine, TierCPeriodType } from '../payroll-engine/tier-c.js';
 import type { HourLineCategory, TaxTreatment, PreTaxDeductionCategory, PostTaxSocialCategory, NetDeductionCategory, ReservationType } from '../payroll-engine/payslip-model.js';
 import { sanitizeText } from './pii-patterns.js';
@@ -128,7 +128,7 @@ function toNullableNumber(value: unknown): number | null {
  * Stage 2c (audit v13): the abbreviated single/two-letter JSON keys and category codes this prompt
  * used through round v12 existed ONLY because Groq's free-tier vision model (qwen/qwen3.8-27b) caps
  * OUTPUT at 1000 tokens/minute (confirmed in this repo's own prior audit report) - not because short
- * keys extract better. That cap goes away with a paid model (tier-c-vision-provider.ts), so the keys
+ * keys extract better. That cap goes away with a paid model (document-vision-provider.ts), so the keys
  * below now match TierCExtraction's own field names directly: one fewer translation layer, and one
  * less place for a key to silently drift from what tier-c.ts actually expects. The EXPLANATORY
  * guidance text is otherwise unchanged from v12 - Stage 2c's own instruction is to stop patching
@@ -293,8 +293,8 @@ function mapPeriodType(code: unknown): TierCPeriodType | null {
 }
 
 export async function extractTierCPayslip(imageDataUrls: string[]): Promise<TierCExtraction> {
-  const completion = await tierCVisionClient().chat.completions.create({
-    model: tierCVisionModel(),
+  const completion = await documentVisionClient().chat.completions.create({
+    model: documentVisionModel(),
     temperature: 0,
     max_tokens: 4000,
     messages: [

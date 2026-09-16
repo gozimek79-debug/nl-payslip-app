@@ -1,4 +1,4 @@
-import { groqClient, VISION_MODEL } from '../ai-service/groq.js';
+import { documentVisionClient, documentVisionModel } from '../ai-service/document-vision-provider.js';
 import type { ContractExtraction } from '../payroll-engine/contract.js';
 import { sanitizeText } from './pii-patterns.js';
 
@@ -68,8 +68,11 @@ function toNullableNumber(value: unknown): number | null {
 // Shared with the payslip extraction path (audit R7/J3) — see pii-patterns.ts.
 
 export async function extractContract(imageDataUrls: string[]): Promise<ContractExtraction> {
-  const completion = await groqClient().chat.completions.create({
-    model: VISION_MODEL,
+  // v15 (audit "CONSOLIDATED ASSIGNMENT"): "one paid tier, one extraction quality" - contract
+  // extraction moves onto the same decided reading model (Mistral, EU-hosted) as payslip extraction,
+  // instead of staying on Groq's free tier while the payslip path moved on.
+  const completion = await documentVisionClient().chat.completions.create({
+    model: documentVisionModel(),
     temperature: 0,
     max_tokens: 900,
     messages: [

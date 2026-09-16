@@ -5,7 +5,7 @@ import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency } from '../payroll-engine/extraction-consistency.js';
 import { mapExtractionToPeriod, type TierCExtraction } from '../payroll-engine/tier-c.js';
-import { isTierCVisionConfigured } from '../ai-service/tier-c-vision-provider.js';
+import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
@@ -62,7 +62,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // §2.6/CONVENTIONS.md: error_code + params, never a prebaked sentence - this controller had the
   // same pre-existing defect as tier-a/contract had before those were fixed; wiring this route to a
   // real frontend this round (Stage 2) is exactly when it stops being a theoretical gap.
-  if (!isTierCVisionConfigured()) {
+  if (!isDocumentVisionConfigured()) {
     return res.status(503).json({ error_code: 'vision_unavailable' });
   }
   const images = Array.isArray(req.body?.images) ? (req.body.images as unknown[]) : [];

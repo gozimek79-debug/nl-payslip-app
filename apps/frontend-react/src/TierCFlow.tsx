@@ -47,6 +47,16 @@ interface TierCPeriodResponse {
   printed_arbeidskorting: number | null;
   printed_net: number | null;
   printed_payout: number | null;
+  /** v17: these six existed on the backend's PayslipPeriod since the printed-label plumbing round,
+   * and Discrepancy.printed_label already surfaces them for the discrepancy list - but this local
+   * type mirror was never updated to declare them, so the unreliable-view correction form (this
+   * round) couldn't read them at all. A real, pre-existing gap, closed here rather than left. */
+  printed_table_tax_label: string | null;
+  printed_bt_tax_label: string | null;
+  printed_algemene_heffingskorting_label: string | null;
+  printed_arbeidskorting_label: string | null;
+  printed_net_label: string | null;
+  printed_payout_label: string | null;
 }
 
 interface CompleteResult {
@@ -94,12 +104,56 @@ type AnalyzeResponse = OkResponse | UnreliableResponse;
 /** Only issues with one clear printed_* numeric target get a correction input (reusing the same
  * /recompute mechanism Stage 1's discrepancy correction already uses) - the others (period shape,
  * category) have no single field a text box could safely edit, so they surface as diagnosis only;
- * either way, the gate above still blocks the discrepancy list from appearing at all. */
+ * either way, the gate above still blocks the discrepancy list from appearing at all.
+ *
+ * v17: zero_tax_nonzero_base is deliberately NOT here, even though it has a printed_table_tax field
+ * that looks correctable. On the live Olympia run, printed_table_tax was already read correctly -
+ * the zero came from the ENGINE's own computation (driven by a misread period), which a printed_
+ * table_tax correction cannot touch. Offering that input implied a fix path that does nothing:
+ * confirming/correcting the same already-correct number and recomputing would reproduce the exact
+ * same zero and re-fail this same check, misleading the user that they'd done something. Diagnosis
+ * only, like period/category issues, until the period itself is correctable. */
 const CORRECTABLE_ISSUE_FIELD: Partial<Record<ConsistencyIssue['code'], keyof TierCPeriodResponse>> = {
-  zero_tax_nonzero_base: 'printed_table_tax',
   totals_do_not_reconcile_net: 'printed_net',
   totals_do_not_reconcile_payout: 'printed_payout',
 };
+
+/** The as-printed label field on TierCPeriodResponse that goes with each correctable issue's target
+ * field - so the correction form can show the document's OWN term for the line, not just a generic
+ * translated name (v17: "a user cannot correct a value they cannot see"). */
+const CORRECTABLE_ISSUE_LABEL_FIELD: Partial<Record<ConsistencyIssue['code'], keyof TierCPeriodResponse>> = {
+  totals_do_not_reconcile_net: 'printed_net_label',
+  totals_do_not_reconcile_payout: 'printed_payout_label',
+};
+
+function correctableGenericLabel(t: TierCCopy, code: ConsistencyIssue['code']): string {
+  switch (code) {
+    case 'totals_do_not_reconcile_net': return t.codeNet;
+    case 'totals_do_not_reconcile_payout': return t.codePayout;
+    default: return '';
+  }
+}
+
+/** The value the extraction actually read for the correctable field - what the correction input is
+ * meant to replace. */
+function correctableReadValue(issue: ConsistencyIssue): number | null {
+  switch (issue.code) {
+    case 'totals_do_not_reconcile_net': return issue.printed_net;
+    case 'totals_do_not_reconcile_payout': return issue.printed_payout;
+    default: return null;
+  }
+}
+
+/** What the rest of the payslip's own figures imply this value should be - the arithmetic already
+ * computed by extraction-consistency.ts, shown so the user can compare it against what they see
+ * printed rather than guessing what number would satisfy the app. */
+function correctableExpectedValue(issue: ConsistencyIssue): number | null {
+  switch (issue.code) {
+    case 'totals_do_not_reconcile_net': return issue.implied_net;
+    case 'totals_do_not_reconcile_payout': return issue.implied_payout;
+    default: return null;
+  }
+}
 
 /** Stage 1's confirm/correct/unanswered state machine, tracked client-side per discrepancy code
  * (each code appears at most once in one period's discrepancy list). 'confirmed': the user verified
@@ -346,11 +400,25 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
           <div>
             {response.issues.map((issue, i) => {
               const field = CORRECTABLE_ISSUE_FIELD[issue.code];
+              const labelField = CORRECTABLE_ISSUE_LABEL_FIELD[issue.code];
+              const printedLabel = labelField ? response.period[labelField] : null;
+              const readValue = correctableReadValue(issue);
+              const expectedValue = correctableExpectedValue(issue);
               return (
                 <div key={i} className="discrepancy-item finding">
                   <p>{issueMessage(t, issue)}</p>
                   {field && (
                     <>
+                      {/* v17: "a user cannot correct a value they cannot see" - the line's own name,
+                          the as-printed Dutch label if the document had one, what was actually read,
+                          and what the rest of the payslip's own arithmetic implies it should be,
+                          all shown together right above the input that changes it. */}
+                      <p className="form-note">
+                        <strong>{correctableGenericLabel(t, issue.code)}</strong>{' '}
+                        {typeof printedLabel === 'string' && printedLabel && <span className="nl-term">({t.dutchTerm(printedLabel)})</span>}
+                      </p>
+                      {readValue !== null && <p className="form-note">{t.weRead(money(readValue))}</p>}
+                      {expectedValue !== null && <p className="form-note">{t.expectedValue(money(expectedValue))}</p>}
                       <label>{t.correctionLabel}
                         <div className="money-input">
                           <span>€</span>

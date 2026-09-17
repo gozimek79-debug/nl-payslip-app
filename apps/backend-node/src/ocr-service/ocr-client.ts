@@ -229,7 +229,11 @@ jest OSTATECZNA kwota wypłaty, PO doliczeniu tych zwrotów/dodatków, zwykle in
 reported_total_net i zwykle niżej na dokumencie. Jeśli widzisz na dokumencie DWIE różne liczby w tej
 okolicy, "Totaal netto" zawsze idzie do reported_total_net, a ta niżej oznaczona po prostu "Totaal"
 (albo z dopiskiem po zwrotach/reiskosten) zawsze idzie do reported_net_paid - NIGDY nie zwracaj tej
-samej liczby dla obu, chyba że dokument naprawdę drukuje tylko jedną sumę netto.
+samej liczby dla obu, chyba że dokument naprawdę drukuje tylko jedną sumę netto. Jeśli szukasz
+"Totaal netto" i nie widzisz jej jako OSOBNEJ, wyraźnie podpisanej liczby (odróżnialnej od "Totaal")
+- zwróć null. NIGDY nie zwracaj 0 jako "nie znalazłem" - 0 oznacza dosłownie zero euro netto, co na
+realnym pasku wypłaty z niezerowym brutto prawie nigdy nie jest prawdą. null i 0 znaczą co innego:
+null pyta użytkownika, 0 twierdzi błędnie że nic nie zostało wypłacone.
 
 printed_table_tax_label/printed_bt_tax_label/printed_algemene_heffingskorting_label/
 printed_arbeidskorting_label/printed_net_label/printed_payout_label=DOKŁADNA etykieta wydrukowana na
@@ -254,42 +258,71 @@ function toStringArray(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === 'string');
 }
 
-/** Stage 2c: category/enum values are now the same strings TierCExtraction/payslip-model.ts already
- * use - the model is asked for them directly (see the prompt above), so these are a validating
- * passthrough (anything unrecognised - a hallucinated value, a typo - falls back to "other"/"unknown"
- * rather than propagating a string the rest of the pipeline was never typed to accept). */
-function mapHourCategory(code: unknown): HourLineCategory {
-  if (code === 'overtime' || code === 'irregular_surcharge' || code === 'adv_compensation' || code === 'regular') return code;
+/** v17 (audit): live Olympia run on Mistral - "AZW werknemer" was recognised as ziektewet by
+ * extraction-consistency.ts's OWN keyword backstop, yet the extraction itself put it in category
+ * "other". The prompt DOES ask for "ziektewet"/"AZW"->"ziektewet" explicitly (see the guidance
+ * above); a strict `===` match against a lowercase literal is exactly the kind of place a model
+ * returning "Ziektewet" or " ziektewet " (correct semantically, wrong casing/whitespace) would
+ * silently fall through to "other" with no trace of what was actually said. Normalizing case/
+ * whitespace here is a MAPPING-layer robustness fix, not a prompt change - it does not try to make
+ * the model smarter, only stops throwing away an answer it already got right. Logs the raw value
+ * whenever it still doesn't match anything known, so the next such case shows the actual model
+ * output instead of just "other". */
+export function normalizeCode(code: unknown): string | null {
+  return typeof code === 'string' ? code.trim().toLowerCase() : null;
+}
+
+function logUnrecognizedCode(field: string, raw: unknown): void {
+  if (raw !== null && raw !== undefined && raw !== '') {
+    console.error(`[category-mapping] unrecognized ${field} value from extraction:`, JSON.stringify(raw));
+  }
+}
+
+export function mapHourCategory(code: unknown): HourLineCategory {
+  const normalized = normalizeCode(code);
+  if (normalized === 'overtime' || normalized === 'irregular_surcharge' || normalized === 'adv_compensation' || normalized === 'regular') return normalized;
+  logUnrecognizedCode('hour_lines[].category', code);
   return 'other';
 }
 
-function mapTaxTreatment(code: unknown): TaxTreatment {
-  if (code === 'table' || code === 'bt') return code;
+export function mapTaxTreatment(code: unknown): TaxTreatment {
+  const normalized = normalizeCode(code);
+  if (normalized === 'table' || normalized === 'bt') return normalized;
+  logUnrecognizedCode('hour_lines[].tax_treatment', code);
   return 'unknown';
 }
 
-function mapPreTaxCategory(code: unknown): PreTaxDeductionCategory {
-  if (code === 'pension' || code === 'paww' || code === 'ziektewet' || code === 'wga_gat') return code;
+export function mapPreTaxCategory(code: unknown): PreTaxDeductionCategory {
+  const normalized = normalizeCode(code);
+  if (normalized === 'pension' || normalized === 'paww' || normalized === 'ziektewet' || normalized === 'wga_gat') return normalized;
+  logUnrecognizedCode('pre_tax_deduction_lines[].category', code);
   return 'other';
 }
 
-function mapPostTaxCategory(code: unknown): PostTaxSocialCategory {
-  if (code === 'wga' || code === 'gediff_wga' || code === 'whk') return code;
+export function mapPostTaxCategory(code: unknown): PostTaxSocialCategory {
+  const normalized = normalizeCode(code);
+  if (normalized === 'wga' || normalized === 'gediff_wga' || normalized === 'whk') return normalized;
+  logUnrecognizedCode('post_tax_deduction_lines[].category', code);
   return 'other';
 }
 
-function mapNetCategory(code: unknown): NetDeductionCategory | 'reimbursement' {
-  if (code === 'reimbursement' || code === 'loan' || code === 'housing' || code === 'transport' || code === 'health_insurance' || code === 'union') return code;
+export function mapNetCategory(code: unknown): NetDeductionCategory | 'reimbursement' {
+  const normalized = normalizeCode(code);
+  if (normalized === 'reimbursement' || normalized === 'loan' || normalized === 'housing' || normalized === 'transport' || normalized === 'health_insurance' || normalized === 'union') return normalized;
+  logUnrecognizedCode('net_lines[].category', code);
   return 'other';
 }
 
-function mapReservationType(code: unknown): ReservationType {
-  if (code === 'vakantiegeld' || code === 'vakantiedagen' || code === 'vakantiedagen_bovenwettelijk' || code === 'verlofuren') return code;
+export function mapReservationType(code: unknown): ReservationType {
+  const normalized = normalizeCode(code);
+  if (normalized === 'vakantiegeld' || normalized === 'vakantiedagen' || normalized === 'vakantiedagen_bovenwettelijk' || normalized === 'verlofuren') return normalized;
+  logUnrecognizedCode('reservation_lines[].type', code);
   return 'other';
 }
 
-function mapPeriodType(code: unknown): TierCPeriodType | null {
-  if (code === 'week' || code === '4-weekly' || code === 'month') return code;
+export function mapPeriodType(code: unknown): TierCPeriodType | null {
+  const normalized = normalizeCode(code);
+  if (normalized === 'week' || normalized === '4-weekly' || normalized === 'month') return normalized;
   return null;
 }
 

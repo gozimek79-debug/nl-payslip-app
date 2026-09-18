@@ -3,7 +3,7 @@ import { getCurrentRule, getMinimumWageAt } from '../rules-repository.js';
 import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from '../payroll-engine/calculator.js';
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
-import { checkExtractionConsistency } from '../payroll-engine/extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace } from '../payroll-engine/extraction-consistency.js';
 import { mapExtractionToPeriod, type TierCExtraction } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
@@ -102,9 +102,12 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       // the fix: log it unconditionally here, so the next gate-firing request is diagnosable from
       // Vercel's logs without needing to reproduce it.
       console.error('[consistency-gate] blocked - raw extraction:', JSON.stringify(extraction), 'issues:', JSON.stringify(consistencyIssues));
+      // Stage 2d (§2d.1): "the blocking panel must show what it read" - every extracted line, and
+      // the gate's own gross-to-net chain, not just the one figure that happened to trip a check.
       return res.json({
         status: 'unreliable',
         issues: consistencyIssues,
+        trace: buildExtractionTrace(period, outcome),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
@@ -161,7 +164,8 @@ router.post('/recompute', async (req, res) => {
   // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
   const consistencyIssues = checkExtractionConsistency(null, period, outcome);
   if (consistencyIssues.length > 0) {
-    return res.json({ status: 'unreliable', issues: consistencyIssues });
+    console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(period), 'issues:', JSON.stringify(consistencyIssues));
+    return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
   }
 
   const discrepancies = comparePeriodToDocument(period, outcome);

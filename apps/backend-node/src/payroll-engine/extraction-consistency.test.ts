@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkExtractionConsistency } from './extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
 import { known, type PayslipPeriod, type PayslipComputationOutcome, type PayslipComputationResult } from './payslip-model.js';
 
 /**
@@ -139,6 +139,21 @@ test('2b: a StiPP/pension line filed under "other" is flagged as miscategorized 
   if (issue?.code === 'deduction_miscategorized') assert.equal(issue.suggested_category, 'pension');
 });
 
+test('2d.3: "AZW werknemer" (read correctly, not garbled) filed under "other" is flagged - the exact v19 retest scenario', () => {
+  // Distinct from the "A29 werknemer" test above: this is the case where the DESCRIPTION was read
+  // correctly and the CATEGORY assignment is what's wrong - the keyword backstop's job. The garbled-
+  // description case (A29) is a different, structurally unfixable failure mode (see ocr-client.test.ts
+  // and payslip-analysis-payload.test.ts's KNOWN LIMITATION test) - conflating the two would hide
+  // that this one IS supposed to be caught, and was.
+  const period = minimalPeriod({
+    pre_tax_deductions: [{ category: 'other', description: 'AZW werknemer', amount: known(4.90, 'payslip_extracted'), base: null, percent: null }],
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  const issue = issues.find((i) => i.code === 'deduction_miscategorized');
+  assert.ok(issue, 'expected "AZW werknemer" in category "other" to be caught by the ziektewet keyword backstop');
+  if (issue?.code === 'deduction_miscategorized') assert.equal(issue.suggested_category, 'ziektewet');
+});
+
 test('2b: a correctly-categorized pension line is never flagged', () => {
   const period = minimalPeriod({
     pre_tax_deductions: [{ category: 'pension', description: 'StiPP pensioenpremie', amount: known(34.79, 'payslip_extracted'), base: null, percent: null }],
@@ -246,4 +261,53 @@ test('2b: a fully clean, correctly-extracted period produces no issues at all', 
   const outcome = completeOutcome({ taxable_base: 844.92, table_tax_after_korting: 152.37 });
   const issues = checkExtractionConsistency('2026-09-08', period, outcome);
   assert.deepEqual(issues, [], JSON.stringify(issues));
+});
+
+/**
+ * Stage 2d (v19, §2d.1): buildExtractionTrace supplies the blocking panel's "what we read" section -
+ * the full chain, independent of which specific check fired. Tested separately from
+ * checkExtractionConsistency's own tests because the panel needs this even for issues (like
+ * period_length_mismatch) that have nothing to do with the gross-to-net arithmetic at all.
+ */
+test('2d.1: buildExtractionTrace reproduces the real Olympia chain end to end (all four deductions correctly read)', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.50, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    pre_tax_deductions: [
+      { category: 'ziektewet', description: 'AZW werknemer', amount: known(4.90, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'STiPP-pensioen werknemer', amount: known(34.79, 'payslip_extracted'), base: null, percent: null },
+      { category: 'paww', description: 'Bijdrage PAWW werknemer', amount: known(0.89, 'payslip_extracted'), base: null, percent: null },
+    ],
+    post_tax_social: [{ category: 'whk', description: 'WHK werknemer', amount: known(6.46, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 152.37,
+    printed_net: 686.09,
+    printed_payout: 776.09,
+    net_additions: [{ category: 'reimbursement', description: 'Onb.Reiskosten woon/werk', amount: 90 }],
+  });
+  const outcome = completeOutcome({ taxable_base: 844.92, table_tax_after_korting: 152.37 });
+  const trace = buildExtractionTrace(period, outcome);
+
+  assert.equal(trace.gross_total, 885.50);
+  assert.equal(trace.pre_tax_deductions_sum, 40.58); // 4.90 + 34.79 + 0.89
+  assert.equal(trace.loon_voor_heffingen, 844.92); // matches the real printed "loon voor heffingen"
+  assert.equal(trace.post_tax_deductions_sum, 6.46);
+  assert.equal(trace.implied_net, 686.09); // 885.50 - 40.58 - 152.37 - 6.46, matches the real "Totaal netto"
+  assert.equal(trace.implied_payout, 776.09); // 686.09 + 90.00, matches the real "Totaal"
+  assert.equal(trace.hour_lines.length, 1);
+  assert.equal(trace.pre_tax_deductions.length, 3);
+  assert.equal(trace.pre_tax_deductions[0]?.category, 'ziektewet');
+  assert.equal(trace.pre_tax_deductions[0]?.label, 'AZW werknemer');
+});
+
+test('2d.1: buildExtractionTrace reports an unknown deduction as null, never coerced to zero (§2.1), and the chain built on top of it is also null, not a wrong number', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 885.50, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: { provenance: 'unknown', value: null }, base: null, percent: null }],
+  });
+  const outcome = completeOutcome({});
+  const trace = buildExtractionTrace(period, outcome);
+
+  assert.equal(trace.pre_tax_deductions[0]?.amount, null);
+  assert.equal(trace.pre_tax_deductions_sum, null);
+  assert.equal(trace.loon_voor_heffingen, null); // depends on pre_tax_deductions_sum - must not silently become gross_total - 0
+  assert.equal(trace.implied_net, null); // depends on the same unknown sum
 });

@@ -91,9 +91,33 @@ type ConsistencyIssue =
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number };
 
+/** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
+ * extraction-consistency.ts's ExtractionTrace exactly. */
+interface ExtractionTraceLine { label: string; category: string; amount: number | null; provenance: string }
+interface ExtractionTrace {
+  hour_lines: ExtractionTraceLine[];
+  gross_total: number;
+  pre_tax_deductions: ExtractionTraceLine[];
+  pre_tax_deductions_sum: number | null;
+  loon_voor_heffingen: number | null;
+  printed_table_tax: number | null;
+  printed_bt_tax: number | null;
+  computed_taxable_base: number;
+  computed_table_tax_after_korting: number;
+  post_tax_social: ExtractionTraceLine[];
+  post_tax_deductions_sum: number | null;
+  implied_net: number | null;
+  printed_net: number | null;
+  net_additions: ExtractionTraceLine[];
+  net_deductions: ExtractionTraceLine[];
+  implied_payout: number | null;
+  printed_payout: number | null;
+}
+
 interface UnreliableResponse {
   status: 'unreliable';
   issues: ConsistencyIssue[];
+  trace: ExtractionTrace;
   period: TierCPeriodResponse;
   truncated: boolean;
   redactedFields: string[];
@@ -257,17 +281,17 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     setDispositions(current => ({ ...current, [code]: { kind: 'confirmed' } }));
   }
 
-  async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[] })> {
+  async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[]; trace: ExtractionTrace })> {
     const correctedPeriod = { ...basePeriod, [field]: value };
     const res = await fetch('/api/tier-c/recompute', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ period: correctedPeriod }),
     });
-    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; issues?: ConsistencyIssue[]; taxRatesSource?: 'database' | 'static'; error_code?: string };
+    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; issues?: ConsistencyIssue[]; trace?: ExtractionTrace; taxRatesSource?: 'database' | 'static'; error_code?: string };
     if (!res.ok || !data.status) throw new Error(t.error);
     if (data.status === 'unreliable') {
-      if (!data.issues) throw new Error(t.error);
-      return { status: 'unreliable', period: correctedPeriod, issues: data.issues };
+      if (!data.issues || !data.trace) throw new Error(t.error);
+      return { status: 'unreliable', period: correctedPeriod, issues: data.issues, trace: data.trace };
     }
     if (!data.outcome || !data.discrepancies || !data.taxRatesSource) throw new Error(t.error);
     return { status: 'ok', period: correctedPeriod, outcome: data.outcome, discrepancies: data.discrepancies, taxRatesSource: data.taxRatesSource };
@@ -299,7 +323,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
       // applies after a correction, not only before the first attempt) - fall through to the
       // unreliable view rather than pretending the discrepancy list is still the right thing to show.
       if (result.status === 'unreliable') {
-        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, truncated: false, redactedFields: [] });
+        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, trace: result.trace, truncated: false, redactedFields: [] });
         return;
       }
       setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, truncated: response.truncated, redactedFields: response.redactedFields, taxRatesSource: result.taxRatesSource });
@@ -322,7 +346,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     try {
       const result = await recomputeWithCorrection(response.period, field, value);
       if (result.status === 'unreliable') {
-        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, truncated: false, redactedFields: [] });
+        setResponse({ status: 'unreliable', period: result.period, issues: result.issues, trace: result.trace, truncated: false, redactedFields: [] });
         return;
       }
       setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, truncated: false, redactedFields: [], taxRatesSource: 'static' });
@@ -394,6 +418,72 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
           <AlertTriangle/>
           <div><p>{t.unreliableBody}</p></div>
         </div>
+
+        {/* v19 (§2d.1): "the blocking panel must show what it read" - every extracted line and the
+            gate's own gross-to-net chain, not just the totals and one flagged line. A step marked
+            with traceStepFailed corresponds to an issue below that references it. */}
+        {(() => {
+          const trace = response.trace;
+          const hasIssue = (code: ConsistencyIssue['code']) => response.issues.some((i) => i.code === code);
+          const miscategorized = new Set(
+            response.issues
+              .filter((i): i is Extract<ConsistencyIssue, { code: 'deduction_miscategorized' }> => i.code === 'deduction_miscategorized')
+              .map((i) => i.description),
+          );
+          const renderLines = (lines: ExtractionTraceLine[]) =>
+            lines.length === 0 ? (
+              <p className="form-note">{t.traceNoLines}</p>
+            ) : (
+              lines.map((l, i) => (
+                <p key={i}>
+                  {l.label} <span className="form-note nl-term">({l.category})</span>: <strong>{l.amount === null ? t.traceUnknown : money(l.amount)}</strong>
+                  {miscategorized.has(l.label) && <span className="form-note"> {t.traceStepFailed}</span>}
+                </p>
+              ))
+            );
+          return (
+            <div className="notice-card">
+              <ShieldCheck/>
+              <div>
+                <h3>{t.traceTitle}</h3>
+                <p><strong>{t.traceHourLines}</strong></p>
+                {renderLines(trace.hour_lines)}
+                <p>{t.traceGrossTotal}: <strong>{money(trace.gross_total)}</strong></p>
+
+                <p><strong>{t.tracePreTaxDeductions}</strong></p>
+                {renderLines(trace.pre_tax_deductions)}
+                <p>{t.tracePreTaxSum}: <strong>{trace.pre_tax_deductions_sum === null ? t.traceUnknown : money(trace.pre_tax_deductions_sum)}</strong></p>
+                <p>{t.traceLoonVoorHeffingen}: <strong>{trace.loon_voor_heffingen === null ? t.traceUnknown : money(trace.loon_voor_heffingen)}</strong></p>
+
+                <p><strong>{t.traceTaxTitle}</strong>{hasIssue('zero_tax_nonzero_base') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p>{t.traceTaxPrintedTable}: <strong>{trace.printed_table_tax === null ? t.traceUnknown : money(trace.printed_table_tax)}</strong></p>
+                {trace.printed_bt_tax !== null && <p>{t.traceTaxPrintedBt}: <strong>{money(trace.printed_bt_tax)}</strong></p>}
+                <p>{t.traceTaxComputed}: <strong>{money(trace.computed_table_tax_after_korting)}</strong></p>
+
+                <p><strong>{t.tracePostTaxSocial}</strong></p>
+                {renderLines(trace.post_tax_social)}
+                <p>{t.tracePostTaxSum}: <strong>{trace.post_tax_deductions_sum === null ? t.traceUnknown : money(trace.post_tax_deductions_sum)}</strong></p>
+
+                <p><strong>{t.traceNetTitle}</strong>{hasIssue('totals_do_not_reconcile_net') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p>{t.traceNetImplied}: <strong>{trace.implied_net === null ? t.traceUnknown : money(trace.implied_net)}</strong></p>
+                <p>{t.traceNetPrinted}: <strong>{trace.printed_net === null ? t.traceUnknown : money(trace.printed_net)}</strong></p>
+
+                {(trace.net_additions.length > 0 || trace.net_deductions.length > 0) && (
+                  <>
+                    <p><strong>{t.traceNetAdditions}</strong></p>
+                    {renderLines(trace.net_additions)}
+                    <p><strong>{t.traceNetDeductions}</strong></p>
+                    {renderLines(trace.net_deductions)}
+                  </>
+                )}
+
+                <p><strong>{t.tracePayoutTitle}</strong>{hasIssue('totals_do_not_reconcile_payout') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p>{t.tracePayoutImplied}: <strong>{trace.implied_payout === null ? t.traceUnknown : money(trace.implied_payout)}</strong></p>
+                <p>{t.tracePayoutPrinted}: <strong>{trace.printed_payout === null ? t.traceUnknown : money(trace.printed_payout)}</strong></p>
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="notice-card discrepancy-card">
           <AlertTriangle/>

@@ -78,6 +78,85 @@ function sumKnownAmounts(fields: Array<{ value: number | null }>): number | null
   return total;
 }
 
+/**
+ * Stage 2d (audit v19, §2d.1): "the blocking panel must show what it read." Until now, a gate firing
+ * told the user (and the owner, debugging live) only that something didn't add up - not which lines
+ * were read, what they were categorized as, or where in the gross-to-net chain the arithmetic broke.
+ * This is that trace: the SAME figures checkExtractionConsistency already computes internally,
+ * returned regardless of which specific check fired, so the panel can show the full chain every time,
+ * not just the one step that happened to trip a threshold. Pure and side-effect-free, like the check
+ * function itself - the interface builds sentences from this, per §2.6, this file only supplies codes
+ * and numbers.
+ */
+export interface ExtractionTraceLine {
+  label: string;
+  category: string;
+  amount: number | null;
+  provenance: string;
+}
+
+export interface ExtractionTrace {
+  hour_lines: ExtractionTraceLine[];
+  gross_total: number;
+  pre_tax_deductions: ExtractionTraceLine[];
+  pre_tax_deductions_sum: number | null;
+  loon_voor_heffingen: number | null;
+  printed_table_tax: number | null;
+  printed_bt_tax: number | null;
+  computed_taxable_base: number;
+  computed_table_tax_after_korting: number;
+  post_tax_social: ExtractionTraceLine[];
+  post_tax_deductions_sum: number | null;
+  implied_net: number | null;
+  printed_net: number | null;
+  net_additions: ExtractionTraceLine[];
+  net_deductions: ExtractionTraceLine[];
+  implied_payout: number | null;
+  printed_payout: number | null;
+}
+
+function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted'): ExtractionTraceLine {
+  return { label: description, category, amount, provenance };
+}
+
+export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome): ExtractionTrace {
+  const grossTotal = period.hour_lines.reduce((sum, line) => sum + line.amount, 0);
+  const preTaxLines = period.pre_tax_deductions.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
+  const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
+  const postTaxLines = period.post_tax_social.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
+  const postTaxSum = sumKnownAmounts(period.post_tax_social.map((d) => d.amount));
+  const loonVoorHeffingen = preTaxSum !== null ? Math.round((grossTotal - preTaxSum) * 100) / 100 : null;
+  const impliedNet =
+    preTaxSum !== null && postTaxSum !== null
+      ? Math.round((grossTotal - preTaxSum - (period.printed_table_tax ?? 0) - (period.printed_bt_tax ?? 0) - postTaxSum) * 100) / 100
+      : null;
+  const netAdditionsSum = period.net_additions.reduce((sum, l) => sum + l.amount, 0);
+  const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
+  const payoutAdjustmentsSum = period.payout_adjustments.reduce((sum, l) => sum + l.amount, 0);
+  const impliedPayout = period.printed_net !== null ? Math.round((period.printed_net + netAdditionsSum - netDeductionsSum + payoutAdjustmentsSum) * 100) / 100 : null;
+  const taxFields = outcome.status === 'complete' ? outcome.result : outcome;
+
+  return {
+    hour_lines: period.hour_lines.map((l) => traceLine(l.description, l.category, l.amount)),
+    gross_total: Math.round(grossTotal * 100) / 100,
+    pre_tax_deductions: preTaxLines,
+    pre_tax_deductions_sum: preTaxSum,
+    loon_voor_heffingen: loonVoorHeffingen,
+    printed_table_tax: period.printed_table_tax,
+    printed_bt_tax: period.printed_bt_tax,
+    computed_taxable_base: taxFields.taxable_base,
+    computed_table_tax_after_korting: taxFields.table_tax_after_korting,
+    post_tax_social: postTaxLines,
+    post_tax_deductions_sum: postTaxSum,
+    implied_net: impliedNet,
+    printed_net: period.printed_net,
+    net_additions: period.net_additions.map((l) => traceLine(l.description, l.category, l.amount)),
+    net_deductions: period.net_deductions.map((l) => traceLine(l.description, l.category, l.amount)),
+    implied_payout: impliedPayout,
+    printed_payout: period.printed_payout,
+  };
+}
+
 export function checkExtractionConsistency(
   paymentDate: string | null,
   period: PayslipPeriod,

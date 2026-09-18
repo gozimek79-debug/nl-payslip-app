@@ -91,6 +91,17 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // response shape that never reaches a discrepancy list at all.
     const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
     if (consistencyIssues.length > 0) {
+      // v18 (audit): a real Olympia retest showed the gate firing twice, with two different
+      // computed nets from what was reported as "the same document" - and there was NOTHING to
+      // check afterward. This route never persisted to the database (only the orphaned old
+      // payslip.controller.ts route does; the 24h retention_until column that policy assumed does
+      // not apply here), and the SDK-bypass diagnostic added for the Mistral cutover only fires on
+      // a THROWN error - a gate firing is a normal 200 response, so it never logged either. The raw
+      // extraction is not PII (TierCExtraction has no identity fields to begin with - see tier-c.ts),
+      // so there is no privacy reason not to log it whenever the gate blocks a comparison. This is
+      // the fix: log it unconditionally here, so the next gate-firing request is diagnosable from
+      // Vercel's logs without needing to reproduce it.
+      console.error('[consistency-gate] blocked - raw extraction:', JSON.stringify(extraction), 'issues:', JSON.stringify(consistencyIssues));
       return res.json({
         status: 'unreliable',
         issues: consistencyIssues,

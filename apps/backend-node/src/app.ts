@@ -22,7 +22,18 @@ app.use(express.json({ limit: '12mb' }));
 
 app.get('/api/health', async (_req, res) => {
   const database = await checkDatabase();
-  res.json({ status: database === 'unavailable' ? 'degraded' : 'ok', database });
+  // v18 (audit): "which build served this request" had no answer after the fact this round - the
+  // owner's retest results couldn't be tied to a specific deployment, and by the time that was
+  // asked, Vercel's own log retention had already rolled past the request anyway. Both vars are set
+  // automatically by Vercel on every deployment (confirmed present via `vercel env pull`, no new
+  // config needed); null outside Vercel (local dev), which is itself useful information, not an
+  // error to hide.
+  res.json({
+    status: database === 'unavailable' ? 'degraded' : 'ok',
+    database,
+    commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+    deploymentUrl: process.env.VERCEL_URL ?? null,
+  });
 });
 
 app.use('/api/payslips', payslipRouter);

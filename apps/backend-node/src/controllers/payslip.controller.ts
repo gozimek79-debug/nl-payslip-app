@@ -202,20 +202,28 @@ router.post('/analyze', writeRateLimit, async (req, res) => {
   });
 });
 
-router.post('/ai-ocr', aiRateLimit, async (req, res) => {
-  if (!isVisionConfigured()) {
-    return res.status(503).json({ error: 'Odczyt dokumentu przez AI jest chwilowo niedostępny (brak modelu wizyjnego u dostawcy).' });
-  }
-  const parsed = aiOcrSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe dane obrazu.' });
-  try {
-    const fields = await extractPayslipFieldsFromImage(parsed.data.imageBase64);
-    return res.json({ fields });
-  } catch (error) {
-    console.error('Groq OCR error', error);
-    return res.status(502).json({ error: 'Nie udało się odczytać dokumentu przez AI. Popraw dane ręcznie lub spróbuj ponownie.' });
-  }
-});
+/**
+ * Stage 2e (audit v24, §2e.7): UNMOUNTED, not deleted (§5.1) - this route has no frontend caller
+ * (TierCFlow.tsx's live upload goes through /api/tier-c/analyze, Mistral/EU-hosted) and always sent
+ * the image to Groq (not EU-hosted), regardless of TIER_C_VISION_PROVIDER. Left as dead code, the
+ * handler and extractPayslipFieldsFromImage() untouched, in case a future decision wires this path to
+ * an EU-hosted provider deliberately - that is a new decision, not a restoration of an oversight.
+ *
+ * router.post('/ai-ocr', aiRateLimit, async (req, res) => {
+ *   if (!isVisionConfigured()) {
+ *     return res.status(503).json({ error: 'Odczyt dokumentu przez AI jest chwilowo niedostępny (brak modelu wizyjnego u dostawcy).' });
+ *   }
+ *   const parsed = aiOcrSchema.safeParse(req.body);
+ *   if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe dane obrazu.' });
+ *   try {
+ *     const fields = await extractPayslipFieldsFromImage(parsed.data.imageBase64);
+ *     return res.json({ fields });
+ *   } catch (error) {
+ *     console.error('Groq OCR error', error);
+ *     return res.status(502).json({ error: 'Nie udało się odczytać dokumentu przez AI. Popraw dane ręcznie lub spróbuj ponownie.' });
+ *   }
+ * });
+ */
 
 router.post('/explain', aiRateLimit, async (req, res) => {
   if (!isGroqConfigured()) {

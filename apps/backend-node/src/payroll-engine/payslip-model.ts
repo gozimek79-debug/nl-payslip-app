@@ -187,6 +187,17 @@ export interface PayslipPeriod {
   printed_net: number | null;
   printed_payout: number | null;
 
+  /** Stage 2e (audit v24, §2e.3): the document's OWN two printed subtotals, read by position in the
+   * gross-to-net chain (the figure right after the gross lines; the figure right after the pre-tax
+   * deductions) rather than by label name - Olympia prints "TOTAAL BRUTO", Randstad "LOON VOOR
+   * HEFFINGEN", PKF "PODSTAWA" for the same position. These anchor extraction-consistency.ts's
+   * three-stage reconciliation against the document's own arithmetic, not the engine's - a stage that
+   * fails here means the READ is wrong at that specific point in the chain, independent of whether the
+   * engine's own tax computation is right. null (never 0) when the document does not print a distinct
+   * figure at that position, or a manually-entered Tier A period has none to read. */
+  printed_gross_total: number | null;
+  printed_loon_voor_heffingen: number | null;
+
   /** As-printed label for each figure above, exactly as it appears on the source document (never a
    * canonical/translated stand-in) - null for a manually-entered period (Tier A has no document to
    * read a label from) or when the document prints no distinct label for that figure. Only Tier C

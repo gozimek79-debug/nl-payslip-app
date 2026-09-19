@@ -11,6 +11,7 @@ import maintenanceRouter from './controllers/maintenance.controller.js';
 import tierARouter from './controllers/tier-a.controller.js';
 import tierCRouter from './controllers/tier-c.controller.js';
 import { checkDatabase } from './database.js';
+import { activeDocumentVisionConfig } from './ai-service/document-vision-provider.js';
 
 const app = express();
 
@@ -28,11 +29,15 @@ app.get('/api/health', async (_req, res) => {
   // automatically by Vercel on every deployment (confirmed present via `vercel env pull`, no new
   // config needed); null outside Vercel (local dev), which is itself useful information, not an
   // error to hide.
+  // Stage 2e (§2e.7): "report the configured reading provider's name on /api/health (a name, never a
+  // key), so production can be checked instead of assumed" - the provider name only (e.g. "Mistral La
+  // Plateforme..."), never the API key or its env var name.
   res.json({
     status: database === 'unavailable' ? 'degraded' : 'ok',
     database,
     commit: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
     deploymentUrl: process.env.VERCEL_URL ?? null,
+    documentVisionProvider: activeDocumentVisionConfig().label,
   });
 });
 

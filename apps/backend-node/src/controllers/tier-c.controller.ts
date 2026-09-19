@@ -3,7 +3,7 @@ import { getCurrentRule, getMinimumWageAt } from '../rules-repository.js';
 import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from '../payroll-engine/calculator.js';
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
-import { checkExtractionConsistency, buildExtractionTrace } from '../payroll-engine/extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
 import { mapExtractionToPeriod, type TierCExtraction } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
@@ -58,6 +58,41 @@ function resolveReferenceDate(periodEndDate: string | null): Date {
   return new Date();
 }
 
+/**
+ * Stage 2e (audit v24, §2e.7): the gate-fire log previously JSON.stringify()'d the whole raw
+ * extraction/period, including employer_names, hirer_name, period_label and free-text line
+ * descriptions - rated a blocker by the reviewer, major by the auditor ("with amounts and a week
+ * they point at one worker's payslip, and a free-text description can carry a name sanitizeText does
+ * not match"). This is the allowlist instead: amounts, categories and printed labels (already run
+ * through sanitizeText in ocr-client.ts) - never a description, an employer/hirer name, or a raw
+ * period label, even sanitized. Diagnosing a gate failure needs the figures, not the free text.
+ */
+function redactedGateLogPayload(period: PayslipPeriod) {
+  return {
+    period_type: period.period_type,
+    hour_lines: period.hour_lines.map((l) => ({ category: l.category, tax_treatment: l.tax_treatment, amount: l.amount })),
+    pre_tax_deductions: period.pre_tax_deductions.map((d) => ({ category: d.category, amount: d.amount })),
+    post_tax_social: period.post_tax_social.map((d) => ({ category: d.category, amount: d.amount })),
+    net_additions: period.net_additions.map((l) => ({ category: l.category, amount: l.amount })),
+    net_deductions: period.net_deductions.map((l) => ({ category: l.category, amount: l.amount })),
+    printed_table_tax: period.printed_table_tax,
+    printed_bt_tax: period.printed_bt_tax,
+    printed_net: period.printed_net,
+    printed_payout: period.printed_payout,
+    printed_gross_total: period.printed_gross_total,
+    printed_loon_voor_heffingen: period.printed_loon_voor_heffingen,
+    printed_table_tax_label: period.printed_table_tax_label,
+    printed_net_label: period.printed_net_label,
+    printed_payout_label: period.printed_payout_label,
+  };
+}
+
+/** Same allowlist principle applied to the issues array itself - deduction_miscategorized carries the
+ * line's free-text description, which the payload above deliberately omits everywhere else. */
+function redactedIssuesForLogging(issues: ConsistencyIssue[]) {
+  return issues.map((issue) => (issue.code === 'deduction_miscategorized' ? { code: issue.code, placement: issue.placement, suggested_category: issue.suggested_category } : issue));
+}
+
 router.post('/analyze', aiRateLimit, async (req, res) => {
   // §2.6/CONVENTIONS.md: error_code + params, never a prebaked sentence - this controller had the
   // same pre-existing defect as tier-a/contract had before those were fixed; wiring this route to a
@@ -89,19 +124,30 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // extraction failure also produces large residuals. This gate runs BEFORE comparePeriodToDocument
     // and, if the extraction fails its own internal-consistency checks, short-circuits to a distinct
     // response shape that never reaches a discrepancy list at all.
-    const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+    // Stage 2e (§2e.5): tier-c.ts previously defaulted an unread period_type to 'week' and an unread
+    // et_exchange_amount to 0, both silently - only the controller has the RAW extraction needed to
+    // tell "genuinely absent" from "read as zero/week" (mapExtractionToPeriod itself must still return
+    // a concrete PayslipPeriod, since computePayslipPeriod needs a period_multiplier to run at all).
+    const extractionGapIssues: ConsistencyIssue[] = [];
+    if (extraction.period_type === null) extractionGapIssues.push({ code: 'period_type_unknown' });
+    if (extraction.et_reimbursement_lines.length > 0 && extraction.et_exchange_amount === null) {
+      extractionGapIssues.push({ code: 'et_exchange_amount_unknown' });
+    }
+
+    const consistencyIssues = [...extractionGapIssues, ...checkExtractionConsistency(extraction.payment_date, period, outcome)];
     if (consistencyIssues.length > 0) {
       // v18 (audit): a real Olympia retest showed the gate firing twice, with two different
       // computed nets from what was reported as "the same document" - and there was NOTHING to
       // check afterward. This route never persisted to the database (only the orphaned old
       // payslip.controller.ts route does; the 24h retention_until column that policy assumed does
       // not apply here), and the SDK-bypass diagnostic added for the Mistral cutover only fires on
-      // a THROWN error - a gate firing is a normal 200 response, so it never logged either. The raw
-      // extraction is not PII (TierCExtraction has no identity fields to begin with - see tier-c.ts),
-      // so there is no privacy reason not to log it whenever the gate blocks a comparison. This is
+      // a THROWN error - a gate firing is a normal 200 response, so it never logged either. This is
       // the fix: log it unconditionally here, so the next gate-firing request is diagnosable from
-      // Vercel's logs without needing to reproduce it.
-      console.error('[consistency-gate] blocked - raw extraction:', JSON.stringify(extraction), 'issues:', JSON.stringify(consistencyIssues));
+      // Vercel's logs without needing to reproduce it. v24 (§2e.7): the raw extraction DOES carry
+      // employer/hirer names and free-text descriptions (tier-c.ts's own comment calling
+      // TierCExtraction PII-free was about identity fields like BSN/IBAN, not business names or
+      // descriptions) - logs an allowlisted projection instead, never the raw extraction or period.
+      console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
       // Stage 2d (§2d.1): "the blocking panel must show what it read" - every extracted line, and
       // the gate's own gross-to-net chain, not just the one figure that happened to trip a check.
       return res.json({
@@ -164,7 +210,7 @@ router.post('/recompute', async (req, res) => {
   // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
   const consistencyIssues = checkExtractionConsistency(null, period, outcome);
   if (consistencyIssues.length > 0) {
-    console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(period), 'issues:', JSON.stringify(consistencyIssues));
+    console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
     return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
   }
 

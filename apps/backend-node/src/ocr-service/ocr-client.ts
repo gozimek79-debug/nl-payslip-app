@@ -155,6 +155,7 @@ Zwróć WYŁĄCZNIE obiekt JSON (bez markdown) o strukturze:
 "reservation_lines":[{"type":string,"accrued":number,"paid_out":number}],
 "printed_table_tax":number|null,"printed_bt_tax":number|null,
 "printed_algemene_heffingskorting":number|null,"printed_arbeidskorting":number|null,
+"printed_gross_total":number|null,"printed_loon_voor_heffingen":number|null,
 "reported_total_net":number|null,"reported_net_paid":number|null,
 "printed_table_tax_label":string|null,"printed_bt_tax_label":string|null,
 "printed_algemene_heffingskorting_label":string|null,"printed_arbeidskorting_label":string|null,
@@ -222,6 +223,15 @@ podatku wg bijzonder tarief (jeśli osobna linia), printed_algemene_heffingskort
 algemene heffingskorting (jeśli widoczna osobno), printed_arbeidskorting=wydrukowana arbeidskorting
 (jeśli widoczna osobno).
 
+printed_gross_total=wydrukowana SUMA BRUTO tego dokumentu - liczba wydrukowana WPROST na dokumencie
+zaraz PO wszystkich liniach brutto/godzinowych, PRZED jakimikolwiek potrąceniami (etykieta różni się
+zależnie od pracodawcy - np. "TOTAAL BRUTO", "Loon in geld", "Bruto loon" - szukaj tej POZYCJI w
+dokumencie, nie konkretnego słowa). printed_loon_voor_heffingen=wydrukowana suma zaraz PO potrąceniach
+PRZED opodatkowaniem (StiPP/PAWW/etc.), PRZED podatkiem (etykieta też różni się - np. "LOON VOOR
+HEFFINGEN", "PODSTAWA" - znowu szukaj POZYCJI w łańcuchu: brutto -> potrącenia przedpodatkowe -> TA
+LICZBA -> podatek -> netto, nie konkretnej etykiety). Oba null, jeśli dokument nie drukuje osobnej
+liczby w tej pozycji (np. przechodzi od razu z pojedynczej linii brutto do podatku).
+
 reported_total_net=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest
 suma PRZED doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty.
 reported_net_paid=wydrukowana kwota przy etykiecie "Totaal"/"Netto te betalen"/"Uit te betalen" - to
@@ -247,6 +257,18 @@ własnego podpisu).
 Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0 i nie zgadywanie);
 "description" to opis DOKŁADNIE jak wydrukowany na dokumencie, nigdy tłumaczony ani skracany ponad
 potrzebę.
+
+KRYTYCZNE - przepisuj, nigdy nie licz: każda kwota ("amount", "printed_table_tax", "printed_bt_tax",
+"printed_gross_total", "printed_loon_voor_heffingen", "reported_total_net", "reported_net_paid" itd.)
+to liczba WYDRUKOWANA na dokumencie, przepisana DOKŁADNIE - NIGDY wynik własnego mnożenia/dodawania
+(np. godziny × stawka), nawet jeśli wynik wydaje się "powinien" pasować. Jeśli wydrukowana liczba jest
+nieczytelna, zwróć null - NIGDY nie zastępuj jej obliczonym przybliżeniem.
+
+KRYTYCZNE - znak liczby: każda kwota w "amount" (hour_lines, pre_tax_deduction_lines,
+post_tax_deduction_lines, net_lines, et_reimbursement_lines) to liczba DODATNIA (bez znaku minus),
+niezależnie od tego, czy dokument drukuje ją ze znakiem minus czy w nawiasie - to, czy kwota jest
+potrącana czy dodawana, wynika z pola "category"/tego, w której liście się znajduje, NIGDY ze znaku
+liczby.
 `.trim();
 
 function toBoolean(value: unknown): boolean {
@@ -417,13 +439,19 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     };
   });
 
+  // Stage 2e (§2e.5): a pre/post-tax deduction amount the model genuinely could not read must stay
+  // unknown, not become a silent 0 that then understates the taxable base or net - unlike hour_lines/
+  // net_lines/reservations below, PreTaxDeduction/PostTaxSocialDeduction (payslip-model.ts) already
+  // carry a Field<number>, so null threads cleanly through to unknownField() in tier-c.ts without
+  // widening the shared model's plain-number fields (out of scope for this round - see this round's
+  // report for the ones deliberately deferred).
   const mapDeductionLines = (raw: unknown, keyPrefix: string, placement: 'pre_tax' | 'post_tax', categoryMapper: (code: unknown) => PreTaxDeductionCategory | PostTaxSocialCategory): TierCDeductionLine[] => {
     const list = Array.isArray(raw) ? raw : [];
     return list.map((item, index) => {
       const r = item as Record<string, unknown>;
       return {
         description: sanitizeText(r.description, `${keyPrefix}[${index}].description`, redactedFields) ?? '',
-        amount: toNumber(r.amount),
+        amount: toNullableNumber(r.amount),
         category: categoryMapper(r.category),
         placement,
         base: toNullableNumber(r.base),
@@ -491,6 +519,8 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     printed_bt_tax: toNullableNumber(parsed.printed_bt_tax),
     printed_algemene_heffingskorting: toNullableNumber(parsed.printed_algemene_heffingskorting),
     printed_arbeidskorting: toNullableNumber(parsed.printed_arbeidskorting),
+    printed_gross_total: toNullableNumber(parsed.printed_gross_total),
+    printed_loon_voor_heffingen: toNullableNumber(parsed.printed_loon_voor_heffingen),
     reported_total_net: toNullableNumber(parsed.reported_total_net),
     reported_net_paid: toNullableNumber(parsed.reported_net_paid),
     printed_table_tax_label: sanitizeText(parsed.printed_table_tax_label, 'printed_table_tax_label', redactedFields),

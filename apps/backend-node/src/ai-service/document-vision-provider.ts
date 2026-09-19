@@ -80,13 +80,24 @@ export function documentVisionModel(): string {
   return process.env[config.modelEnvVar] || config.defaultModel;
 }
 
+/**
+ * Stage 2e (audit v24, §2e.7): "a document must never reach a non-EU provider by configuration.
+ * Restrict the reading path to EU-hosted providers and fail closed." Before this, `groq`/`openai`
+ * (both euHosted: false) were fully usable reading providers if TIER_C_VISION_PROVIDER were ever set
+ * to one - a config change alone, with no code change, could route a real payslip image to a non-EU
+ * processor. Both functions below now refuse a non-EU-hosted provider outright, regardless of whether
+ * an API key is configured for it - "not configured" and "not permitted" both mean "cannot be used
+ * for reading", so this fails the same way isDocumentVisionConfigured() already reports a missing key.
+ */
 export function isDocumentVisionConfigured(): boolean {
   const config = activeDocumentVisionConfig();
+  if (!config.euHosted) return false;
   return Boolean(process.env[config.apiKeyEnvVar]);
 }
 
 export function documentVisionClient(): OpenAI {
   const config = activeDocumentVisionConfig();
+  if (!config.euHosted) throw new Error(`Provider "${config.name}" is not EU-hosted and may not be used for document reading.`);
   const apiKey = process.env[config.apiKeyEnvVar];
   if (!apiKey) throw new Error(`${config.apiKeyEnvVar} is not configured for provider "${config.name}".`);
   return new OpenAI({ apiKey, baseURL: config.baseURL });

@@ -38,6 +38,8 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
     printed_arbeidskorting: null,
     printed_net: null,
     printed_payout: null,
+    printed_gross_total: null,
+    printed_loon_voor_heffingen: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,
@@ -245,7 +247,11 @@ test('2b: a fully clean, correctly-extracted period produces no issues at all', 
   const period = minimalPeriod({
     period_label: 'week 36/2026',
     period_type: 'week',
-    period_end_date: '2026-09-08',
+    // v24 (§2e.6): must be a date actually inside ISO week 36/2026 (Sep 1-7) now that
+    // period_week_mismatch checks the label against this date - Sep 6 is the real Olympia document's
+    // own confirmed period_end_date (tier-c.test.ts), reused here rather than an arbitrary date that
+    // happened to never be checked before.
+    period_end_date: '2026-09-06',
     hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 885.50, category: 'other', tax_treatment: 'table', adds_hours: false }],
     pre_tax_deductions: [
       { category: 'ziektewet', description: 'AZW werknemer', amount: known(4.90, 'payslip_extracted'), base: null, percent: null },
@@ -259,8 +265,31 @@ test('2b: a fully clean, correctly-extracted period produces no issues at all', 
     net_additions: [{ category: 'reimbursement', description: 'Reiskosten', amount: 90 }],
   });
   const outcome = completeOutcome({ taxable_base: 844.92, table_tax_after_korting: 152.37 });
-  const issues = checkExtractionConsistency('2026-09-08', period, outcome);
+  const issues = checkExtractionConsistency('2026-09-06', period, outcome);
   assert.deepEqual(issues, [], JSON.stringify(issues));
+});
+
+test('2e.6: a week-number label disagreeing with the period end date\'s own ISO week is flagged', () => {
+  const period = minimalPeriod({ period_label: 'week 36/2026', period_type: 'week', period_end_date: '2026-09-13' }); // ISO week 37, not 36
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  const issue = issues.find((i) => i.code === 'period_week_mismatch');
+  assert.ok(issue, 'expected the label\'s week 36 to be checked against period_end_date\'s actual ISO week (37) and flagged');
+  if (issue?.code === 'period_week_mismatch') {
+    assert.equal(issue.label_week, 36);
+    assert.equal(issue.end_date_week, 37);
+  }
+});
+
+test('2e.6: a week-number label agreeing with the period end date\'s own ISO week is not flagged', () => {
+  const period = minimalPeriod({ period_label: 'week 36/2026', period_type: 'week', period_end_date: '2026-09-06' });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'period_week_mismatch'));
+});
+
+test('2e.6: a year-first label shape ("week 2026-11") is never parsed as week/year - not confirmed against a real document, stays unflagged rather than guessed', () => {
+  const period = minimalPeriod({ period_label: 'week 2026-11', period_type: 'week', period_end_date: '2026-04-30' });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'period_week_mismatch'));
 });
 
 /**

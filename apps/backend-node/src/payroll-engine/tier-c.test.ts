@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mapExtractionToPeriod, type TierCExtraction } from './tier-c.js';
 import { computePayslipPeriod, type PayslipComputationRates } from './payslip-model.js';
 import { comparePeriodToDocument } from './discrepancy.js';
+import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
 
 /**
  * Tier C integration tests (audit BP1/BP4), in the required fixture order: Olympia, PKF, Randstad,
@@ -94,6 +95,8 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
     printed_arbeidskorting: null,
     reported_total_net: null,
     reported_net_paid: null,
+    printed_gross_total: null,
+    printed_loon_voor_heffingen: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,
@@ -125,6 +128,9 @@ test('Tier C integration: Fixture 4 Olympia maps, computes and reports NO discre
       { description: 'STIPP-pensioen werknemer', amount: 34.79, category: 'pension', placement: 'pre_tax', base: 879.71, percent: 7.5 },
     ],
     post_tax_deduction_lines: [
+      // v24 (§2e.4): deliberately left as the model would have misclassified it ('other') - the
+      // deterministic label override below must reclassify this to 'whk' on the label alone, the
+      // model's own category is advisory and ignored.
       { description: 'WHK werknemer', amount: 6.46, category: 'other', placement: 'post_tax', base: null, percent: null },
     ],
     net_lines: [{ description: 'Onb. reiskosten woon/werk', amount: 90.0, category: 'reimbursement' }],
@@ -136,14 +142,30 @@ test('Tier C integration: Fixture 4 Olympia maps, computes and reports NO discre
     printed_table_tax: 152.37,
     printed_arbeidskorting: 108.71,
     reported_net_paid: 776.09, // CL: exercises the newly-wired payout_mismatch check with a real, already-verified figure
+    // v24 (§2e.3): the document's own two chain subtotals - 885.50 = sum of the four gross lines
+    // above; 844.92 = 885.50 - 40.58 (the three real pre-tax deductions), both already independently
+    // confirmed by this test's own assertions below.
+    printed_gross_total: 885.5,
+    printed_loon_voor_heffingen: 844.92,
   });
 
+  // v24 (§2e.4): the deterministic label override reclassifies "WHK werknemer" to 'whk' even though
+  // the raw extraction above says 'other' - confirms the override actually runs, not just that a
+  // correctly-labelled fixture happens to pass.
   const period = mapExtractionToPeriod(extraction, 14.99); // wml_applicable resolved separately (N4) - see the test below for the "stale on document" case
+  assert.equal(period.post_tax_social[0]?.category, 'whk', 'expected the deterministic label override to reclassify "WHK werknemer", ignoring the extraction\'s own "other"');
+
   const outcome = computePayslipPeriod(period, RATES_2026, true);
   assert.equal(outcome.status, 'complete');
   if (outcome.status !== 'complete') return;
   assert.equal(outcome.result.gross_total, 885.5);
   assert.ok(Math.abs(outcome.result.payout_amount - 776.09) <= 0.5, `payout ${outcome.result.payout_amount} vs printed 776.09`);
+
+  // v24 (§2e.8): "the Olympia Tier C integration test never runs the gate... make it run the gate."
+  // A correct read must pass it cleanly - this is the "corrected read" the buggy-read regression test
+  // below is compared against.
+  const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(consistencyIssues, [], `expected a correct Olympia read to pass the consistency gate cleanly, got ${JSON.stringify(consistencyIssues)}`);
 
   const discrepancies = comparePeriodToDocument(period, outcome);
   // Olympia's own wml_printed (14.71) genuinely differs from wml_applicable (14.99, resolved
@@ -155,6 +177,75 @@ test('Tier C integration: Fixture 4 Olympia maps, computes and reports NO discre
   // must classify as 'finding' - the confirmation band here (0.10) exists only for a trivial
   // single-cent-range OCR misread, not to soften a real, already-verified fact into a question.
   assert.equal(discrepancies[0]?.status, 'finding', `expected 'finding' for Olympia's real 0.28 EUR staleness gap, got ${discrepancies[0]?.status}`);
+});
+
+/**
+ * Stage 2e (audit v24) - the regression fixture from the round's own assignment, VERBATIM: the live,
+ * buggy Mistral read of Olympia W36/2026 that an independent review diagnosed as five defects. This
+ * locks in the specific failure the round fixes (2e.1's sign handling) and documents, by assertion,
+ * exactly which of the other four defects this round's fixes DO and do NOT repair - a defect this test
+ * does not close is a defect still open, not one silently fixed by accident.
+ *
+ * Defect 1 (sign lost) - FIXED here: the raw extraction below carries deduction/tax amounts exactly
+ * as the buggy live read produced them (negative, printed-sign-preserved); mapExtractionToPeriod must
+ * normalise them to magnitudes before they reach the model, so gross+deductions is never computed as
+ * gross+|deductions|.
+ * Defect 2 (missing 58.31 gross line) - NOT fixed by this round (no code change makes a vision model
+ * see a line it skipped); reproduced deliberately so the resulting gross (827.16, short by 58.31) is
+ * asserted, not silently 885.50.
+ * Defect 3 (699.75 computed vs 699.78 printed) - NOT fixed by this round for the SAME reason (the
+ * prompt change in 2e.2 cannot be exercised by a hand-built fixture that never calls a real model);
+ * reproduced as 699.75, per the assignment's own fixture.
+ * Defect 4 (AZW misread as 1.23 vs printed 4.90) - explicitly unrepairable by code (§2e.3's own
+ * words): stays 1.23 here.
+ * Defect 5 (AZW still 'other') - FIXED here: 2e.4's deterministic label override reclassifies it to
+ * 'ziektewet' regardless of the extraction's own category.
+ */
+test('Stage 2e regression: the live buggy Olympia read must not reproduce 864.07/718.16 after the sign fix', () => {
+  const extraction = baseExtraction({
+    period_label: 'week 36/2026',
+    hour_lines: [
+      { employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.75, category: 'regular', tax_treatment: 'table', adds_hours: true }, // defect 3: computed, not transcribed (699.78 printed)
+      { employer_index: 0, description: 'Loon onregelm. uren 100%', hours: 7.5, rate: 15.55, percent: 100, amount: 116.63, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      // defect 2: the 50% irregular-hours line (58.31) is deliberately ABSENT - the live read never saw it.
+      { employer_index: 0, description: 'ADV toeslag', hours: 45, rate: 15.55, percent: 1.54, amount: 10.78, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
+    ],
+    pre_tax_deduction_lines: [
+      // defect 1: negative, exactly as the buggy live read produced them (the printed sign, uncorrected).
+      { description: 'Bijlage PAWW werknemer', amount: -0.89, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'AZW werknemer', amount: -1.23, category: 'other', placement: 'pre_tax', base: null, percent: null }, // defects 4+5: misread amount, wrong category
+      { description: 'StiPP-pensioen werknemer', amount: -34.79, category: 'pension', placement: 'pre_tax', base: null, percent: null },
+    ],
+    post_tax_deduction_lines: [
+      { description: 'WHK werknemer', amount: -6.46, category: 'whk', placement: 'post_tax', base: null, percent: null },
+    ],
+    printed_table_tax: 152.37,
+    reported_total_net: 686.09,
+    reported_net_paid: 776.09,
+  });
+
+  const period = mapExtractionToPeriod(extraction, null);
+  // Defect 5, fixed: the label override reclassifies "AZW werknemer" to 'ziektewet' despite the
+  // extraction's own (wrong) 'other' - independent of defect 4 (the amount), which no code can fix.
+  assert.equal(period.pre_tax_deductions[1]?.category, 'ziektewet');
+
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  const trace = buildExtractionTrace(period, outcome);
+
+  // Defect 1, fixed: sign no longer lost. Gross is still short by the missing 58.31 line (defect 2,
+  // not fixed here) and pre-tax is still off by the 3.67 AZW misread (defect 4, not fixed here) - but
+  // the CHAIN ARITHMETIC now subtracts instead of adding, so it must not reproduce the reviewer's
+  // reported 864.07 (loon voor heffingen) or 718.16 (implied net).
+  assert.notEqual(trace.loon_voor_heffingen, 864.07);
+  assert.notEqual(trace.implied_net, 718.16);
+  // What it produces instead, asserted exactly (per 2e.1: "report what it produces instead") - this
+  // is the assignment's own stated "correct chain with these very lines, subtracting magnitudes":
+  // 827.16 (gross, still short by 58.31) - 36.91 (pre-tax, now positive) = 790.25;
+  // 790.25 - 152.37 (tax) - 6.46 (WHK) = 631.42.
+  assert.equal(trace.gross_total, 827.16);
+  assert.equal(trace.pre_tax_deductions_sum, 36.91);
+  assert.equal(trace.loon_voor_heffingen, 790.25);
+  assert.equal(trace.implied_net, 631.42);
 });
 
 test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepancy', () => {
@@ -197,9 +288,12 @@ test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepanc
     printed_table_tax: 276.42,
     printed_bt_tax: 222.42,
     reported_net_paid: 1754.12, // CL: exercises payout_mismatch with the already-verified real figure
+    printed_gross_total: 3515.56, // sum of the three hour_lines above
+    printed_loon_voor_heffingen: 3277.02, // 3515.56 - 238.54 (the three real pre-tax deductions)
   });
 
   const period = mapExtractionToPeriod(extraction, 14.99);
+  assert.equal(period.post_tax_social[0]?.category, 'gediff_wga', 'expected the abbreviated "gediff." label to still classify as gediff_wga, not fall through to plain wga');
   // PKF is a MONTHLY document - the period_multiplier must match period_type, not the RATES_2026
   // constant's own default (52, for the weekly fixtures). Same bug shape N2/AN3 exist to catch:
   // an annual-formula tax reconstruction is wrong at the multiplier level, not just the tolerance.
@@ -208,6 +302,9 @@ test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepanc
   if (outcome.status !== 'complete') return;
   assert.equal(outcome.result.gross_total, 3515.56);
   assert.ok(Math.abs(outcome.result.payout_amount - 1754.12) <= 1.5, `payout ${outcome.result.payout_amount} vs printed 1754.12`);
+
+  const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(consistencyIssues, [], `expected a correct PKF read to pass the consistency gate cleanly, got ${JSON.stringify(consistencyIssues)}`);
 
   const discrepancies = comparePeriodToDocument(period, outcome);
   assert.deepEqual(discrepancies, []);
@@ -252,6 +349,8 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
     printed_table_tax: 71.31,
     printed_bt_tax: 141.24,
     reported_net_paid: -53.89, // CL: the real printed final figure, an amount OWED (negative) - exercises payout_mismatch on a signed value too
+    printed_gross_total: 970.89, // sum of the five hour_lines above
+    printed_loon_voor_heffingen: 927.25, // 970.89 - 43.64 (the three real pre-tax deductions)
   });
 
   // Paid 30-04-2026, within H1 2026 - wml_applicable is 14.71 here, NOT 14.99 (that's H2). Matches
@@ -263,6 +362,9 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
   assert.ok(Math.abs(outcome.result.wage_net - 702.37) <= 0.5, `wage_net ${outcome.result.wage_net} vs printed 702.37`);
   const finalPayout = outcome.result.wage_net + outcome.result.net_additions_total + outcome.result.payout_adjustments_total;
   assert.ok(Math.abs(finalPayout - -53.89) <= 0.5, `final payout ${finalPayout} vs printed -53.89 (owed)`);
+
+  const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(consistencyIssues, [], `expected a correct Randstad read to pass the consistency gate cleanly, got ${JSON.stringify(consistencyIssues)}`);
 
   const discrepancies = comparePeriodToDocument(period, outcome);
   assert.deepEqual(discrepancies, []);
@@ -301,6 +403,8 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
     bijzonder_tarief_printed_percent: 38.45,
     printed_table_tax: 77.52,
     printed_bt_tax: 40.08,
+    printed_gross_total: 924.03, // sum of the eight hour_lines above
+    printed_loon_voor_heffingen: 902.38, // 924.03 - 21.65 (the one real pre-tax deduction) - matches payslip-model.ts's own documented anchor
   });
 
   const period = mapExtractionToPeriod(extraction, 14.4);
@@ -314,6 +418,12 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   if (outcome.status !== 'complete') return;
   assert.equal(outcome.result.taxable_base, 725.38);
   assert.equal(outcome.result.bt_tax.toFixed(2), '40.08'); // exact - flat percentage, not a table lookup
+
+  // v24 (§2e.8): the gate must run here too, and must NOT block - OTTO's table-tax gap is a real
+  // employer/engine discrepancy (checked below), not an extraction-consistency problem. Confirms the
+  // gate and the discrepancy comparator catch different failure classes, not the same one twice.
+  const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(consistencyIssues, [], `expected OTTO's extraction to pass the consistency gate - its gap is a discrepancy, not a consistency issue, got ${JSON.stringify(consistencyIssues)}`);
 
   const discrepancies = comparePeriodToDocument(period, outcome);
   const tableTaxDiscrepancy = discrepancies.find((d) => d.code === 'table_tax_mismatch');

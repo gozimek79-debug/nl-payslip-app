@@ -1,10 +1,26 @@
 import {
-  known,
+  known, unknownField,
   type PayslipPeriod, type Employer, type Hirer, type HourLine, type HourLineCategory, type TaxTreatment,
   type PreTaxDeduction, type PreTaxDeductionCategory, type PostTaxSocialDeduction, type PostTaxSocialCategory,
   type NetLineItem, type NetDeductionCategory, type ReservationBalance, type ReservationType,
   type ExtraterritorialArrangement,
 } from './payslip-model.js';
+import { classifyPreTaxDeductionLabel, classifyPostTaxDeductionLabel } from './extraction-consistency.js';
+
+/** Stage 2e (audit v24, §2e.1): "amounts on deduction, tax, post-tax and net lines are magnitudes;
+ * the category carries the direction. Normalise where the amount enters the model and nowhere else."
+ * The live Olympia read reproduced this exactly: deduction lines came back negative (-0.89, -1.23,
+ * -34.79, as printed) and payslip-model.ts's computePayslipPeriod SUBTRACTS them expecting a positive
+ * magnitude (gross - preTaxTotal) - a negative preTaxTotal flips that subtraction into an addition
+ * (864.07 = 827.16 + 36.91, to the cent). This is the ONE place that normalisation happens - every
+ * other file (payslip-model.ts, extraction-consistency.ts, discrepancy.ts) already assumes a positive
+ * magnitude and always did; only the AI-extraction boundary could ever hand it a signed one. */
+function magnitude(value: number): number {
+  return Math.abs(value);
+}
+function magnitudeOrNull(value: number | null): number | null {
+  return value === null ? null : Math.abs(value);
+}
 
 /**
  * Tier C - "Pro" (SPEC-loonto-architecture.md §5, build order item 2 per spec §9/BH1). Maps an AI
@@ -102,7 +118,9 @@ export interface TierCHourLine {
 
 export interface TierCDeductionLine {
   description: string;
-  amount: number;
+  /** Stage 2e (§2e.5): null when the model genuinely could not read the printed amount - never
+   * silently 0 (which would understate the taxable base or net without saying so). */
+  amount: number | null;
   category: PreTaxDeductionCategory | PostTaxSocialCategory;
   placement: 'pre_tax' | 'post_tax';
   base: number | null;
@@ -158,6 +176,13 @@ export interface TierCExtraction {
   printed_arbeidskorting: number | null;
   reported_total_net: number | null;
   reported_net_paid: number | null;
+  /** Stage 2e (§2e.3): the document's own printed subtotals, read by POSITION in the gross-to-net
+   * chain (the figure right after the gross lines; the figure right after the pre-tax deductions),
+   * never by matching a specific label string - the label varies by employer (Olympia "TOTAAL BRUTO",
+   * Randstad "LOON VOOR HEFFINGEN", PKF "PODSTAWA"). null when the document prints no distinct
+   * subtotal at that position. */
+  printed_gross_total: number | null;
+  printed_loon_voor_heffingen: number | null;
   /** Stage 2 body ("Dutch terms as printed... not canonical"): the as-printed label next to each of
    * the six reference figures above, captured verbatim exactly like hour_lines[].description already
    * is - null (never a guessed canonical term) when the document has no distinct label for that
@@ -204,28 +229,35 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     adds_hours: line.adds_hours,
   }));
 
+  // Stage 2e (§2e.4): "the label decides for known families... the model's category is advisory."
+  // classifyPreTaxDeductionLabel/classifyPostTaxDeductionLabel are now the SOLE source of truth for
+  // the four known families - overriding whatever category the extraction itself proposed, not
+  // merely flagging a mismatch afterward (extraction-consistency.ts's own keyword check now runs
+  // AFTER this and is a dormant backstop for Tier C's own pipeline, per that file's comment). A label
+  // matching no keyword is 'other' - the model's own guess is never used as a fallback, per "never
+  // guess a category for an unmatched label."
   const preTaxDeductions: PreTaxDeduction[] = extraction.pre_tax_deduction_lines.map((line) => ({
-    category: line.category as PreTaxDeductionCategory,
+    category: classifyPreTaxDeductionLabel(line.description) ?? 'other',
     description: line.description,
-    amount: known(line.amount, 'payslip_extracted'),
+    amount: line.amount === null ? unknownField() : known(magnitude(line.amount), 'payslip_extracted'),
     base: line.base,
     percent: line.percent,
   }));
 
   const postTaxSocial: PostTaxSocialDeduction[] = extraction.post_tax_deduction_lines.map((line) => ({
-    category: line.category as PostTaxSocialCategory,
+    category: classifyPostTaxDeductionLabel(line.description) ?? 'other',
     description: line.description,
-    amount: known(line.amount, 'payslip_extracted'),
+    amount: line.amount === null ? unknownField() : known(magnitude(line.amount), 'payslip_extracted'),
     percent: line.percent,
   }));
 
   const netAdditions: NetLineItem[] = [
-    ...extraction.net_lines.filter((l) => l.category === 'reimbursement').map((l) => ({ category: l.category, description: l.description, amount: l.amount })),
-    ...extraction.et_reimbursement_lines.map((l) => ({ category: 'reimbursement' as const, description: l.description, amount: l.amount })),
+    ...extraction.net_lines.filter((l) => l.category === 'reimbursement').map((l) => ({ category: l.category, description: l.description, amount: magnitude(l.amount) })),
+    ...extraction.et_reimbursement_lines.map((l) => ({ category: 'reimbursement' as const, description: l.description, amount: magnitude(l.amount) })),
   ];
   const netDeductions: NetLineItem[] = extraction.net_lines
     .filter((l) => l.category !== 'reimbursement')
-    .map((l) => ({ category: l.category as NetDeductionCategory, description: l.description, amount: l.amount }));
+    .map((l) => ({ category: l.category as NetDeductionCategory, description: l.description, amount: magnitude(l.amount) }));
 
   const et: ExtraterritorialArrangement | null = extraction.et_exchange_amount !== null || extraction.et_reimbursement_lines.length > 0
     ? {
@@ -274,14 +306,16 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     reservations,
     wml_printed: extraction.minimum_wage_printed,
     wml_applicable: applicableMinimumWage,
-    printed_table_tax: extraction.printed_table_tax,
-    printed_bt_tax: extraction.printed_bt_tax,
+    printed_table_tax: magnitudeOrNull(extraction.printed_table_tax),
+    printed_bt_tax: magnitudeOrNull(extraction.printed_bt_tax),
     printed_algemene_heffingskorting: extraction.printed_algemene_heffingskorting,
     printed_arbeidskorting: extraction.printed_arbeidskorting,
     // CL: these two were extracted but silently dropped here for two rounds - the fields existed on
     // TierCExtraction, comparePeriodToDocument declared codes for them, but nothing connected the two.
     printed_net: extraction.reported_total_net,
     printed_payout: extraction.reported_net_paid,
+    printed_gross_total: extraction.printed_gross_total,
+    printed_loon_voor_heffingen: extraction.printed_loon_voor_heffingen,
     printed_table_tax_label: extraction.printed_table_tax_label,
     printed_bt_tax_label: extraction.printed_bt_tax_label,
     printed_algemene_heffingskorting_label: extraction.printed_algemene_heffingskorting_label,

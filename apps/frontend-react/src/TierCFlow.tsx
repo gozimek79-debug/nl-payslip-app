@@ -88,8 +88,14 @@ type ConsistencyIssue =
   | { code: 'period_year_mismatch'; period_end_date: string; payment_date: string }
   | { code: 'period_length_mismatch'; period_type: 'week' | '4-weekly' | 'month'; implied_days: number; expected_min_days: number; expected_max_days: number }
   | { code: 'deduction_miscategorized'; placement: 'pre_tax' | 'post_tax'; description: string; suggested_category: string }
+  | { code: 'gross_lines_do_not_reconcile'; summed_gross: number; printed_gross_total: number; residual: number }
+  | { code: 'pre_tax_does_not_reconcile'; implied_loon_voor_heffingen: number; printed_loon_voor_heffingen: number; residual: number }
+  | { code: 'net_does_not_reconcile'; implied_net: number; printed_net: number; residual: number }
+  | { code: 'printed_tax_unknown' }
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
-  | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number };
+  | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
+  | { code: 'period_type_unknown' }
+  | { code: 'et_exchange_amount_unknown' };
 
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
@@ -97,9 +103,11 @@ interface ExtractionTraceLine { label: string; category: string; amount: number 
 interface ExtractionTrace {
   hour_lines: ExtractionTraceLine[];
   gross_total: number;
+  printed_gross_total: number | null;
   pre_tax_deductions: ExtractionTraceLine[];
   pre_tax_deductions_sum: number | null;
   loon_voor_heffingen: number | null;
+  printed_loon_voor_heffingen: number | null;
   printed_table_tax: number | null;
   printed_bt_tax: number | null;
   computed_taxable_base: number;
@@ -223,10 +231,22 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issuePeriodLength(issue.implied_days, issue.expected_min_days, issue.expected_max_days);
     case 'deduction_miscategorized':
       return t.issueDeductionMiscategorized(issue.description, issue.suggested_category);
+    case 'gross_lines_do_not_reconcile':
+      return t.issueGrossReconcile(money(issue.summed_gross), money(issue.printed_gross_total), money(issue.residual));
+    case 'pre_tax_does_not_reconcile':
+      return t.issuePreTaxReconcile(money(issue.implied_loon_voor_heffingen), money(issue.printed_loon_voor_heffingen), money(issue.residual));
+    case 'net_does_not_reconcile':
+      return t.issueNetReconcile(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
+    case 'printed_tax_unknown':
+      return t.issuePrintedTaxUnknown;
     case 'totals_do_not_reconcile_net':
       return t.issueTotalsNet(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
     case 'totals_do_not_reconcile_payout':
       return t.issueTotalsPayout(money(issue.implied_payout), money(issue.printed_payout), money(issue.residual));
+    case 'period_type_unknown':
+      return t.issuePeriodTypeUnknown;
+    case 'et_exchange_amount_unknown':
+      return t.issueEtExchangeUnknown;
   }
 }
 
@@ -446,16 +466,18 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
               <ShieldCheck/>
               <div>
                 <h3>{t.traceTitle}</h3>
-                <p><strong>{t.traceHourLines}</strong></p>
+                <p><strong>{t.traceHourLines}</strong>{hasIssue('gross_lines_do_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 {renderLines(trace.hour_lines)}
                 <p>{t.traceGrossTotal}: <strong>{money(trace.gross_total)}</strong></p>
+                {trace.printed_gross_total !== null && <p>{t.tracePrintedGrossTotal}: <strong>{money(trace.printed_gross_total)}</strong></p>}
 
-                <p><strong>{t.tracePreTaxDeductions}</strong></p>
+                <p><strong>{t.tracePreTaxDeductions}</strong>{hasIssue('pre_tax_does_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 {renderLines(trace.pre_tax_deductions)}
                 <p>{t.tracePreTaxSum}: <strong>{trace.pre_tax_deductions_sum === null ? t.traceUnknown : money(trace.pre_tax_deductions_sum)}</strong></p>
                 <p>{t.traceLoonVoorHeffingen}: <strong>{trace.loon_voor_heffingen === null ? t.traceUnknown : money(trace.loon_voor_heffingen)}</strong></p>
+                {trace.printed_loon_voor_heffingen !== null && <p>{t.tracePrintedLoonVoorHeffingen}: <strong>{money(trace.printed_loon_voor_heffingen)}</strong></p>}
 
-                <p><strong>{t.traceTaxTitle}</strong>{hasIssue('zero_tax_nonzero_base') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p><strong>{t.traceTaxTitle}</strong>{(hasIssue('zero_tax_nonzero_base') || hasIssue('printed_tax_unknown')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 <p>{t.traceTaxPrintedTable}: <strong>{trace.printed_table_tax === null ? t.traceUnknown : money(trace.printed_table_tax)}</strong></p>
                 {trace.printed_bt_tax !== null && <p>{t.traceTaxPrintedBt}: <strong>{money(trace.printed_bt_tax)}</strong></p>}
                 <p>{t.traceTaxComputed}: <strong>{money(trace.computed_table_tax_after_korting)}</strong></p>
@@ -464,7 +486,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 {renderLines(trace.post_tax_social)}
                 <p>{t.tracePostTaxSum}: <strong>{trace.post_tax_deductions_sum === null ? t.traceUnknown : money(trace.post_tax_deductions_sum)}</strong></p>
 
-                <p><strong>{t.traceNetTitle}</strong>{hasIssue('totals_do_not_reconcile_net') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p><strong>{t.traceNetTitle}</strong>{(hasIssue('totals_do_not_reconcile_net') || hasIssue('net_does_not_reconcile')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 <p>{t.traceNetImplied}: <strong>{trace.implied_net === null ? t.traceUnknown : money(trace.implied_net)}</strong></p>
                 <p>{t.traceNetPrinted}: <strong>{trace.printed_net === null ? t.traceUnknown : money(trace.printed_net)}</strong></p>
 
@@ -659,7 +681,12 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                       </button>
                     </>
                   ) : (
-                    <p className="form-note">{t.findingBody(money(d.computed ?? 0), money(d.printed))}</p>
+                    <p className="form-note">
+                      {/* Stage 2e (§2e.5): d.computed is typed nullable (Discrepancy.computed) even
+                          though today's construction paths always pass a real number - "?? 0" would
+                          have silently printed "we computed €0.00" the day that stops being true. */}
+                      {d.computed === null ? t.findingBodyUnknownComputed(money(d.printed)) : t.findingBody(money(d.computed), money(d.printed))}
+                    </p>
                   )}
                 </div>
               );

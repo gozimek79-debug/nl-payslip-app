@@ -34,5 +34,3 @@ npm run build
 ```
 
 Nigdy nie zapisuj prawdziwych kluczy w `.env.example` ani w repozytorium.
-
-<!-- auto-deploy-probe-v19: harmless marker to test whether pushing to main triggers a Vercel deployment on its own. Safe to remove once confirmed. -->

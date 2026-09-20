@@ -4,9 +4,10 @@ import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from 
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
-import { mapExtractionToPeriod, type TierCExtraction } from '../payroll-engine/tier-c.js';
+import { mapExtractionToPeriod, type TierCPeriodType } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
+import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 /**
@@ -32,7 +33,12 @@ const aiRateLimit = ipRateLimit('tier-c-ai', 10, 300, 'deny');
  * refactored here, since nothing has caught a bug from it yet (unlike periodMultiplierFor, which a
  * Tier C test DID catch drifting) - a candidate for consolidation, not an urgent one.
  */
-async function fetchRates(periodType: TierCExtraction['period_type']): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
+// Stage 2f (§2f.4): periodType is now required, non-nullable - both callers (this file's /analyze,
+// after confirming extraction.period_type is not null, and /recompute, whose PayslipPeriod always
+// carries a concrete period_type by type) only reach this function once a real period type is known.
+// The old `periodType ?? 'week'` default lived here and is gone; there is no longer a call site where
+// an unknown period type silently becomes a computed rate.
+async function fetchRates(periodType: TierCPeriodType): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
   const rawDbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
   const dbRates = rawDbRates && isCompleteTaxRatesFile(rawDbRates) ? rawDbRates : null;
   const staticRates = dbRates ? null : loadStaticTaxRatesAt(new Date());
@@ -42,7 +48,7 @@ async function fetchRates(periodType: TierCExtraction['period_type']): Promise<{
     rates: {
       loonheffing_brackets: taxRatesFile.loonheffing_brackets,
       heffingskortingen: taxRatesFile.heffingskortingen,
-      period_multiplier: periodMultiplierFor(periodType ?? 'week'),
+      period_multiplier: periodMultiplierFor(periodType),
     },
     source: dbRates ? 'database' : 'static',
   };
@@ -111,7 +117,37 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
 
-    const fetched = await fetchRates(extraction.period_type);
+    // Stage 2f (§2f.4): "unknown stays unknown after the flag" - stage 2e raised these two issues but
+    // still computed with 'week' and 0 underneath them. Checked against the RAW extraction (only it
+    // can tell "genuinely absent" from "read as zero/week" - mapExtractionToPeriod's own period_type/
+    // et_exchange_amount defaults exist only so this period is buildable for the trace below), and
+    // checked BEFORE fetchRates/computePayslipPeriod run at all: no period_multiplier is resolved, no
+    // tax is computed, no net figure is shown, when either of these is true.
+    const periodType = extraction.period_type;
+    const extractionGapIssues: ConsistencyIssue[] = [];
+    if (periodType === null) extractionGapIssues.push({ code: 'period_type_unknown' });
+    if (extraction.et_reimbursement_lines.length > 0 && extraction.et_exchange_amount === null) {
+      extractionGapIssues.push({ code: 'et_exchange_amount_unknown' });
+    }
+    // Stage 2f (§2f.8): "an unreadable amount is not a zero" - hour/net/ET-reimbursement/payout/
+    // reservation amounts are stored as 0 when non-finite (no shared type changed for this), so this
+    // is the only place that distinguishes "read as zero" from "could not be read" for them.
+    for (const field of extraction.unreadable_amount_fields) {
+      extractionGapIssues.push({ code: 'amount_unreadable', field });
+    }
+    if (periodType === null || extractionGapIssues.length > 0) {
+      console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(extractionGapIssues)));
+      return res.json({
+        status: 'unreliable',
+        issues: extractionGapIssues,
+        trace: buildExtractionTrace(period, null),
+        period,
+        truncated: extraction.truncated,
+        redactedFields: extraction.redacted_fields,
+      });
+    }
+
+    const fetched = await fetchRates(periodType);
     if (!fetched) {
       return res.status(503).json({ error_code: 'tax_rates_unavailable' });
     }
@@ -124,17 +160,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // extraction failure also produces large residuals. This gate runs BEFORE comparePeriodToDocument
     // and, if the extraction fails its own internal-consistency checks, short-circuits to a distinct
     // response shape that never reaches a discrepancy list at all.
-    // Stage 2e (§2e.5): tier-c.ts previously defaulted an unread period_type to 'week' and an unread
-    // et_exchange_amount to 0, both silently - only the controller has the RAW extraction needed to
-    // tell "genuinely absent" from "read as zero/week" (mapExtractionToPeriod itself must still return
-    // a concrete PayslipPeriod, since computePayslipPeriod needs a period_multiplier to run at all).
-    const extractionGapIssues: ConsistencyIssue[] = [];
-    if (extraction.period_type === null) extractionGapIssues.push({ code: 'period_type_unknown' });
-    if (extraction.et_reimbursement_lines.length > 0 && extraction.et_exchange_amount === null) {
-      extractionGapIssues.push({ code: 'et_exchange_amount_unknown' });
-    }
-
-    const consistencyIssues = [...extractionGapIssues, ...checkExtractionConsistency(extraction.payment_date, period, outcome)];
+    const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
     if (consistencyIssues.length > 0) {
       // v18 (audit): a real Olympia retest showed the gate firing twice, with two different
       // computed nets from what was reported as "the same document" - and there was NOTHING to
@@ -191,12 +217,17 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
  * reasonable hardening item for later, not a blocker for this round's panel to function correctly.
  */
 router.post('/recompute', async (req, res) => {
-  const period = req.body?.period as PayslipPeriod | undefined;
-  if (!period || typeof period !== 'object' || !Array.isArray(period.hour_lines) || typeof period.period_type !== 'string') {
+  const rawPeriod = req.body?.period as PayslipPeriod | undefined;
+  if (!rawPeriod || typeof rawPeriod !== 'object' || !Array.isArray(rawPeriod.hour_lines) || typeof rawPeriod.period_type !== 'string') {
     return res.status(400).json({ error_code: 'invalid_input' });
   }
+  // Stage 2f (§2f.5): "one sign policy... apply it in mapExtractionToPeriod AND in /recompute (which
+  // today passes the browser's period straight in)". The body is client-supplied - normalising it here
+  // too means a signed deduction amount (however it got there) is corrected before computing, not
+  // trusted as-is.
+  const period = normalizePeriodSigns(rawPeriod);
 
-  const fetched = await fetchRates(period.period_type as TierCExtraction['period_type']);
+  const fetched = await fetchRates(period.period_type);
   if (!fetched) {
     return res.status(503).json({ error_code: 'tax_rates_unavailable' });
   }

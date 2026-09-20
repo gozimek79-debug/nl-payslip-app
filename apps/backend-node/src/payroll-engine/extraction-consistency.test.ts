@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { checkExtractionConsistency, buildExtractionTrace, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
 import { known, type PayslipPeriod, type PayslipComputationOutcome, type PayslipComputationResult } from './payslip-model.js';
 
 /**
@@ -339,4 +342,105 @@ test('2d.1: buildExtractionTrace reports an unknown deduction as null, never coe
   assert.equal(trace.pre_tax_deductions_sum, null);
   assert.equal(trace.loon_voor_heffingen, null); // depends on pre_tax_deductions_sum - must not silently become gross_total - 0
   assert.equal(trace.implied_net, null); // depends on the same unknown sum
+});
+
+/**
+ * Stage 2f (audit v26, §2f.2/§2f.3): the two live Olympia reads the round's own assignment cites.
+ * Read 2 (build aaaeae1, OWNER-RETEST-2e-olympia.md) read exactly ONE printed subtotal (844.92) and
+ * the stage 2e gate put it in printed_gross_total (the prompt's own "TOTAAL BRUTO" example, wrong on
+ * this document) - with only ONE anchor present, stage 2e's gate required BOTH to check anything, so
+ * an 18.08 EUR gap on the gross line went completely unflagged. Numbers below are exactly what that
+ * panel showed: gross lines summing to 826.84 (58.31 missing, 116.31 misread), pre-tax summing to
+ * 37.47 (AZW misread as 1.79 vs printed 4.90).
+ */
+test('2f.2: a single printed subtotal matching neither hypothesis is flagged, naming both gaps (the live read-2 Olympia retest)', () => {
+  const period = minimalPeriod({
+    hour_lines: [
+      { employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.75, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Loon onregelm. uren', hours: 7.5, rate: 15.55, percent: 100, amount: 116.31, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'ADV toeslag', hours: 45, rate: 15.55, percent: 1.54, amount: 10.78, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
+    ],
+    pre_tax_deductions: [
+      { category: 'paww', description: 'Bijlage PAWW werknemer', amount: known(0.89, 'payslip_extracted'), base: null, percent: null },
+      { category: 'ziektewet', description: 'AZW werknemer', amount: known(1.79, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'StiPP-pensioen werknemer', amount: known(34.79, 'payslip_extracted'), base: null, percent: null },
+    ],
+    printed_gross_total: 844.92, // the panel's own "Wydrukowana suma brutto na dokumencie" - actually loon voor heffingen on this document
+    printed_loon_voor_heffingen: null, // never separately read in this live run
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  const issue = issues.find((i) => i.code === 'printed_subtotal_role_unresolved');
+  assert.ok(issue, `expected 844.92 to match neither hypothesis and be flagged, got ${JSON.stringify(issues)}`);
+  if (issue?.code === 'printed_subtotal_role_unresolved') {
+    assert.equal(issue.printed_subtotal, 844.92);
+    assert.equal(issue.gross_hypothesis, 826.84); // 699.75 + 116.31 + 10.78, exactly the panel's own "Suma brutto"
+    assert.equal(issue.loon_voor_heffingen_hypothesis, 789.37); // 826.84 - 37.47, exactly the panel's own "Loon voor heffingen"
+  }
+  // Confirms the exit condition's own wording: "844.92 matches neither 826.84 nor 789.37."
+});
+
+test('2f.2: a single printed subtotal correctly identified as loon voor heffingen (the Olympia trap, fully-read gross) is confirmed, not asserted as gross', () => {
+  // Same document, but this time every gross/pre-tax line was read correctly - 844.92 now matches the
+  // loon-voor-heffingen hypothesis EXACTLY, even though it arrived in the printed_gross_total field
+  // (the real document's own "TOTAAL BRUTO" label, which on Olympia means loon voor heffingen).
+  const period = minimalPeriod({
+    hour_lines: [
+      { employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.78, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Loon onregelm. uren 100%', hours: 7.5, rate: 15.55, percent: 100, amount: 116.63, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Loon onregelm. uren 50%', hours: 7.5, rate: 15.55, percent: 50, amount: 58.31, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'ADV toeslag', hours: 45, rate: 15.55, percent: 1.54, amount: 10.78, category: 'adv_compensation', tax_treatment: 'table', adds_hours: false },
+    ],
+    pre_tax_deductions: [
+      { category: 'paww', description: 'Bijlage PAWW werknemer', amount: known(0.89, 'payslip_extracted'), base: null, percent: null },
+      { category: 'ziektewet', description: 'AZW werknemer', amount: known(4.90, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'StiPP-pensioen werknemer', amount: known(34.79, 'payslip_extracted'), base: null, percent: null },
+    ],
+    post_tax_social: [{ category: 'whk', description: 'WHK werknemer', amount: known(6.46, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 152.37,
+    printed_net: 686.09,
+    printed_gross_total: 844.92, // "TOTAAL BRUTO" as printed - the document's own label collision
+    printed_loon_voor_heffingen: null,
+  });
+  const outcome = completeOutcome({ taxable_base: 844.92, table_tax_after_korting: 152.37 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.ok(!issues.some((i) => i.code === 'printed_subtotal_role_unresolved'), JSON.stringify(issues));
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile'), 'expected stage 3 to run using the CONFIRMED loon-voor-heffingen role and reconcile cleanly');
+
+  const trace = buildExtractionTrace(period, outcome);
+  assert.equal(trace.printed_subtotal_role, 'confirmed_loon_voor_heffingen');
+});
+
+test('2f.3: a printed gross total smaller than the printed loon voor heffingen is impossible and blocks', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 800,
+    printed_loon_voor_heffingen: 850, // larger than gross - deductions cannot be negative
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  const issue = issues.find((i) => i.code === 'anchors_inverted');
+  assert.ok(issue, JSON.stringify(issues));
+  if (issue?.code === 'anchors_inverted') {
+    assert.equal(issue.printed_gross_total, 800);
+    assert.equal(issue.printed_loon_voor_heffingen, 850);
+  }
+  // Blocked, per §2f.3 - none of the three staged checks should also fire on the same inverted pair.
+  assert.ok(!issues.some((i) => i.code === 'gross_lines_do_not_reconcile' || i.code === 'pre_tax_does_not_reconcile' || i.code === 'net_does_not_reconcile'));
+});
+
+/**
+ * Stage 2f (audit v26, §2f.9): "the interface must know every code (2.10a)... make it structural."
+ * There is no shared-types package between frontend and backend, so this is the structural
+ * enforcement instead: every code this file can produce must appear as a quoted string literal
+ * somewhere in TierCFlow.tsx's own source (its ConsistencyIssue union and issueMessage switch) - the
+ * exact thing that silently did NOT happen for `period_week_mismatch` in stage 2e (added to the
+ * backend, never added to the frontend, and nothing failed because the frontend's own type was just
+ * narrower, not wrong by its own compiler's lights). This test fails on a clean checkout if a future
+ * round adds a ConsistencyIssue code to ALL_CONSISTENCY_ISSUE_CODES without also adding it here.
+ */
+test('2f.9: every backend ConsistencyIssue code has a frontend case in TierCFlow.tsx', () => {
+  const testFileDir = path.dirname(fileURLToPath(import.meta.url));
+  const frontendPath = path.resolve(testFileDir, '../../../frontend-react/src/TierCFlow.tsx');
+  const frontendSource = readFileSync(frontendPath, 'utf8');
+  const missing = ALL_CONSISTENCY_ISSUE_CODES.filter((code) => !frontendSource.includes(`'${code}'`));
+  assert.deepEqual(missing, [], `TierCFlow.tsx has no case for: ${missing.join(', ')} - add a union member and an issueMessage() case for each`);
 });

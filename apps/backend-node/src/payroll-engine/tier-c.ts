@@ -6,21 +6,15 @@ import {
   type ExtraterritorialArrangement,
 } from './payslip-model.js';
 import { classifyPreTaxDeductionLabel, classifyPostTaxDeductionLabel } from './extraction-consistency.js';
+import { normalizePeriodSigns } from './sign-policy.js';
 
-/** Stage 2e (audit v24, §2e.1): "amounts on deduction, tax, post-tax and net lines are magnitudes;
- * the category carries the direction. Normalise where the amount enters the model and nowhere else."
- * The live Olympia read reproduced this exactly: deduction lines came back negative (-0.89, -1.23,
- * -34.79, as printed) and payslip-model.ts's computePayslipPeriod SUBTRACTS them expecting a positive
- * magnitude (gross - preTaxTotal) - a negative preTaxTotal flips that subtraction into an addition
- * (864.07 = 827.16 + 36.91, to the cent). This is the ONE place that normalisation happens - every
- * other file (payslip-model.ts, extraction-consistency.ts, discrepancy.ts) already assumes a positive
- * magnitude and always did; only the AI-extraction boundary could ever hand it a signed one. */
-function magnitude(value: number): number {
-  return Math.abs(value);
-}
-function magnitudeOrNull(value: number | null): number | null {
-  return value === null ? null : Math.abs(value);
-}
+/** Stage 2e (audit v24, §2e.1) found the sign bug; stage 2f (§2f.5) found stage 2e's own fix was
+ * incomplete (hour lines, payout adjustments, et_exchange_amount, the printed anchors and a credit
+ * line were all still wrong in one way or another - see `RAPORT-cursor-2e.md` T1). This file no longer
+ * normalises signs field by field inline - every field below is built with whatever value the
+ * extraction actually carries, and `normalizePeriodSigns` (sign-policy.ts, the ONE place the full
+ * per-field table lives) is applied once, at the end, to the whole period - see that file's own
+ * comment for the table and why the credit check has to be label-only to stay idempotent. */
 
 /**
  * Tier C - "Pro" (SPEC-loonto-architecture.md §5, build order item 2 per spec §9/BH1). Maps an AI
@@ -195,6 +189,11 @@ export interface TierCExtraction {
   printed_payout_label: string | null;
   truncated: boolean;
   redacted_fields: string[];
+  /** Stage 2f (§2f.8): field paths (e.g. "hour_lines[1].amount") where the raw JSON value was
+   * genuinely non-finite/unparseable - the amount is still 0 in the field above it (no shared type
+   * changed for this), but a non-empty list here means that 0 is a "could not read", never a "model
+   * said zero". The controller raises `amount_unreadable` and blocks on any entry. */
+  unreadable_amount_fields: string[];
 }
 
 /**
@@ -239,7 +238,7 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
   const preTaxDeductions: PreTaxDeduction[] = extraction.pre_tax_deduction_lines.map((line) => ({
     category: classifyPreTaxDeductionLabel(line.description) ?? 'other',
     description: line.description,
-    amount: line.amount === null ? unknownField() : known(magnitude(line.amount), 'payslip_extracted'),
+    amount: line.amount === null ? unknownField() : known(line.amount, 'payslip_extracted'), // sign normalised once, below, by normalizePeriodSigns
     base: line.base,
     percent: line.percent,
   }));
@@ -247,21 +246,31 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
   const postTaxSocial: PostTaxSocialDeduction[] = extraction.post_tax_deduction_lines.map((line) => ({
     category: classifyPostTaxDeductionLabel(line.description) ?? 'other',
     description: line.description,
-    amount: line.amount === null ? unknownField() : known(magnitude(line.amount), 'payslip_extracted'),
+    amount: line.amount === null ? unknownField() : known(line.amount, 'payslip_extracted'),
     percent: line.percent,
   }));
 
-  const netAdditions: NetLineItem[] = [
-    ...extraction.net_lines.filter((l) => l.category === 'reimbursement').map((l) => ({ category: l.category, description: l.description, amount: magnitude(l.amount) })),
-    ...extraction.et_reimbursement_lines.map((l) => ({ category: 'reimbursement' as const, description: l.description, amount: magnitude(l.amount) })),
-  ];
+  // Stage 2f (§2f.6): et_reimbursement_lines used to be copied into BOTH net_additions (here) AND
+  // et.et_reimbursements (below) - computePayslipPeriod adds both (`netAdditionsTotal = net_additions
+  // + etReimbursements`), so an ET reimbursement was counted twice toward the net. Kept ONLY in
+  // et.et_reimbursements now, which is the copy the engine actually sums; net_additions carries only
+  // genuine non-ET reimbursements (net_lines[].category === 'reimbursement').
+  const netAdditions: NetLineItem[] = extraction.net_lines
+    .filter((l) => l.category === 'reimbursement')
+    .map((l) => ({ category: l.category, description: l.description, amount: l.amount }));
   const netDeductions: NetLineItem[] = extraction.net_lines
     .filter((l) => l.category !== 'reimbursement')
-    .map((l) => ({ category: l.category as NetDeductionCategory, description: l.description, amount: magnitude(l.amount) }));
+    .map((l) => ({ category: l.category as NetDeductionCategory, description: l.description, amount: l.amount }));
 
   const et: ExtraterritorialArrangement | null = extraction.et_exchange_amount !== null || extraction.et_reimbursement_lines.length > 0
     ? {
         et_applicable: true,
+        // Stage 2f (§2f.4): a genuinely unread et_exchange_amount (reimbursements present, base
+        // reduction not) is now caught by the controller (`et_exchange_amount_unknown`, raised from the
+        // raw extraction) BEFORE computePayslipPeriod ever runs on this period - this `?? 0` is never
+        // reached on a path that produces a shown net/tax figure. It stays only because
+        // ExtraterritorialArrangement.et_exchange_amount is a plain, non-nullable number (like
+        // HourLine.amount and friends) and this period must still be buildable for the trace panel.
         et_exchange_amount: extraction.et_exchange_amount ?? 0,
         et_reimbursements: extraction.et_reimbursement_lines.map((l) => ({ description: l.description, amount: l.amount })),
         adres_fiskalny: null, // not requested from extraction - not needed by computePayslipPeriod, informational only in the model
@@ -282,9 +291,15 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
   const hasBtLine = hourLines.some((l) => l.tax_treatment === 'bt');
   const btState = extraction.bijzonder_tarief_printed_percent !== null ? 'known' : hasBtLine ? 'unknown' : 'not_applicable';
 
-  return {
+  // Stage 2f (§2f.4): a genuinely unread period_type is caught by the controller
+  // (`period_type_unknown`, raised from the raw extraction, BEFORE fetchRates/computePayslipPeriod
+  // run) - this `?? 'week'` is never reached on a path that produces a shown net/tax figure. It stays
+  // only because PayslipPeriod.period_type is a plain, non-nullable enum (computePayslipPeriod needs a
+  // concrete period_multiplier to run at all) and this period must still be buildable for the trace
+  // panel to show what WAS read even when the computation itself is blocked.
+  const period: PayslipPeriod = {
     period_label: extraction.period_label,
-    period_type: extraction.period_type ?? 'week', // spec gives no field to fall back to; 'week' is the most common real-fixture shape, and is reported via the `period_type` gap note when the extraction itself returned null
+    period_type: extraction.period_type ?? 'week',
     period_end_date: extraction.period_end_date,
     is_correction: extraction.is_correction,
     version: extraction.version,
@@ -306,8 +321,8 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     reservations,
     wml_printed: extraction.minimum_wage_printed,
     wml_applicable: applicableMinimumWage,
-    printed_table_tax: magnitudeOrNull(extraction.printed_table_tax),
-    printed_bt_tax: magnitudeOrNull(extraction.printed_bt_tax),
+    printed_table_tax: extraction.printed_table_tax,
+    printed_bt_tax: extraction.printed_bt_tax,
     printed_algemene_heffingskorting: extraction.printed_algemene_heffingskorting,
     printed_arbeidskorting: extraction.printed_arbeidskorting,
     // CL: these two were extracted but silently dropped here for two rounds - the fields existed on
@@ -323,4 +338,8 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     printed_net_label: extraction.printed_net_label,
     printed_payout_label: extraction.printed_payout_label,
   };
+  // Stage 2f (§2f.5): the one, shared sign policy - see sign-policy.ts's own table - applied here and
+  // again in tier-c.controller.ts's /recompute, so a freshly-mapped period and a client-echoed one go
+  // through identical logic.
+  return normalizePeriodSigns(period);
 }

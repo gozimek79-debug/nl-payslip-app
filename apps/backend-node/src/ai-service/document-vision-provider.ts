@@ -95,6 +95,21 @@ export function isDocumentVisionConfigured(): boolean {
   return Boolean(process.env[config.apiKeyEnvVar]);
 }
 
+/**
+ * Stage 2f (audit v26, §2f.10): "/api/health can name a non-EU provider while reading is fail-closed"
+ * - the old field was just `activeDocumentVisionConfig().label`, the SELECTED provider's name, even
+ * when `euHosted: false` meant it could never actually read a document (isDocumentVisionConfigured()
+ * would already be false). This is what the owner should actually be able to check production against:
+ * the provider that is PERMITTED to read, or an explicit statement that none is, never a name that
+ * implies a provider is reading when it has been refused.
+ */
+export function readingProviderStatus(): { provider: string | null; status: 'ready' | 'not_configured' | 'reading_unavailable'; euOnly: true } {
+  const config = activeDocumentVisionConfig();
+  if (!config.euHosted) return { provider: null, status: 'reading_unavailable', euOnly: true };
+  if (!process.env[config.apiKeyEnvVar]) return { provider: null, status: 'not_configured', euOnly: true };
+  return { provider: config.label, status: 'ready', euOnly: true };
+}
+
 export function documentVisionClient(): OpenAI {
   const config = activeDocumentVisionConfig();
   if (!config.euHosted) throw new Error(`Provider "${config.name}" is not EU-hosted and may not be used for document reading.`);

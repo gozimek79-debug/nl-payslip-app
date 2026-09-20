@@ -85,6 +85,23 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * Stage 2f (audit v26, §2f.8): "an unreadable amount is not a zero." Hour, net, ET-reimbursement,
+ * payout-adjustment and reservation amounts are plain `number` fields on the shared model (not
+ * `Field<number>` like pre/post-tax deductions - see the comment above `mapDeductionLines`), so this
+ * does not widen any shared type: it keeps `toNumber`'s 0 as the STORED value (the field still needs
+ * a number to exist at all) but records, alongside it, which field genuinely could not be read - a
+ * non-finite parse is never "the model said zero", it is "nothing usable was there". The caller
+ * (tier-c.controller.ts) raises `amount_unreadable` from this list and blocks before showing any
+ * comparison, the same way it already does for an unread period_type.
+ */
+function toNumberTracked(value: unknown, fieldName: string, unreadable: string[]): number {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed)) return parsed;
+  unreadable.push(fieldName);
+  return 0;
+}
+
 export async function extractPayslipFieldsFromImage(imageDataUrl: string): Promise<AiOcrFields> {
   const completion = await groqClient().chat.completions.create({
     model: VISION_MODEL,
@@ -223,14 +240,32 @@ podatku wg bijzonder tarief (jeśli osobna linia), printed_algemene_heffingskort
 algemene heffingskorting (jeśli widoczna osobno), printed_arbeidskorting=wydrukowana arbeidskorting
 (jeśli widoczna osobno).
 
-printed_gross_total=wydrukowana SUMA BRUTO tego dokumentu - liczba wydrukowana WPROST na dokumencie
-zaraz PO wszystkich liniach brutto/godzinowych, PRZED jakimikolwiek potrąceniami (etykieta różni się
-zależnie od pracodawcy - np. "TOTAAL BRUTO", "Loon in geld", "Bruto loon" - szukaj tej POZYCJI w
-dokumencie, nie konkretnego słowa). printed_loon_voor_heffingen=wydrukowana suma zaraz PO potrąceniach
-PRZED opodatkowaniem (StiPP/PAWW/etc.), PRZED podatkiem (etykieta też różni się - np. "LOON VOOR
-HEFFINGEN", "PODSTAWA" - znowu szukaj POZYCJI w łańcuchu: brutto -> potrącenia przedpodatkowe -> TA
-LICZBA -> podatek -> netto, nie konkretnej etykiety). Oba null, jeśli dokument nie drukuje osobnej
-liczby w tej pozycji (np. przechodzi od razu z pojedynczej linii brutto do podatku).
+printed_gross_total i printed_loon_voor_heffingen to DWIE RÓŻNE liczby w tym samym łańcuchu - określ
+każdą WYŁĄCZNIE po jej POZYCJI w łańcuchu (co jest PRZED nią i co PO niej), NIGDY po konkretnym słowie
+w etykiecie, ponieważ TA SAMA etykieta bywa użyta dla RÓŻNYCH pozycji na różnych dokumentach (patrz
+przykład Olympia niżej - to prawdziwa, potwierdzona pułapka, nie hipotetyczna).
+
+Łańcuch, zawsze w tej kolejności: [linie godzinowe/brutto] -> printed_gross_total -> [potrącenia przed
+opodatkowaniem: StiPP/PAWW/etc.] -> printed_loon_voor_heffingen -> [podatek] -> netto.
+
+printed_gross_total = liczba wydrukowana WPROST na dokumencie zaraz PO wszystkich liniach
+brutto/godzinowych, PRZED jakąkolwiek linią potrącenia. Zanim potrącenia jeszcze nie odjęto.
+printed_loon_voor_heffingen = liczba wydrukowana zaraz PO liniach potrąceń przed opodatkowaniem,
+PRZED podatkiem. Potrącenia już odjęte, podatek jeszcze nie.
+
+Przykłady z prawdziwych dokumentów, żeby POZYCJA była jasna, nie etykieta:
+- Randstad: "TOTAAL BRUTO LOON" (970,89) = printed_gross_total; "LOON VOOR HEFFINGEN" (927,25) =
+  printed_loon_voor_heffingen. Różnica 43,64 to potrącenia przed opodatkowaniem.
+- PKF: "BRUTTO" (3515,56) = printed_gross_total; "PODSTAWA" (3277,02) = printed_loon_voor_heffingen.
+- Olympia - UWAGA, PUŁAPKA ETYKIETY: "LOON IN GELD" (885,50) = printed_gross_total (etykieta różna od
+  pozostałych dwóch dokumentów). Na TYM dokumencie etykieta "TOTAAL BRUTO" (844,92) NIE oznacza gross -
+  to jest printed_loon_voor_heffingen (885,50 minus potrącenia przedpodatkowe 40,58 = 844,92). Ta sama
+  fraza "TOTAAL BRUTO", która na innym dokumencie mogłaby sugerować brutto, tutaj oznacza coś innego -
+  licz się z POZYCJĄ w łańcuchu (co jest przed i po tej liczby), nigdy z samym słowem "brutto" w
+  etykiecie.
+
+Oba pola null, jeśli dokument nie drukuje osobnej liczby w tej pozycji (np. przechodzi od razu z
+pojedynczej linii brutto do podatku, bez osobnego podsumowania po każdym etapie).
 
 reported_total_net=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest
 suma PRZED doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty.
@@ -264,11 +299,12 @@ to liczba WYDRUKOWANA na dokumencie, przepisana DOKŁADNIE - NIGDY wynik własne
 (np. godziny × stawka), nawet jeśli wynik wydaje się "powinien" pasować. Jeśli wydrukowana liczba jest
 nieczytelna, zwróć null - NIGDY nie zastępuj jej obliczonym przybliżeniem.
 
-KRYTYCZNE - znak liczby: każda kwota w "amount" (hour_lines, pre_tax_deduction_lines,
-post_tax_deduction_lines, net_lines, et_reimbursement_lines) to liczba DODATNIA (bez znaku minus),
-niezależnie od tego, czy dokument drukuje ją ze znakiem minus czy w nawiasie - to, czy kwota jest
-potrącana czy dodawana, wynika z pola "category"/tego, w której liście się znajduje, NIGDY ze znaku
-liczby.
+KRYTYCZNE - znak liczby: przepisz kwotę TAK JAK WYDRUKOWANA, ze znakiem minus jeśli dokument go drukuje
+(albo w nawiasie, co też oznacza liczbę ujemną) - backend, nie ty, decyduje która kwota staje się
+wartością bezwzględną. Nie "poprawiaj" znaku samodzielnie w żadnym polu, włącznie z
+"pre_tax_deduction_lines"/"post_tax_deduction_lines" (potrącenie zwykle drukowane ze znakiem minus -
+przepisz to minus), "et_exchange_amount", "printed_table_tax", "printed_bt_tax",
+"printed_gross_total", "printed_loon_voor_heffingen".
 `.trim();
 
 function toBoolean(value: unknown): boolean {
@@ -422,6 +458,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
   const hitLengthLimit = completion.choices[0]?.finish_reason === 'length';
   const parsed = JSON.parse(raw) as Record<string, unknown>;
   const redactedFields: string[] = [];
+  const unreadableAmountFields: string[] = [];
 
   const rawHourLines = Array.isArray(parsed.hour_lines) ? parsed.hour_lines : [];
   const hourLines: TierCHourLine[] = rawHourLines.map((item, index) => {
@@ -432,7 +469,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
       hours: toNullableNumber(r.hours),
       rate: toNullableNumber(r.rate),
       percent: toNullableNumber(r.percent),
-      amount: toNumber(r.amount),
+      amount: toNumberTracked(r.amount, `hour_lines[${index}].amount`, unreadableAmountFields),
       category: mapHourCategory(r.category),
       tax_treatment: mapTaxTreatment(r.tax_treatment),
       adds_hours: toBoolean(r.adds_hours),
@@ -466,7 +503,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
       const r = item as Record<string, unknown>;
       return {
         description: sanitizeText(r.description, `${keyPrefix}[${index}].description`, redactedFields) ?? '',
-        amount: toNumber(r.amount),
+        amount: toNumberTracked(r.amount, `${keyPrefix}[${index}].amount`, unreadableAmountFields),
         category: mapNetCategory(r.category),
       };
     });
@@ -477,7 +514,7 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     const r = item as Record<string, unknown>;
     return {
       description: sanitizeText(r.description, `et_reimbursement_lines[${index}].description`, redactedFields) ?? '',
-      amount: toNumber(r.amount),
+      amount: toNumberTracked(r.amount, `et_reimbursement_lines[${index}].amount`, unreadableAmountFields),
       category: 'reimbursement' as const,
     };
   });
@@ -485,13 +522,20 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
   const rawPa = Array.isArray(parsed.payout_adjustment_lines) ? parsed.payout_adjustment_lines : [];
   const payoutAdjustmentLines = rawPa.map((item, index) => {
     const r = item as Record<string, unknown>;
-    return { description: sanitizeText(r.description, `payout_adjustment_lines[${index}].description`, redactedFields) ?? '', amount: toNumber(r.amount) };
+    return {
+      description: sanitizeText(r.description, `payout_adjustment_lines[${index}].description`, redactedFields) ?? '',
+      amount: toNumberTracked(r.amount, `payout_adjustment_lines[${index}].amount`, unreadableAmountFields),
+    };
   });
 
   const rawRl = Array.isArray(parsed.reservation_lines) ? parsed.reservation_lines : [];
-  const reservationLines: TierCReservationLine[] = rawRl.map((item) => {
+  const reservationLines: TierCReservationLine[] = rawRl.map((item, index) => {
     const r = item as Record<string, unknown>;
-    return { type: mapReservationType(r.type), opgebouwd: toNumber(r.accrued), paid_out: toNumber(r.paid_out) };
+    return {
+      type: mapReservationType(r.type),
+      opgebouwd: toNumberTracked(r.accrued, `reservation_lines[${index}].accrued`, unreadableAmountFields),
+      paid_out: toNumberTracked(r.paid_out, `reservation_lines[${index}].paid_out`, unreadableAmountFields),
+    };
   });
 
   return {
@@ -531,5 +575,6 @@ export async function extractTierCPayslip(imageDataUrls: string[]): Promise<Tier
     printed_payout_label: sanitizeText(parsed.printed_payout_label, 'printed_payout_label', redactedFields),
     truncated: hitLengthLimit,
     redacted_fields: redactedFields,
+    unreadable_amount_fields: unreadableAmountFields,
   };
 }

@@ -34,6 +34,9 @@ export type ConsistencyIssue =
   // under-read look like it reconciles). Distinct from zero_tax_nonzero_base, which fires when tax
   // WAS read as a literal 0 against a nonzero base; this fires when tax was not read at all.
   | { code: 'printed_tax_unknown' }
+  // Stage 2f (§2f.2/§2f.3)
+  | { code: 'printed_subtotal_role_unresolved'; printed_subtotal: number; gross_hypothesis: number; loon_voor_heffingen_hypothesis: number | null }
+  | { code: 'anchors_inverted'; printed_gross_total: number; printed_loon_voor_heffingen: number }
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
   // Stage 2e (§2e.5): tier-c.ts previously defaulted an unread period_type to 'week' and an unread
@@ -41,16 +44,69 @@ export type ConsistencyIssue =
   // base reduction silently dropped). Raised by the controller (it alone has the raw TierCExtraction
   // needed to tell "genuinely absent" from "read as zero/week") as a blocking gap, never a default.
   | { code: 'period_type_unknown' }
-  | { code: 'et_exchange_amount_unknown' };
+  | { code: 'et_exchange_amount_unknown' }
+  // Stage 2f (§2f.8): a non-finite hour/net/ET-reimbursement/payout/reservation amount is stored as 0
+  // in the field itself (no shared type changed for this) but raised here, from the raw extraction's
+  // `unreadable_amount_fields`, as a blocking gap - never presented as a comparison against a zero
+  // that was never actually read.
+  | { code: 'amount_unreadable'; field: string };
 
-/** Straight subtraction of printed/extracted figures, never the engine's own tax computation - a
- * tight tolerance is correct here (cent rounding across a handful of additions only), unlike
- * discrepancy.ts's tolerances, which exist to absorb stepwise TABLE-rounding noise that has no place
- * in a pure arithmetic identity between numbers the document itself printed. */
-const RECONCILIATION_TOLERANCE = 0.05;
+/**
+ * Stage 2f (audit v26, §2f.9): "the interface must know every code (2.10a)... make it structural."
+ * There is no shared-types package between the frontend and backend projects, so `ConsistencyIssue`'s
+ * discriminants cannot be imported by TierCFlow.tsx or derived from one definition without a larger
+ * restructuring than this round's scope. This runtime list is the practical alternative: it must be
+ * kept in sync with the type above by hand (a new discriminant added there without adding it here is
+ * itself a bug this list exists to catch less directly), and a backend test
+ * (extraction-consistency.test.ts, "2f.9") reads TierCFlow.tsx's own source and fails if any code
+ * below is missing from it - the exact failure mode `period_week_mismatch` had in stage 2e (added to
+ * the backend, never added to the frontend's switch, and nothing failed because the frontend's own
+ * union was just narrower, not wrong by its own compiler's lights).
+ */
+export const ALL_CONSISTENCY_ISSUE_CODES = [
+  'zero_tax_nonzero_base',
+  'period_year_mismatch',
+  'period_length_mismatch',
+  'period_week_mismatch',
+  'deduction_miscategorized',
+  'gross_lines_do_not_reconcile',
+  'pre_tax_does_not_reconcile',
+  'net_does_not_reconcile',
+  'printed_tax_unknown',
+  'printed_subtotal_role_unresolved',
+  'anchors_inverted',
+  'totals_do_not_reconcile_net',
+  'totals_do_not_reconcile_payout',
+  'period_type_unknown',
+  'et_exchange_amount_unknown',
+  'amount_unreadable',
+] as const satisfies readonly ConsistencyIssue['code'][];
 
-/** Far below even a single week's statutory minimum wage (~599 EUR at 14.99/h x 40h) - not a
- * legitimate low-earner zero, just a floor to skip degenerate near-zero taxable bases. */
+// Compile-time half of the check: a code added to ConsistencyIssue but not to the list above fails
+// the build here (the `satisfies` above only catches the OPPOSITE mistake - a stale/misspelled entry).
+type _AssertNoMissingCode = ConsistencyIssue['code'] extends (typeof ALL_CONSISTENCY_ISSUE_CODES)[number] ? true : ['ConsistencyIssue code missing from ALL_CONSISTENCY_ISSUE_CODES', Exclude<ConsistencyIssue['code'], (typeof ALL_CONSISTENCY_ISSUE_CODES)[number]>];
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _assertNoMissingCode: _AssertNoMissingCode = true;
+
+/**
+ * Stage 2f (§2f.12): derived, not asserted. Straight subtraction of printed/extracted figures, never
+ * the engine's own tax computation (unlike discrepancy.ts's tolerances, which absorb stepwise
+ * TABLE-rounding noise that has no place in a pure arithmetic identity between numbers the document
+ * itself printed). Every figure that enters one of these identities - each hour line, each deduction
+ * line, each printed subtotal - is itself a number printed to the cent, so it can carry up to half a
+ * cent (0.005) of independent rounding. A check combining n such printed figures can therefore differ
+ * by as much as n x 0.005 and still be arithmetically consistent; anything past that is a real gap,
+ * not printing noise. Never widened beyond this bound to make a fixture pass - a fixture just outside
+ * it gets an explanation, per §2.5, not a bigger constant.
+ */
+function reconciliationTolerance(termCount: number): number {
+  return Math.round(termCount * 0.005 * 1000) / 1000;
+}
+
+/** Stage 2f (§2f.12): CHOSEN, not derived - a floor to skip degenerate near-zero taxable bases, set
+ * far below even a single week's statutory minimum wage (~599 EUR at 14.99/h x 40h) so it can never
+ * mistake a real low-earner period for the degenerate case. No formula produces this number; it is a
+ * judgment call, recorded as one. */
 const MEANINGFUL_TAXABLE_BASE = 10;
 
 function stripDiacritics(value: string): string {
@@ -70,7 +126,12 @@ const POST_TAX_KEYWORDS: Array<{ category: PostTaxSocialCategory; pattern: RegEx
   // the plain \bwga\b pattern below, misclassifying it as 'wga'. Found while wiring 2e.4's
   // deterministic override, which made this list authoritative rather than a backstop.
   { category: 'gediff_wga', pattern: /gediff\.?\w*\s*wga/ },
-  { category: 'wga', pattern: /\bwga\b/ },
+  // Stage 2f (§2f.7): \bwga\b also matches inside "wga-gat" (the hyphen is a non-word character, so
+  // both word boundaries are satisfied) - WGA-Gat is the PRE-TAX family (see PRE_TAX_KEYWORDS above);
+  // filing it here would relabel it as plain post-tax 'wga', which is wrong on both the label and the
+  // side of the tax line. The negative lookahead excludes "wga-gat"/"wgagat" specifically, so a line
+  // on the wrong side of the tax line stays unmatched -> 'other' (a finding), never silently relabelled.
+  { category: 'wga', pattern: /\bwga\b(?!-?gat)/ },
 ];
 
 /**
@@ -163,6 +224,35 @@ function resolveBtTaxComponent(period: PayslipPeriod): number | null {
 }
 
 /**
+ * Stage 2f (§2f.2): "each stage runs when its own printed figure exists; it does not need the other
+ * anchor. If exactly one subtotal was read, check it against both hypotheses... If it matches neither,
+ * raise a finding that names both gaps." The Olympia trap (RAPORT-cursor-2e.md / OWNER-RETEST):
+ * extraction read ONE number (844.92) and the prompt's own gross example put it in
+ * printed_gross_total, when on this document it is actually loon_voor_heffingen - stage 2e's gate
+ * required BOTH anchors to check anything, so it never noticed a single wrongly-labelled one. This
+ * resolves which role a single printed subtotal actually plays, from the figures alone, never from
+ * which field extraction happened to put it in.
+ */
+export type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'unresolved' | 'none';
+
+function resolveSubtotalRole(period: PayslipPeriod, grossTotal: number, preTaxSum: number | null): SubtotalRole {
+  const hasGross = period.printed_gross_total !== null;
+  const hasLvh = period.printed_loon_voor_heffingen !== null;
+  if (hasGross && hasLvh) return 'both';
+  if (!hasGross && !hasLvh) return 'none';
+  const printedSubtotal = (hasGross ? period.printed_gross_total : period.printed_loon_voor_heffingen) as number;
+  const lvhHypothesis = preTaxSum !== null ? grossTotal - preTaxSum : null;
+  // n = the printed subtotal itself, plus every printed figure summed on each side of the hypothesis.
+  const matchesGross = Math.abs(printedSubtotal - grossTotal) <= reconciliationTolerance(1 + period.hour_lines.length);
+  const matchesLvh =
+    lvhHypothesis !== null &&
+    Math.abs(printedSubtotal - lvhHypothesis) <= reconciliationTolerance(1 + period.hour_lines.length + period.pre_tax_deductions.length);
+  if (matchesGross && !matchesLvh) return 'confirmed_gross';
+  if (matchesLvh) return 'confirmed_loon_voor_heffingen'; // covers the lvh-only match and the (rare) case both hypotheses coincide
+  return 'unresolved';
+}
+
+/**
  * Stage 2d (audit v19, §2d.1): "the blocking panel must show what it read." Until now, a gate firing
  * told the user (and the owner, debugging live) only that something didn't add up - not which lines
  * were read, what they were categorized as, or where in the gross-to-net chain the arithmetic broke.
@@ -182,6 +272,13 @@ export interface ExtractionTraceLine {
 export interface ExtractionTrace {
   hour_lines: ExtractionTraceLine[];
   gross_total: number;
+  /** Stage 2f (§2f.2): "the panel must not label a subtotal 'gross' unless it reconciles as gross;
+   * until then it shows 'printed subtotal'." 'both' means both anchors were read (labels trusted as
+   * given); 'confirmed_gross'/'confirmed_loon_voor_heffingen' means exactly one was read and the
+   * arithmetic confirmed which role it plays; 'unresolved' means it matched neither (the interface
+   * must show the neutral "printed subtotal" wording, never assert a role); 'none' means neither
+   * anchor was read at all. */
+  printed_subtotal_role: SubtotalRole;
   printed_gross_total: number | null;
   pre_tax_deductions: ExtractionTraceLine[];
   pre_tax_deductions_sum: number | null;
@@ -189,8 +286,11 @@ export interface ExtractionTrace {
   printed_loon_voor_heffingen: number | null;
   printed_table_tax: number | null;
   printed_bt_tax: number | null;
-  computed_taxable_base: number;
-  computed_table_tax_after_korting: number;
+  /** Stage 2f (§2f.4): null when the caller could not compute AT ALL (an unread period_type or
+   * et_exchange_amount blocks the whole computation, not just the tax step) - never a figure computed
+   * from a guessed multiplier or a silently-zeroed base and shown as if it meant something. */
+  computed_taxable_base: number | null;
+  computed_table_tax_after_korting: number | null;
   post_tax_social: ExtractionTraceLine[];
   post_tax_deductions_sum: number | null;
   implied_net: number | null;
@@ -205,7 +305,7 @@ function traceLine(description: string, category: string, amount: number | null,
   return { label: description, category, amount, provenance };
 }
 
-export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome): ExtractionTrace {
+export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome | null): ExtractionTrace {
   const grossTotal = period.hour_lines.reduce((sum, line) => sum + line.amount, 0);
   const preTaxLines = period.pre_tax_deductions.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
   const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
@@ -222,11 +322,12 @@ export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComp
   const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
   const payoutAdjustmentsSum = period.payout_adjustments.reduce((sum, l) => sum + l.amount, 0);
   const impliedPayout = period.printed_net !== null ? Math.round((period.printed_net + netAdditionsSum - netDeductionsSum + payoutAdjustmentsSum) * 100) / 100 : null;
-  const taxFields = outcome.status === 'complete' ? outcome.result : outcome;
+  const taxFields = outcome === null ? null : outcome.status === 'complete' ? outcome.result : outcome;
 
   return {
     hour_lines: period.hour_lines.map((l) => traceLine(l.description, l.category, l.amount)),
     gross_total: Math.round(grossTotal * 100) / 100,
+    printed_subtotal_role: resolveSubtotalRole(period, grossTotal, preTaxSum),
     printed_gross_total: period.printed_gross_total,
     pre_tax_deductions: preTaxLines,
     pre_tax_deductions_sum: preTaxSum,
@@ -234,8 +335,8 @@ export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComp
     printed_loon_voor_heffingen: period.printed_loon_voor_heffingen,
     printed_table_tax: period.printed_table_tax,
     printed_bt_tax: period.printed_bt_tax,
-    computed_taxable_base: taxFields.taxable_base,
-    computed_table_tax_after_korting: taxFields.table_tax_after_korting,
+    computed_taxable_base: taxFields === null ? null : taxFields.taxable_base,
+    computed_table_tax_after_korting: taxFields === null ? null : taxFields.table_tax_after_korting,
     post_tax_social: postTaxLines,
     post_tax_deductions_sum: postTaxSum,
     implied_net: impliedNet,
@@ -336,39 +437,77 @@ export function checkExtractionConsistency(
   const preTaxSumForReconciliation = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
   const postTaxSumForReconciliation = sumKnownAmounts(period.post_tax_social.map((d) => d.amount));
 
-  if (period.printed_gross_total !== null && period.printed_loon_voor_heffingen !== null) {
-    // Stage 1: sum(gross lines) vs the document's own printed gross total.
-    const grossResidual = Math.round((grossTotal - period.printed_gross_total) * 100) / 100;
-    if (Math.abs(grossResidual) > RECONCILIATION_TOLERANCE) {
-      issues.push({ code: 'gross_lines_do_not_reconcile', summed_gross: Math.round(grossTotal * 100) / 100, printed_gross_total: period.printed_gross_total, residual: grossResidual });
+  function checkNetStage(loonVoorHeffingen: number): void {
+    if (period.printed_net === null || postTaxSumForReconciliation === null) return;
+    const tableTax = period.printed_table_tax;
+    const btTax = resolveBtTaxComponent(period);
+    if (tableTax === null || btTax === null) {
+      issues.push({ code: 'printed_tax_unknown' });
+      return;
     }
+    const impliedNet = loonVoorHeffingen - tableTax - btTax - postTaxSumForReconciliation;
+    const netResidual = Math.round((impliedNet - period.printed_net) * 100) / 100;
+    // n: loon voor heffingen (printed or resolved from one), table tax, BT tax, each post-tax line, printed net.
+    if (Math.abs(netResidual) > reconciliationTolerance(4 + period.post_tax_social.length)) {
+      issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(impliedNet * 100) / 100, printed_net: period.printed_net, residual: netResidual });
+    }
+  }
 
-    // Stage 2: printed gross total minus pre-tax deductions vs the document's own printed loon voor
-    // heffingen. Uses the PRINTED gross (not the possibly-wrong summed gross) as the stage-2 base, so
-    // a stage-1 failure does not also mask or distort stage 2 - each stage checks its own link only.
-    if (preTaxSumForReconciliation !== null) {
-      const impliedLoonVoorHeffingen = period.printed_gross_total - preTaxSumForReconciliation;
-      const preTaxResidual = Math.round((impliedLoonVoorHeffingen - period.printed_loon_voor_heffingen) * 100) / 100;
-      if (Math.abs(preTaxResidual) > RECONCILIATION_TOLERANCE) {
-        issues.push({ code: 'pre_tax_does_not_reconcile', implied_loon_voor_heffingen: Math.round(impliedLoonVoorHeffingen * 100) / 100, printed_loon_voor_heffingen: period.printed_loon_voor_heffingen, residual: preTaxResidual });
+  const subtotalRole = resolveSubtotalRole(period, grossTotal, preTaxSumForReconciliation);
+
+  if (subtotalRole === 'both') {
+    // Stage 2f (§2f.3): a document where the printed gross is smaller than the printed loon voor
+    // heffingen cannot be real - loon voor heffingen is gross minus (nonnegative) deductions. Block
+    // before running the three stages, which would otherwise report confusing negative residuals.
+    if ((period.printed_gross_total as number) < (period.printed_loon_voor_heffingen as number)) {
+      issues.push({ code: 'anchors_inverted', printed_gross_total: period.printed_gross_total as number, printed_loon_voor_heffingen: period.printed_loon_voor_heffingen as number });
+    } else {
+      // Stage 1: sum(gross lines) vs the document's own printed gross total.
+      const grossResidual = Math.round((grossTotal - (period.printed_gross_total as number)) * 100) / 100;
+      // n: each gross line, plus the printed gross total itself.
+      if (Math.abs(grossResidual) > reconciliationTolerance(1 + period.hour_lines.length)) {
+        issues.push({ code: 'gross_lines_do_not_reconcile', summed_gross: Math.round(grossTotal * 100) / 100, printed_gross_total: period.printed_gross_total as number, residual: grossResidual });
       }
-    }
 
-    // Stage 3: printed loon voor heffingen minus tax minus post-tax vs the document's own printed net.
-    if (period.printed_net !== null && postTaxSumForReconciliation !== null) {
-      const tableTax = period.printed_table_tax;
-      const btTax = resolveBtTaxComponent(period);
-      if (tableTax === null || btTax === null) {
-        issues.push({ code: 'printed_tax_unknown' });
-      } else {
-        const impliedNet = period.printed_loon_voor_heffingen - tableTax - btTax - postTaxSumForReconciliation;
-        const netResidual = Math.round((impliedNet - period.printed_net) * 100) / 100;
-        if (Math.abs(netResidual) > RECONCILIATION_TOLERANCE) {
-          issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(impliedNet * 100) / 100, printed_net: period.printed_net, residual: netResidual });
+      // Stage 2: printed gross total minus pre-tax deductions vs the document's own printed loon voor
+      // heffingen. Uses the PRINTED gross (not the possibly-wrong summed gross) as the stage-2 base, so
+      // a stage-1 failure does not also mask or distort stage 2 - each stage checks its own link only.
+      if (preTaxSumForReconciliation !== null) {
+        const impliedLoonVoorHeffingen = (period.printed_gross_total as number) - preTaxSumForReconciliation;
+        const preTaxResidual = Math.round((impliedLoonVoorHeffingen - (period.printed_loon_voor_heffingen as number)) * 100) / 100;
+        // n: printed gross total, printed loon voor heffingen, each pre-tax deduction line.
+        if (Math.abs(preTaxResidual) > reconciliationTolerance(2 + period.pre_tax_deductions.length)) {
+          issues.push({ code: 'pre_tax_does_not_reconcile', implied_loon_voor_heffingen: Math.round(impliedLoonVoorHeffingen * 100) / 100, printed_loon_voor_heffingen: period.printed_loon_voor_heffingen as number, residual: preTaxResidual });
         }
       }
+
+      // Stage 3: printed loon voor heffingen minus tax minus post-tax vs the document's own printed net.
+      checkNetStage(period.printed_loon_voor_heffingen as number);
+    }
+  } else if (subtotalRole === 'confirmed_gross' || subtotalRole === 'confirmed_loon_voor_heffingen' || subtotalRole === 'unresolved') {
+    // Stage 2f (§2f.2): exactly one printed subtotal was read. Test it against both hypotheses rather
+    // than trusting whichever field extraction happened to put it in (the Olympia trap: one number,
+    // read into printed_gross_total, that is actually loon_voor_heffingen).
+    const printedSubtotal = (period.printed_gross_total ?? period.printed_loon_voor_heffingen) as number;
+    if (subtotalRole === 'unresolved') {
+      const lvhHypothesis = preTaxSumForReconciliation !== null ? grossTotal - preTaxSumForReconciliation : null;
+      issues.push({
+        code: 'printed_subtotal_role_unresolved',
+        printed_subtotal: printedSubtotal,
+        gross_hypothesis: Math.round(grossTotal * 100) / 100,
+        loon_voor_heffingen_hypothesis: lvhHypothesis !== null ? Math.round(lvhHypothesis * 100) / 100 : null,
+      });
+    } else {
+      // Confirmed as one role or the other (or both hypotheses coincide, in which case either serves):
+      // derive the loon-voor-heffingen figure and still run the net stage - the confirmed anchor is
+      // real information even though only one number was printed.
+      const resolvedLoonVoorHeffingen =
+        subtotalRole === 'confirmed_gross' ? (preTaxSumForReconciliation !== null ? printedSubtotal - preTaxSumForReconciliation : null) : printedSubtotal;
+      if (resolvedLoonVoorHeffingen !== null) checkNetStage(resolvedLoonVoorHeffingen);
     }
   } else if (period.printed_net !== null && preTaxSumForReconciliation !== null && postTaxSumForReconciliation !== null) {
+    // subtotalRole === 'none': the old combined identity, using the summed (not printed) gross - the
+    // only path left with no printed subtotal to anchor a staged check against at all.
     const tableTax = period.printed_table_tax;
     const btTax = resolveBtTaxComponent(period);
     if (tableTax === null || btTax === null) {
@@ -376,7 +515,9 @@ export function checkExtractionConsistency(
     } else {
       const impliedNet = grossTotal - preTaxSumForReconciliation - tableTax - btTax - postTaxSumForReconciliation;
       const residual = Math.round((impliedNet - period.printed_net) * 100) / 100;
-      if (Math.abs(residual) > RECONCILIATION_TOLERANCE) {
+      // n: each gross/pre-tax/post-tax line, table tax, BT tax, printed net.
+      const n = 3 + period.hour_lines.length + period.pre_tax_deductions.length + period.post_tax_social.length;
+      if (Math.abs(residual) > reconciliationTolerance(n)) {
         issues.push({ code: 'totals_do_not_reconcile_net', implied_net: Math.round(impliedNet * 100) / 100, printed_net: period.printed_net, residual });
       }
     }
@@ -392,7 +533,9 @@ export function checkExtractionConsistency(
     const payoutAdjustments = period.payout_adjustments.reduce((sum, line) => sum + line.amount, 0);
     const impliedPayout = period.printed_net + additions - deductions + payoutAdjustments;
     const residual = Math.round((impliedPayout - period.printed_payout) * 100) / 100;
-    if (Math.abs(residual) > RECONCILIATION_TOLERANCE) {
+    // n: printed net, each net addition/deduction/payout-adjustment line, printed payout.
+    const n = 2 + period.net_additions.length + period.net_deductions.length + period.payout_adjustments.length;
+    if (Math.abs(residual) > reconciliationTolerance(n)) {
       issues.push({ code: 'totals_do_not_reconcile_payout', implied_payout: Math.round(impliedPayout * 100) / 100, printed_payout: period.printed_payout, residual });
     }
   }

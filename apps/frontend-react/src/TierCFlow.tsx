@@ -83,26 +83,38 @@ interface OkResponse {
 /** Stage 2b (audit v12): the pre-comparison consistency gate's issue shape, mirroring
  * extraction-consistency.ts's discriminated union exactly - codes plus numeric params, never a
  * prebaked sentence (§2.6), so this file builds every issue's copy via translations.ts. */
+// Stage 2f (§2f.9): every code below must have a case in issueMessage() - extraction-consistency.test.ts's
+// "2f.9: every backend ConsistencyIssue code has a frontend case" test fails the backend suite if a
+// code string here (or a new one added to the backend) has no matching literal in this file, since
+// there is no shared-types package between the two projects to enforce this at compile time instead.
 type ConsistencyIssue =
   | { code: 'zero_tax_nonzero_base'; taxable_base: number; printed_table_tax: number }
   | { code: 'period_year_mismatch'; period_end_date: string; payment_date: string }
   | { code: 'period_length_mismatch'; period_type: 'week' | '4-weekly' | 'month'; implied_days: number; expected_min_days: number; expected_max_days: number }
+  | { code: 'period_week_mismatch'; label_week: number; label_year: number; end_date_week: number; end_date_year: number }
   | { code: 'deduction_miscategorized'; placement: 'pre_tax' | 'post_tax'; description: string; suggested_category: string }
   | { code: 'gross_lines_do_not_reconcile'; summed_gross: number; printed_gross_total: number; residual: number }
   | { code: 'pre_tax_does_not_reconcile'; implied_loon_voor_heffingen: number; printed_loon_voor_heffingen: number; residual: number }
   | { code: 'net_does_not_reconcile'; implied_net: number; printed_net: number; residual: number }
   | { code: 'printed_tax_unknown' }
+  | { code: 'printed_subtotal_role_unresolved'; printed_subtotal: number; gross_hypothesis: number; loon_voor_heffingen_hypothesis: number | null }
+  | { code: 'anchors_inverted'; printed_gross_total: number; printed_loon_voor_heffingen: number }
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
   | { code: 'period_type_unknown' }
-  | { code: 'et_exchange_amount_unknown' };
+  | { code: 'et_exchange_amount_unknown' }
+  | { code: 'amount_unreadable'; field: string };
 
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
 interface ExtractionTraceLine { label: string; category: string; amount: number | null; provenance: string }
+type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'unresolved' | 'none';
 interface ExtractionTrace {
   hour_lines: ExtractionTraceLine[];
   gross_total: number;
+  /** Stage 2f (§2f.2): "the panel must not label a subtotal 'gross' unless it reconciles as gross;
+   * until then it shows 'printed subtotal'." */
+  printed_subtotal_role: SubtotalRole;
   printed_gross_total: number | null;
   pre_tax_deductions: ExtractionTraceLine[];
   pre_tax_deductions_sum: number | null;
@@ -110,8 +122,10 @@ interface ExtractionTrace {
   printed_loon_voor_heffingen: number | null;
   printed_table_tax: number | null;
   printed_bt_tax: number | null;
-  computed_taxable_base: number;
-  computed_table_tax_after_korting: number;
+  /** Stage 2f (§2f.4): null when the caller could not compute at all (an unread period_type or
+   * et_exchange_amount blocks the whole computation, not just the tax step). */
+  computed_taxable_base: number | null;
+  computed_table_tax_after_korting: number | null;
   post_tax_social: ExtractionTraceLine[];
   post_tax_deductions_sum: number | null;
   implied_net: number | null;
@@ -229,6 +243,8 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issuePeriodYear(issue.period_end_date, issue.payment_date);
     case 'period_length_mismatch':
       return t.issuePeriodLength(issue.implied_days, issue.expected_min_days, issue.expected_max_days);
+    case 'period_week_mismatch':
+      return t.issuePeriodWeek(issue.label_week, issue.label_year, issue.end_date_week, issue.end_date_year);
     case 'deduction_miscategorized':
       return t.issueDeductionMiscategorized(issue.description, issue.suggested_category);
     case 'gross_lines_do_not_reconcile':
@@ -239,6 +255,10 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueNetReconcile(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
     case 'printed_tax_unknown':
       return t.issuePrintedTaxUnknown;
+    case 'printed_subtotal_role_unresolved':
+      return t.issueSubtotalRoleUnresolved(money(issue.printed_subtotal), money(issue.gross_hypothesis), issue.loon_voor_heffingen_hypothesis === null ? t.traceUnknown : money(issue.loon_voor_heffingen_hypothesis));
+    case 'anchors_inverted':
+      return t.issueAnchorsInverted(money(issue.printed_gross_total), money(issue.printed_loon_voor_heffingen));
     case 'totals_do_not_reconcile_net':
       return t.issueTotalsNet(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
     case 'totals_do_not_reconcile_payout':
@@ -247,6 +267,8 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issuePeriodTypeUnknown;
     case 'et_exchange_amount_unknown':
       return t.issueEtExchangeUnknown;
+    case 'amount_unreadable':
+      return t.issueAmountUnreadable(issue.field);
   }
 }
 
@@ -469,18 +491,35 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <p><strong>{t.traceHourLines}</strong>{hasIssue('gross_lines_do_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 {renderLines(trace.hour_lines)}
                 <p>{t.traceGrossTotal}: <strong>{money(trace.gross_total)}</strong></p>
-                {trace.printed_gross_total !== null && <p>{t.tracePrintedGrossTotal}: <strong>{money(trace.printed_gross_total)}</strong></p>}
+                {/* Stage 2f (§2f.2): "the panel must not label a subtotal 'gross' unless it reconciles
+                    as gross; until then it shows 'printed subtotal'." A value sitting in
+                    printed_gross_total that resolveSubtotalRole did NOT confirm as the gross role
+                    (the Olympia trap: extraction put 844.92 here, but it is actually loon voor
+                    heffingen) is shown with the neutral label, never asserted as gross. */}
+                {trace.printed_gross_total !== null && (
+                  <p>
+                    {trace.printed_subtotal_role === 'both' || trace.printed_subtotal_role === 'confirmed_gross' ? t.tracePrintedGrossTotal : t.tracePrintedSubtotalNeutral}:{' '}
+                    <strong>{money(trace.printed_gross_total)}</strong>
+                  </p>
+                )}
+                {hasIssue('printed_subtotal_role_unresolved') && <p className="form-note">{t.traceStepFailed}</p>}
+                {hasIssue('anchors_inverted') && <p className="form-note">{t.traceStepFailed}</p>}
 
                 <p><strong>{t.tracePreTaxDeductions}</strong>{hasIssue('pre_tax_does_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 {renderLines(trace.pre_tax_deductions)}
                 <p>{t.tracePreTaxSum}: <strong>{trace.pre_tax_deductions_sum === null ? t.traceUnknown : money(trace.pre_tax_deductions_sum)}</strong></p>
                 <p>{t.traceLoonVoorHeffingen}: <strong>{trace.loon_voor_heffingen === null ? t.traceUnknown : money(trace.loon_voor_heffingen)}</strong></p>
-                {trace.printed_loon_voor_heffingen !== null && <p>{t.tracePrintedLoonVoorHeffingen}: <strong>{money(trace.printed_loon_voor_heffingen)}</strong></p>}
+                {trace.printed_loon_voor_heffingen !== null && (
+                  <p>
+                    {trace.printed_subtotal_role === 'both' || trace.printed_subtotal_role === 'confirmed_loon_voor_heffingen' ? t.tracePrintedLoonVoorHeffingen : t.tracePrintedSubtotalNeutral}:{' '}
+                    <strong>{money(trace.printed_loon_voor_heffingen)}</strong>
+                  </p>
+                )}
 
                 <p><strong>{t.traceTaxTitle}</strong>{(hasIssue('zero_tax_nonzero_base') || hasIssue('printed_tax_unknown')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 <p>{t.traceTaxPrintedTable}: <strong>{trace.printed_table_tax === null ? t.traceUnknown : money(trace.printed_table_tax)}</strong></p>
                 {trace.printed_bt_tax !== null && <p>{t.traceTaxPrintedBt}: <strong>{money(trace.printed_bt_tax)}</strong></p>}
-                <p>{t.traceTaxComputed}: <strong>{money(trace.computed_table_tax_after_korting)}</strong></p>
+                <p>{t.traceTaxComputed}: <strong>{trace.computed_table_tax_after_korting === null ? t.traceUnknown : money(trace.computed_table_tax_after_korting)}</strong></p>
 
                 <p><strong>{t.tracePostTaxSocial}</strong></p>
                 {renderLines(trace.post_tax_social)}

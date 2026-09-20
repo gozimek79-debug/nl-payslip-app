@@ -105,6 +105,7 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
     printed_payout_label: null,
     truncated: false,
     redacted_fields: [],
+    unreadable_amount_fields: [],
     ...overrides,
   };
 }
@@ -388,6 +389,12 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
     ],
     pre_tax_deduction_lines: [
       { description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: 4 },
+      // v26 (§2f.5): FIXTURES fixture 2, Krok 2 - printed +0.51/-0.51, exactly as a live extraction
+      // would carry them under the new "transcribe the sign, backend decides magnitude" prompt policy.
+      // Without the credit exception, Math.abs would turn Rekompensata into ANOTHER 0.51 deduction
+      // (a credit becoming a charge) instead of the two netting to 0 as they do on the real document.
+      { description: 'PAWW Rekompensata', amount: 0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'PAWW Opłata', amount: -0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
     ],
     et_exchange_amount: 177.0,
     et_reimbursement_lines: [
@@ -404,7 +411,7 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
     printed_table_tax: 77.52,
     printed_bt_tax: 40.08,
     printed_gross_total: 924.03, // sum of the eight hour_lines above
-    printed_loon_voor_heffingen: 902.38, // 924.03 - 21.65 (the one real pre-tax deduction) - matches payslip-model.ts's own documented anchor
+    printed_loon_voor_heffingen: 902.38, // 924.03 - 21.65 (STIPP; Rekompensata/Opłata net to 0) - matches payslip-model.ts's own documented anchor
   });
 
   const period = mapExtractionToPeriod(extraction, 14.4);
@@ -412,12 +419,32 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   // never guessed even though round 7/8's own analysis concluded DHL likely carries it.
   assert.equal(period.employers.length, 2);
   assert.ok(period.employers.every((e) => e.franchise_bearing === 'unknown'));
+  // v26 (§2f.5): the credit exception nets Rekompensata/Opłata to 0, same as the printed document -
+  // confirms the sign policy neither adds a phantom 0.51 charge nor a phantom 0.51 refund.
+  assert.equal(
+    period.pre_tax_deductions.reduce((sum, d) => sum + (d.amount.value ?? 0), 0),
+    21.65,
+    'expected PAWW Rekompensata (+0.51, a credit) and PAWW Opłata (-0.51, an ordinary deduction) to net to exactly the STIPP amount',
+  );
 
   const outcome = computePayslipPeriod(period, RATES_2025, true);
   assert.equal(outcome.status, 'complete');
   if (outcome.status !== 'complete') return;
   assert.equal(outcome.result.taxable_base, 725.38);
   assert.equal(outcome.result.bt_tax.toFixed(2), '40.08'); // exact - flat percentage, not a table lookup
+  // v26 (§2f.6): "make the OTTO integration test assert the components against the fixture (taxable
+  // base 725.38, ET additions once) and report the net residual against 598.59 without widening any
+  // tolerance (the 12.28 table-tax gap is known)." Before the fix, et_reimbursement_lines were counted
+  // in BOTH net_additions and et.et_reimbursements, and computePayslipPeriod summed both -
+  // period_net/payout_amount would have been ~775.59 (598.59 + a double-counted 177.00), not merely
+  // 12.28 off. period_net still isn't exactly 598.59 here: the ENGINE's own table_tax_after_korting
+  // (not the printed 77.52) feeds this computation, and that 12.28 EUR gap (§6.2) is a separate,
+  // already-documented, unrelated defect - not something this fix touches or a tolerance to widen.
+  assert.equal(outcome.result.net_additions_total, 177, 'expected the 33.00 + 144.00 ET reimbursements counted ONCE, not twice');
+  const periodNetResidual = Math.round((outcome.result.period_net - 598.59) * 100) / 100;
+  console.log(`  [2f.6] OTTO period_net ${outcome.result.period_net} vs fixture 598.59 -> residual ${periodNetResidual} EUR (the already-documented 12.28 table-tax gap, not a new defect)`);
+  assert.ok(Math.abs(periodNetResidual - 12.28) < 0.01, `expected the residual to equal exactly the documented table-tax gap (12.28), got ${periodNetResidual} - a different residual would mean a NEW defect, not the known one`);
+  assert.equal(outcome.result.payout_amount, outcome.result.period_net, 'no payout adjustments in this fixture - payout must equal period_net exactly');
 
   // v24 (§2e.8): the gate must run here too, and must NOT block - OTTO's table-tax gap is a real
   // employer/engine discrepancy (checked below), not an extraction-consistency problem. Confirms the

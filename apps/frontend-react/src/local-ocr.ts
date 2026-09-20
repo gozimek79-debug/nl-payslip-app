@@ -1,7 +1,25 @@
 import { createWorker } from 'tesseract.js';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
+import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+
+/** Stage 2g (audit v27, §2g.1): "read the PDF's own text layer first... if the PDF has no usable text
+ * layer (nothing, or fewer than a small number of items, chosen and labelled in the code), send
+ * images only, exactly as today." A scanned PDF's `getTextContent()` typically returns nothing or a
+ * handful of stray items (a header/footer that happens to be real text on an otherwise-scanned page);
+ * a real payslip's own text layer, when one exists, has dozens of items (every hour/deduction line,
+ * label and amount is its own item). 10 is a chosen threshold, not derived from a measurement - the
+ * gap between "a scan with a few incidental text items" and "an actual text-based document" is wide
+ * enough that the exact number is not load-bearing. */
+const MIN_TEXT_ITEMS_FOR_USABLE_LAYER = 10;
+
+export interface DocumentTextItem {
+  page: number;
+  text: string;
+  x: number;
+  y: number;
+}
 
 export type OcrFields = {
   hours: number;
@@ -81,6 +99,36 @@ async function pdfPages(file: File): Promise<Blob[]> {
 export async function renderPageImages(file: File): Promise<string[]> {
   const images = file.type === 'application/pdf' ? await pdfPages(file) : [file];
   return Promise.all(images.map((image) => blobToBase64(image)));
+}
+
+/**
+ * Stage 2g (§2g.1): reads the PDF's own embedded text layer via `page.getTextContent()`, on the same
+ * pages `pdfPages` above rasterises for the vision call - never a different page range, so the two
+ * never disagree about which pages exist. A plain image upload (JPG/PNG) has no text layer at all and
+ * always returns `[]`. `2g.4`'s "amount-like items the model did not use" and `2g.3`'s verbatim guard
+ * both depend on this being complete, not a best-effort sample - every text item on the read pages is
+ * included, positions rounded to whole points (no sub-pixel precision needed for a consistency check).
+ */
+export async function extractTextItems(file: File): Promise<DocumentTextItem[]> {
+  if (file.type !== 'application/pdf') return [];
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await getDocument({ data: bytes }).promise;
+  const pageCount = Math.min(pdf.numPages, 3);
+  const items: DocumentTextItem[] = [];
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    for (const raw of textContent.items) {
+      if (!('str' in raw) || typeof raw.str !== 'string') continue;
+      const item = raw as TextItem;
+      const text = item.str.trim();
+      if (text === '') continue;
+      const x = Math.round(item.transform[4] ?? 0);
+      const y = Math.round(item.transform[5] ?? 0);
+      items.push({ page: pageNumber, text, x, y });
+    }
+  }
+  return items.length >= MIN_TEXT_ITEMS_FOR_USABLE_LAYER ? items : [];
 }
 
 export async function recognizePayslip(file: File, onProgress: (progress: number) => void): Promise<OcrResult> {

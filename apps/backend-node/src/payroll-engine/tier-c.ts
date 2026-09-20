@@ -291,15 +291,20 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
   const hasBtLine = hourLines.some((l) => l.tax_treatment === 'bt');
   const btState = extraction.bijzonder_tarief_printed_percent !== null ? 'known' : hasBtLine ? 'unknown' : 'not_applicable';
 
-  // Stage 2f (§2f.4): a genuinely unread period_type is caught by the controller
+  // Stage 2f (§2f.4) / 2g (§2g.0b): a genuinely unread period_type is caught by the controller
   // (`period_type_unknown`, raised from the raw extraction, BEFORE fetchRates/computePayslipPeriod
-  // run) - this `?? 'week'` is never reached on a path that produces a shown net/tax figure. It stays
-  // only because PayslipPeriod.period_type is a plain, non-nullable enum (computePayslipPeriod needs a
-  // concrete period_multiplier to run at all) and this period must still be buildable for the trace
-  // panel to show what WAS read even when the computation itself is blocked.
+  // run on THIS period) - this `?? 'week'` is never reached on a path that produces a shown net/tax
+  // figure for a FRESH extraction. It stays only because PayslipPeriod.period_type is a plain,
+  // non-nullable enum (computePayslipPeriod needs a concrete period_multiplier to run at all) and
+  // this period must still be buildable for the trace panel to show what WAS read even when the
+  // computation itself is blocked. `period_type_confirmed` is the honest signal alongside it: `false`
+  // here means "'week' is a placeholder, not a read value" - the one place that mattered but wasn't
+  // checked before this round was /recompute, which takes a CLIENT-SUPPLIED period and, before now,
+  // trusted its period_type unconditionally (see tier-c.controller.ts's new guard).
   const period: PayslipPeriod = {
     period_label: extraction.period_label,
     period_type: extraction.period_type ?? 'week',
+    period_type_confirmed: extraction.period_type !== null,
     period_end_date: extraction.period_end_date,
     is_correction: extraction.is_correction,
     version: extraction.version,

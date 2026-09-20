@@ -14,6 +14,7 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
   return {
     period_label: null,
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: null,
     is_correction: false,
     version: 1,

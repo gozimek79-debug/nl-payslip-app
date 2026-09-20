@@ -4,11 +4,35 @@ import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from 
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
+import { verifyAmountsAgainstText, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { mapExtractionToPeriod, type TierCPeriodType } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
 import { ipRateLimit } from '../rate-limiter.js';
+
+/**
+ * Stage 2g (audit v27, §2g.1): "the server treats this list as untrusted input: type and length
+ * checks, a cap on items and on total size, strings only. It is a consistency aid, not a security
+ * control (the client could forge the images as easily)." A client-supplied `documentText` is
+ * rejected field-by-field rather than the whole array on one bad entry - a single malformed item
+ * should not silently disable the guard for an otherwise-fine upload.
+ */
+const MAX_DOCUMENT_TEXT_ITEMS = 500;
+const MAX_DOCUMENT_TEXT_ITEM_LENGTH = 300;
+
+function sanitizeDocumentText(raw: unknown): DocumentTextItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: DocumentTextItem[] = [];
+  for (const entry of raw.slice(0, MAX_DOCUMENT_TEXT_ITEMS)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const r = entry as Record<string, unknown>;
+    if (typeof r.text !== 'string' || typeof r.page !== 'number' || typeof r.x !== 'number' || typeof r.y !== 'number') continue;
+    if (!Number.isFinite(r.page) || !Number.isFinite(r.x) || !Number.isFinite(r.y)) continue;
+    items.push({ page: r.page, text: r.text.slice(0, MAX_DOCUMENT_TEXT_ITEM_LENGTH), x: r.x, y: r.y });
+  }
+  return items;
+}
 
 /**
  * BP1.5 (audit round): the PRO bridge's fate is decided as RETIRE, not migrate-and-keep-both -
@@ -76,6 +100,7 @@ function resolveReferenceDate(periodEndDate: string | null): Date {
 function redactedGateLogPayload(period: PayslipPeriod) {
   return {
     period_type: period.period_type,
+    period_type_confirmed: period.period_type_confirmed,
     hour_lines: period.hour_lines.map((l) => ({ category: l.category, tax_treatment: l.tax_treatment, amount: l.amount })),
     pre_tax_deductions: period.pre_tax_deductions.map((d) => ({ category: d.category, amount: d.amount })),
     post_tax_social: period.post_tax_social.map((d) => ({ category: d.category, amount: d.amount })),
@@ -110,9 +135,11 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   if (images.length === 0 || images.length > 5 || !images.every((i) => typeof i === 'string')) {
     return res.status(400).json({ error_code: 'invalid_input' });
   }
+  // Stage 2g (§2g.1): optional - a plain image upload, or a PDF with no usable text layer, sends none.
+  const documentText = sanitizeDocumentText(req.body?.documentText);
 
   try {
-    const extraction = await extractTierCPayslip(images as string[]);
+    const extraction = await extractTierCPayslip(images as string[], documentText);
     const referenceDate = resolveReferenceDate(extraction.period_end_date);
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
@@ -135,12 +162,18 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     for (const field of extraction.unreadable_amount_fields) {
       extractionGapIssues.push({ code: 'amount_unreadable', field });
     }
+    // Stage 2g (§2g.3): "for every amount the model returns, require that its magnitude equals...
+    // some number in the text list... Applies only when a text list exists." The classic case:
+    // 699.75 (= 45 x 15.55, computed) is not printed anywhere the document says 699.78.
+    for (const field of verifyAmountsAgainstText(period, documentText)) {
+      extractionGapIssues.push({ code: 'amount_unreadable', field });
+    }
     if (periodType === null || extractionGapIssues.length > 0) {
       console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(extractionGapIssues)));
       return res.json({
         status: 'unreliable',
         issues: extractionGapIssues,
-        trace: buildExtractionTrace(period, null),
+        trace: buildExtractionTrace(period, null, documentText),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
@@ -179,7 +212,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       return res.json({
         status: 'unreliable',
         issues: consistencyIssues,
-        trace: buildExtractionTrace(period, outcome),
+        trace: buildExtractionTrace(period, outcome, documentText),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
@@ -216,11 +249,23 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
  * public input shape. Full structural validation of the entire nested PayslipPeriod type is a
  * reasonable hardening item for later, not a blocker for this round's panel to function correctly.
  */
+const KNOWN_PERIOD_TYPES: TierCPeriodType[] = ['week', '4-weekly', 'month'];
+
 router.post('/recompute', async (req, res) => {
   const rawPeriod = req.body?.period as PayslipPeriod | undefined;
   if (!rawPeriod || typeof rawPeriod !== 'object' || !Array.isArray(rawPeriod.hour_lines) || typeof rawPeriod.period_type !== 'string') {
     return res.status(400).json({ error_code: 'invalid_input' });
   }
+  // Stage 2g (§2g.0b): "an unknown period type may not drive anything anywhere." Before this, any
+  // string here (including the placeholder 'week' a blocked /analyze had to write into the returned
+  // period so the trace panel could render) would reach fetchRates/computePayslipPeriod unchecked -
+  // the one path where a client-echoed placeholder could still drive a real computation. Refused
+  // the same way /analyze already refuses: no rates resolved, no tax computed.
+  if (rawPeriod.period_type_confirmed !== true || !KNOWN_PERIOD_TYPES.includes(rawPeriod.period_type as TierCPeriodType)) {
+    console.error('[consistency-gate] blocked on /recompute - period_type not confirmed:', JSON.stringify({ period_type: rawPeriod.period_type, period_type_confirmed: rawPeriod.period_type_confirmed }));
+    return res.json({ status: 'unreliable', issues: [{ code: 'period_type_unknown' as const }], trace: buildExtractionTrace(rawPeriod, null) });
+  }
+
   // Stage 2f (§2f.5): "one sign policy... apply it in mapExtractionToPeriod AND in /recompute (which
   // today passes the browser's period straight in)". The body is client-supplied - normalising it here
   // too means a signed deduction amount (however it got there) is corrected before computing, not

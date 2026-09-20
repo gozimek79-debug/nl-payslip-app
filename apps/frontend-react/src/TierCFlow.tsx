@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, HelpCircle, ShieldCheck, Upload } from 'lucide-react';
-import { renderPageImages } from './local-ocr.ts';
+import { renderPageImages, extractTextItems } from './local-ocr.ts';
 import { StepProgress } from './StepProgress.tsx';
 import { translations, type Lang } from './translations.ts';
 
@@ -108,7 +108,7 @@ type ConsistencyIssue =
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
 interface ExtractionTraceLine { label: string; category: string; amount: number | null; provenance: string }
-type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'unresolved' | 'none';
+type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'ambiguous_both_match' | 'unresolved' | 'none';
 interface ExtractionTrace {
   hour_lines: ExtractionTraceLine[];
   gross_total: number;
@@ -134,6 +134,11 @@ interface ExtractionTrace {
   net_deductions: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
+  /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
+   * image_only when there was no text layer." */
+  reading_basis: 'text_layer_verified' | 'image_only';
+  /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding. */
+  unused_printed_amounts: { count: number; sample: number[] };
 }
 
 interface UnreliableResponse {
@@ -296,9 +301,13 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     setUploadState('uploading'); setMessage(t.analyzing);
     try {
       const images = await renderPageImages(file);
+      // Stage 2g (§2g.1): the PDF's own text layer, when it has one, read on the SAME pages rendered
+      // above - sent alongside the images, never instead of them. Empty for a plain image upload or a
+      // scanned PDF with no usable text layer (extractTextItems' own threshold decides that).
+      const documentText = await extractTextItems(file);
       const res = await fetch('/api/tier-c/analyze', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images }),
+        body: JSON.stringify({ images, documentText }),
       });
       const data = await res.json() as AnalyzeResponse & { error_code?: string };
       if (!res.ok) {
@@ -467,6 +476,12 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         {(() => {
           const trace = response.trace;
           const hasIssue = (code: ConsistencyIssue['code']) => response.issues.some((i) => i.code === code);
+          // Stage 2g (§2g.0, owner's OWNER-RETEST-2f-olympia.md observation): when the subtotal role
+          // is unresolved or the anchors are inverted, checkExtractionConsistency never runs the
+          // pre-tax/net reconciliation stages at all - they are not "confirmed clean", they were never
+          // checked. Before this, the net step showed no marker in exactly that case (628.89 against a
+          // printed 686.09, no warning), which a reader could mistake for a passed check.
+          const laterStepsUnchecked = hasIssue('printed_subtotal_role_unresolved') || hasIssue('anchors_inverted');
           const miscategorized = new Set(
             response.issues
               .filter((i): i is Extract<ConsistencyIssue, { code: 'deduction_miscategorized' }> => i.code === 'deduction_miscategorized')
@@ -505,7 +520,11 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 {hasIssue('printed_subtotal_role_unresolved') && <p className="form-note">{t.traceStepFailed}</p>}
                 {hasIssue('anchors_inverted') && <p className="form-note">{t.traceStepFailed}</p>}
 
-                <p><strong>{t.tracePreTaxDeductions}</strong>{hasIssue('pre_tax_does_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p>
+                  <strong>{t.tracePreTaxDeductions}</strong>
+                  {hasIssue('pre_tax_does_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}
+                  {!hasIssue('pre_tax_does_not_reconcile') && laterStepsUnchecked && <span className="form-note"> {t.traceStepNotChecked}</span>}
+                </p>
                 {renderLines(trace.pre_tax_deductions)}
                 <p>{t.tracePreTaxSum}: <strong>{trace.pre_tax_deductions_sum === null ? t.traceUnknown : money(trace.pre_tax_deductions_sum)}</strong></p>
                 <p>{t.traceLoonVoorHeffingen}: <strong>{trace.loon_voor_heffingen === null ? t.traceUnknown : money(trace.loon_voor_heffingen)}</strong></p>
@@ -525,7 +544,11 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 {renderLines(trace.post_tax_social)}
                 <p>{t.tracePostTaxSum}: <strong>{trace.post_tax_deductions_sum === null ? t.traceUnknown : money(trace.post_tax_deductions_sum)}</strong></p>
 
-                <p><strong>{t.traceNetTitle}</strong>{(hasIssue('totals_do_not_reconcile_net') || hasIssue('net_does_not_reconcile')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p>
+                  <strong>{t.traceNetTitle}</strong>
+                  {(hasIssue('totals_do_not_reconcile_net') || hasIssue('net_does_not_reconcile')) && <span className="form-note"> {t.traceStepFailed}</span>}
+                  {!(hasIssue('totals_do_not_reconcile_net') || hasIssue('net_does_not_reconcile')) && laterStepsUnchecked && <span className="form-note"> {t.traceStepNotChecked}</span>}
+                </p>
                 <p>{t.traceNetImplied}: <strong>{trace.implied_net === null ? t.traceUnknown : money(trace.implied_net)}</strong></p>
                 <p>{t.traceNetPrinted}: <strong>{trace.printed_net === null ? t.traceUnknown : money(trace.printed_net)}</strong></p>
 
@@ -541,6 +564,17 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <p><strong>{t.tracePayoutTitle}</strong>{hasIssue('totals_do_not_reconcile_payout') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 <p>{t.tracePayoutImplied}: <strong>{trace.implied_payout === null ? t.traceUnknown : money(trace.implied_payout)}</strong></p>
                 <p>{t.tracePayoutPrinted}: <strong>{trace.printed_payout === null ? t.traceUnknown : money(trace.printed_payout)}</strong></p>
+
+                {/* Stage 2g (§2g.5): "the panel says in one plain sentence that the digits were not
+                    checked against the document's text" for an image-only read. */}
+                <p className="form-note">{trace.reading_basis === 'text_layer_verified' ? t.readingBasisTextVerified : t.readingBasisImageOnly}</p>
+                {/* Stage 2g (§2g.4): a stated gap, never a finding - "printed amounts that were not
+                    used" (this is what catches a whole missing line, like Olympia's 58.31). */}
+                {trace.unused_printed_amounts.count > 0 && (
+                  <p className="form-note">
+                    {t.traceUnusedAmounts(trace.unused_printed_amounts.count, trace.unused_printed_amounts.sample.map((v) => money(v)).join(', '))}
+                  </p>
+                )}
               </div>
             </div>
           );

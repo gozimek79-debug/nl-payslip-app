@@ -150,6 +150,17 @@ export interface ReservationBalance {
 export interface PayslipPeriod {
   period_label: string | null;
   period_type: 'week' | '4-weekly' | 'month';
+  /** Stage 2g (audit v27, §2g.0b): "an unknown period type may not drive anything anywhere." A
+   * document whose period type could not be read still needs SOME value in `period_type` above
+   * (`computePayslipPeriod` needs a concrete period_multiplier to run at all, and this period must be
+   * buildable for the trace panel even when blocked) - this field is what tells every consumer
+   * whether that value was actually read (`true`) or is a placeholder standing in for "not asked yet"
+   * (`false`). `/recompute` refuses to compute when this is not `true`, closing the gap where a
+   * client-echoed period could carry the placeholder into a real computation. Every OTHER
+   * `period_type` consumer (`discrepancy.ts`'s tolerance lookup, `extraction-consistency.ts`'s
+   * period-length check) only ever runs after the controller's own gate has already confirmed this is
+   * `true` - see this round's report for the full grep of every consumer. */
+  period_type_confirmed: boolean;
   period_end_date: string | null;
   is_correction: boolean;
   version: number;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { checkExtractionConsistency, buildExtractionTrace, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace, resolveSubtotalRole, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
 import { known, type PayslipPeriod, type PayslipComputationOutcome, type PayslipComputationResult } from './payslip-model.js';
 
 /**
@@ -18,6 +18,7 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
   return {
     period_label: null,
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: null,
     is_correction: false,
     version: 1,
@@ -428,6 +429,76 @@ test('2f.3: a printed gross total smaller than the printed loon voor heffingen i
 });
 
 /**
+ * Stage 2g (audit v27, §2g.0d): "give the coinciding-hypotheses case its own role value... export
+ * resolveSubtotalRole so it can be tested directly; cover the five cases the reviewer ran (T3 table)."
+ * Each case below is exactly one row of RAPORT-cursor-2f.md's T3 table.
+ */
+test('2g.0d T3 row 1: read-2\'s numbers resolve to unresolved (matches neither hypothesis)', () => {
+  const period = minimalPeriod({
+    hour_lines: [
+      { employer_index: 0, description: 'a', hours: null, rate: null, percent: null, amount: 699.75, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'b', hours: null, rate: null, percent: null, amount: 116.31, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'c', hours: null, rate: null, percent: null, amount: 10.78, category: 'other', tax_treatment: 'table', adds_hours: false },
+    ],
+    pre_tax_deductions: [
+      { category: 'paww', description: 'a', amount: known(0.89, 'payslip_extracted'), base: null, percent: null },
+      { category: 'ziektewet', description: 'b', amount: known(1.79, 'payslip_extracted'), base: null, percent: null },
+      { category: 'pension', description: 'c', amount: known(34.79, 'payslip_extracted'), base: null, percent: null },
+    ],
+    printed_gross_total: 844.92,
+  });
+  assert.equal(resolveSubtotalRole(period, 826.84, 37.47), 'unresolved');
+});
+
+test('2g.0d T3 row 2: a correct read with both anchors resolves to "both"', () => {
+  const period = minimalPeriod({ printed_gross_total: 885.5, printed_loon_voor_heffingen: 844.92 });
+  assert.equal(resolveSubtotalRole(period, 885.5, 40.58), 'both');
+});
+
+test('2g.0d T3 row 3: no pre-tax deductions, one subtotal matching both hypotheses is "ambiguous_both_match", never asserted as loon voor heffingen', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'a', hours: null, rate: null, percent: null, amount: 500, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [],
+    printed_gross_total: 500,
+  });
+  assert.equal(resolveSubtotalRole(period, 500, 0), 'ambiguous_both_match');
+});
+
+test('2g.0d T3 row 4: equal anchors (500/500, no pre-tax) resolve to "both" and do not fire anchors_inverted', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'a', hours: null, rate: null, percent: null, amount: 500, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 500,
+    printed_loon_voor_heffingen: 500,
+  });
+  assert.equal(resolveSubtotalRole(period, 500, 0), 'both');
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'anchors_inverted'), JSON.stringify(issues));
+});
+
+test('2g.0d T3 row 5: a printed 100 matching both hypotheses within tolerance (0.01 pre-tax) is "ambiguous_both_match"', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'a', hours: null, rate: null, percent: null, amount: 100, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'a', amount: known(0.01, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 100,
+  });
+  assert.equal(resolveSubtotalRole(period, 100, 0.01), 'ambiguous_both_match');
+});
+
+test('2g.0d: ambiguous_both_match still runs the net stage (the coinciding number is real information)', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'a', hours: null, rate: null, percent: null, amount: 500, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [],
+    printed_gross_total: 500,
+    printed_table_tax: 100,
+    printed_net: 400,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile' || i.code === 'printed_subtotal_role_unresolved'), JSON.stringify(issues));
+  const trace = buildExtractionTrace(period, completeOutcome({}));
+  assert.equal(trace.printed_subtotal_role, 'ambiguous_both_match');
+});
+
+/**
  * Stage 2f (audit v26, §2f.9): "the interface must know every code (2.10a)... make it structural."
  * There is no shared-types package between frontend and backend, so this is the structural
  * enforcement instead: every code this file can produce must appear as a quoted string literal
@@ -437,10 +508,23 @@ test('2f.3: a printed gross total smaller than the printed loon voor heffingen i
  * narrower, not wrong by its own compiler's lights). This test fails on a clean checkout if a future
  * round adds a ConsistencyIssue code to ALL_CONSISTENCY_ISSUE_CODES without also adding it here.
  */
-test('2f.9: every backend ConsistencyIssue code has a frontend case in TierCFlow.tsx', () => {
+/**
+ * Stage 2g (audit v27, §2g.0c): "replace the substring test with one that finds a `case '<code>':`
+ * ... and fails when the only occurrence is a comment or the type union." The old test
+ * (`frontendSource.includes("'" + code + "'")`) would have passed even if `issueMessage`'s switch
+ * never handled a code at all, as long as the code string appeared ANYWHERE in the file - in the
+ * `ConsistencyIssue` type union (which it always does, since that union is hand-written from the
+ * same list), in a comment, or in an unrelated string. This requires the literal switch-case syntax
+ * `case '<code>':` - a code present only in the union or a comment fails this test. Verified by
+ * actually removing one: deleting `case 'et_exchange_amount_unknown':` from `issueMessage()`
+ * (leaving the type union untouched) made this test fail with exactly that code listed as missing;
+ * restoring the line made it pass again - reported, not left in the tree (§2.5 - a claim checked
+ * once, not asserted).
+ */
+test('2g.0c: every backend ConsistencyIssue code has a real switch-case in TierCFlow.tsx\'s issueMessage', () => {
   const testFileDir = path.dirname(fileURLToPath(import.meta.url));
   const frontendPath = path.resolve(testFileDir, '../../../frontend-react/src/TierCFlow.tsx');
   const frontendSource = readFileSync(frontendPath, 'utf8');
-  const missing = ALL_CONSISTENCY_ISSUE_CODES.filter((code) => !frontendSource.includes(`'${code}'`));
-  assert.deepEqual(missing, [], `TierCFlow.tsx has no case for: ${missing.join(', ')} - add a union member and an issueMessage() case for each`);
+  const missing = ALL_CONSISTENCY_ISSUE_CODES.filter((code) => !new RegExp(`case '${code}':`).test(frontendSource));
+  assert.deepEqual(missing, [], `TierCFlow.tsx's issueMessage() has no "case '<code>':" for: ${missing.join(', ')}`);
 });

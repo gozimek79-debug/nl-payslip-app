@@ -808,14 +808,41 @@ test('BW4: a table-tax OCR slip within the period tolerance band - correctly abs
 });
 
 /**
- * BW5 - NOT a false-positive test, a documented FALSE-NEGATIVE gap found while building the above:
- * discrepancy.ts declares 'net_mismatch' and 'payout_mismatch' codes but never pushes either one -
- * there is no comparison anywhere against period.reported_total_net / reported_net_paid. A net_lines
- * misclassification (e.g. a genuine reimbursement read as a deduction, flipping it from
- * net_additions into net_deductions) would silently change the computed final payout and NOT be
- * caught, because nothing compares the computed net/payout against what the document reports. This
- * is the opposite risk from BW1-BW4 (silence on a real error, not noise on a correct one) and is
- * reported as a NEW FINDING rather than fixed here - fixing it means deciding what `reported_net_paid`
- * should be sourced from in the extraction schema, which is its own piece of work.
+ * BW5 (historical) found `net_mismatch`/`payout_mismatch` never pushed at all; a later round (CL)
+ * wired both. Stage 2g (audit v27, §2g.0a) found the wiring for `net_mismatch` itself was wrong,
+ * live, via the new HTTP-level `/analyze` test - the first fixture to set BOTH `reported_total_net`
+ * and a real net addition together (every fixture before it had left one or the other unset, so this
+ * never actually ran). `discrepancy.ts` compared `result.period_net` (AFTER net additions/deductions)
+ * against `period.printed_net` - but the prompt's own field definition says `printed_net` is the
+ * figure BEFORE them ("suma PRZED doliczeniem zwrotów kosztów... i korekt wypłaty"). The two would
+ * misalign by exactly the net additions/deductions total on every real payslip that has any -
+ * Olympia's real 90.00 travel reimbursement makes this fire on every correct read of it. Fixed:
+ * `discrepancy.ts` now compares `result.wage_net` (before additions) instead.
  */
+test('2g.0a regression: net_mismatch compares wage_net (before net additions), not period_net (after) - a correct read with a real travel reimbursement must not misfire', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    pre_tax_deduction_lines: [
+      { description: 'Bijlage PAWW werknemer', amount: 0.89, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'AZW werknemer', amount: 4.9, category: 'ziektewet', placement: 'pre_tax', base: null, percent: null },
+      { description: 'StiPP-pensioen werknemer', amount: 34.79, category: 'pension', placement: 'pre_tax', base: null, percent: null },
+    ],
+    post_tax_deduction_lines: [{ description: 'WHK werknemer', amount: 6.46, category: 'whk', placement: 'post_tax', base: null, percent: null }],
+    net_lines: [{ description: 'Reiskosten woon/werk', amount: 90.0, category: 'reimbursement' }],
+    printed_table_tax: 152.37,
+    reported_total_net: 686.09, // "Totaal netto" - BEFORE the 90.00 reiskosten addition
+    reported_net_paid: 776.09, // "Totaal" - AFTER it
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const outcome = computePayslipPeriod(period, RATES_2026, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  // Confirms the test actually exercises the bug: wage_net (before additions) and period_net (after)
+  // must genuinely differ by the reimbursement amount, or this test would pass either way.
+  assert.notEqual(outcome.result.wage_net, outcome.result.period_net);
+  assert.ok(Math.abs(outcome.result.period_net - outcome.result.wage_net - 90) < 0.01);
+
+  const discrepancies = comparePeriodToDocument(period, outcome);
+  assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch on a correct read, got ${JSON.stringify(discrepancies)}`);
+});
 

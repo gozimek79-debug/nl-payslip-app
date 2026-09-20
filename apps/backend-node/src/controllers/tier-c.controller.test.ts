@@ -1,43 +1,30 @@
-import { test, before, after } from 'node:test';
+import { test, before, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
-import app from '../app.js';
+import type { Request as ExpressRequest, Response as ExpressResponse, NextFunction } from 'express';
 
 /**
- * Stage 2f (audit v26, §2f.11): "tests that bind the HTTP path." Every existing Tier C test
- * (tier-c.test.ts, extraction-consistency.test.ts) calls `mapExtractionToPeriod`/
+ * Stage 2f (audit v26, §2f.11) / 2g (audit v27, §2g.0a): "tests that bind the HTTP path." Every
+ * OTHER Tier C test (tier-c.test.ts, extraction-consistency.test.ts) calls `mapExtractionToPeriod`/
  * `checkExtractionConsistency` directly - the reviewer's own finding (RAPORT-cursor-2e.md, T7e):
  * "if the controller gate were removed, these tests would still pass. They do not bind the HTTP
  * path." These tests start the real Express app on an ephemeral port and drive it over real HTTP.
  *
- * BLOCKED, not attempted here: an HTTP-level test of POST /api/tier-c/analyze itself. Its
- * `aiRateLimit` middleware (`tier-c.controller.ts`, `ipRateLimit('tier-c-ai', 10, 300, 'deny')`)
- * queries a Postgres-backed rate-limit table and, by explicit design (rate-limiter.ts's own
- * comment: "a route that spends real money on every request... must fail closed"), returns 503
- * `rate_limit_unknown` whenever that check cannot be completed - which includes "no database
- * reachable at all", not only "database says no". Command run: `node -e "...fetch('.../analyze')"`
- * against this checkout's `apps/backend-node/.env` (`DATABASE_URL=postgresql://admin:...@localhost:5432/...`,
- * no local Postgres or Docker running in this environment) - exact error: `AggregateError
- * [ECONNREFUSED]... connect ECONNREFUSED ::1:5432` / `127.0.0.1:5432`, response `503
- * {"error_code":"rate_limit_unknown"}`. Unsetting DATABASE_URL does not help - `checkRateLimit`'s
- * `!databaseConfigured` branch also returns 'unknown', which this route's `onUnknown: 'deny'` still
- * turns into the same 503. There is no environment variable that makes this route reachable without
- * an actually-running Postgres, and standing one up is out of this round's scope. `/recompute` has
- * no rate limiter and is fully tested below; `/analyze`'s gate/mapping logic (the two live reads,
- * and a correct read) is exercised by extraction-consistency.test.ts's "2f.2" tests and
- * tier-c.test.ts's "Stage 2e regression" test instead, calling the exact same
- * `mapExtractionToPeriod`/`checkExtractionConsistency`/`buildExtractionTrace` functions the
- * controller calls, with the identical fixture numbers - not a substitute for an HTTP test, but the
- * same production code path minus the rate-limit middleware this environment cannot exercise.
- *
- * `extractTierCPayslip`'s vision call would be mocked at the `fetch` boundary (not the
- * `ocr-client.js` module) if the rate limiter did not block first - `documentVisionClient()` is a
- * real OpenAI-SDK client that calls `fetch()` internally, so intercepting that one boundary was
- * meant to test the REAL controller code with a result shaped exactly like a real Mistral response.
- * Kept here, unused by any test, as the mechanism a future round can use once a database is
- * reachable - not deleted per §5.1.
+ * Stage 2f left `/analyze` itself untested at the HTTP level: its `aiRateLimit` middleware
+ * (`ipRateLimit('tier-c-ai', 10, 300, 'deny')`) queries a Postgres-backed rate-limit table and fails
+ * closed (503 `rate_limit_unknown`) whenever that query cannot complete - true in this environment
+ * regardless of whether `DATABASE_URL` is set (confirmed: `AggregateError [ECONNREFUSED]` against
+ * the checked-in `.env`'s `localhost:5432`, no Postgres or Docker running here). §2g.0a's fix, per
+ * the reviewer's own T8 answer ("bypass without production redesign: yes, in the test file"): mock
+ * `../rate-limiter.js`'s `ipRateLimit` export with `node:test`'s `mock.module()` (Node's built-in
+ * ESM module mock, `--experimental-test-module-mocks` - added to this workspace's `test` script) so
+ * every rate-limited route becomes a no-op `next()` FOR THIS TEST FILE ONLY. No production code
+ * changes; `rate-limiter.ts` itself is untouched. The mock must be registered before `app.js` (and
+ * therefore `tier-c.controller.ts`) is ever imported, so `app` is loaded dynamically, after the mock,
+ * inside `before()`, not via a static top-level `import`.
  */
 
+let app: (typeof import('../app.js'))['default'];
 let server: ReturnType<typeof app.listen>;
 let baseUrl: string;
 let originalFetch: typeof fetch;
@@ -57,6 +44,17 @@ function mockCompletion(extractionJson: unknown) {
 }
 
 before(async () => {
+  // §2g.0a: replace ipRateLimit with a factory that returns a no-op passthrough middleware - every
+  // route that would normally rate-limit (including /analyze's aiRateLimit) just calls next().
+  // Registered before app.js is imported, so tier-c.controller.ts's own `import { ipRateLimit } from
+  // '../rate-limiter.js'` resolves to this mock, not the real Postgres-backed implementation.
+  mock.module('../rate-limiter.js', {
+    namedExports: {
+      ipRateLimit: () => (_req: ExpressRequest, _res: ExpressResponse, next: NextFunction) => next(),
+    },
+  });
+  ({ default: app } = await import('../app.js'));
+
   originalApiKey = process.env.MISTRAL_API_KEY;
   process.env.MISTRAL_API_KEY = 'test-key-2f11';
   await new Promise<void>((resolve) => {
@@ -129,54 +127,49 @@ const CORRECT_OLYMPIA = {
   ],
   post_tax_deduction_lines: [{ description: 'WHK werknemer', amount: 6.46, category: 'whk', percent: null }],
   net_lines: [{ description: 'Onb. reiskosten woon/werk', amount: 90.0, category: 'reimbursement' }],
-  minimum_wage_printed: 14.99,
+  minimum_wage_printed: 14.71, // the real document's own printed rate (H1 2026) - stale against the H2 2026 rate this test's real-world reference date resolves to; matches tier-c.test.ts's own Olympia fixture
   printed_gross_total: 885.5,
   printed_loon_voor_heffingen: 844.92,
 };
 
-/**
- * BLOCKED (see the file header comment for the exact command/error): these three would run
- * /api/tier-c/analyze itself over real HTTP, using the mock/fixtures above, once a reachable
- * Postgres makes its rate limiter's `checkRateLimit` return something other than 'unknown'. Kept
- * as a template, not deleted (§5.1) - uncomment once a database is available to test against.
- *
- * test('2f.11a: /analyze with the live read-1 (5a8442c) extraction blocks with the old combined identity, never a discrepancy list', async () => {
- *   globalThis.fetch = mockCompletion(READ_1_5A8442C) as typeof fetch;
- *   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
- *   const body = (await res.json()) as { status: string; issues?: Array<{ code: string }> };
- *   assert.equal(res.status, 200);
- *   assert.equal(body.status, 'unreliable');
- *   assert.ok(body.issues?.some((i) => i.code === 'totals_do_not_reconcile_net'));
- * });
- *
- * test('2f.11a: /analyze with the live read-2 (aaaeae1) extraction names the unresolved subtotal role', async () => {
- *   globalThis.fetch = mockCompletion(READ_2_AAAEAE1) as typeof fetch;
- *   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
- *   const body = (await res.json()) as { status: string; issues?: Array<{ code: string; printed_subtotal?: number; gross_hypothesis?: number; loon_voor_heffingen_hypothesis?: number }> };
- *   assert.equal(res.status, 200);
- *   assert.equal(body.status, 'unreliable');
- *   const issue = body.issues?.find((i) => i.code === 'printed_subtotal_role_unresolved');
- *   assert.ok(issue);
- *   assert.equal(issue?.printed_subtotal, 844.92);
- *   assert.equal(issue?.gross_hypothesis, 826.84);
- *   assert.equal(issue?.loon_voor_heffingen_hypothesis, 789.37);
- * });
- *
- * test('2f.11b: /analyze with a correct Olympia extraction returns an empty issue list', async () => {
- *   globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
- *   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
- *   const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }> };
- *   assert.equal(res.status, 200);
- *   assert.equal(body.status, 'ok');
- *   assert.deepEqual(body.discrepancies?.map((d) => d.code), ['minimum_wage_stale_on_document']);
- * });
- */
+test('2g.0a: /analyze with the live read-1 (5a8442c) extraction blocks with the old combined identity, never a discrepancy list', async () => {
+  globalThis.fetch = mockCompletion(READ_1_5A8442C) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const body = (await res.json()) as { status: string; issues?: Array<{ code: string }> };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'unreliable');
+  assert.ok(body.issues?.some((i) => i.code === 'totals_do_not_reconcile_net'), `expected totals_do_not_reconcile_net, got ${JSON.stringify(body.issues)}`);
+});
+
+test('2g.0a: /analyze with the live read-2 (aaaeae1) extraction names the unresolved subtotal role, matching the exit condition\'s own example', async () => {
+  globalThis.fetch = mockCompletion(READ_2_AAAEAE1) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const body = (await res.json()) as { status: string; issues?: Array<{ code: string; printed_subtotal?: number; gross_hypothesis?: number; loon_voor_heffingen_hypothesis?: number }> };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'unreliable');
+  const issue = body.issues?.find((i) => i.code === 'printed_subtotal_role_unresolved');
+  assert.ok(issue, `expected printed_subtotal_role_unresolved, got ${JSON.stringify(body.issues)}`);
+  assert.equal(issue?.printed_subtotal, 844.92);
+  assert.equal(issue?.gross_hypothesis, 826.84);
+  assert.equal(issue?.loon_voor_heffingen_hypothesis, 789.37);
+});
+
+test('2g.0a: /analyze with a correct Olympia extraction returns an empty issue list', async () => {
+  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }> };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', JSON.stringify(body));
+  // Only the already-known printed-minimum-wage staleness (14.71 printed vs 14.99 current) - the same
+  // single expected discrepancy tier-c.test.ts's own Olympia fixture asserts.
+  assert.deepEqual(body.discrepancies?.map((d) => d.code), ['minimum_wage_stale_on_document']);
+});
 
 test('2f.11c: /recompute normalises a signed body before computing - a negative deduction is not double-subtracted', async () => {
   // A period shaped as if a caller sent one straight through with the printed sign still on it -
   // exactly the gap §2f.5 named ("/recompute... today passes the browser's period straight in").
   const signedPeriod = {
-    period_label: 'week 36/2026', period_type: 'week', period_end_date: null, is_correction: false, version: 1,
+    period_label: 'week 36/2026', period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
     employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
     hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
     pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: { provenance: 'payslip_extracted', value: -40.58 }, base: null, percent: null }],
@@ -194,4 +187,53 @@ test('2f.11c: /recompute normalises a signed body before computing - a negative 
   // subtracted) - the exact 2e.1/2f.5 bug, now checked at the HTTP boundary /recompute uses.
   assert.equal(body.outcome?.status, 'complete');
   assert.equal(body.outcome?.result?.taxable_base, 844.92, `expected 885.50 - 40.58 = 844.92 (magnitude subtracted), got ${JSON.stringify(body.outcome)}`);
+});
+
+test('2g.0b: /recompute refuses a period whose period_type was never confirmed - the placeholder cannot drive a computation', async () => {
+  // Shaped exactly as /analyze's early return sends back when extraction.period_type is null: a
+  // concrete-looking 'week' sits in period_type (mapExtractionToPeriod's own placeholder, needed
+  // only so the trace panel can render), but period_type_confirmed says it was never actually read.
+  // Before §2g.0b, this period would have computed anyway - the ONE placeholder-carrying path that
+  // /analyze's own gate could not reach, since /analyze never calls fetchRates/computePayslipPeriod
+  // on it, but /recompute took a client-echoed period at face value.
+  const echoedUnknownTypePeriod = {
+    period_label: null, period_type: 'week', period_type_confirmed: false, period_end_date: null, is_correction: false, version: 1,
+    employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+    hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+    et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+    wml_printed: null, wml_applicable: null,
+    printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+    printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+    printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+  };
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ period: echoedUnknownTypePeriod }) });
+  const body = (await res.json()) as { status: string; issues?: Array<{ code: string }>; outcome?: unknown };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'unreliable');
+  assert.deepEqual(body.issues?.map((i) => i.code), ['period_type_unknown']);
+  assert.equal(body.outcome, undefined, 'must not have computed anything - no tax figure from an unconfirmed period type');
+});
+
+test('2g.0b: /recompute still computes normally when period_type_confirmed is true (no regression)', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      period: {
+        period_label: null, period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
+        employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+        hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+        pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+        et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+        wml_printed: null, wml_applicable: null,
+        printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+        printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+        printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+      },
+    }),
+  });
+  const body = (await res.json()) as { status: string; outcome?: { status: string } };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', JSON.stringify(body));
 });

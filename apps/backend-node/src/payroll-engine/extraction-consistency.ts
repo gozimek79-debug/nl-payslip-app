@@ -1,4 +1,5 @@
 import type { PayslipPeriod, PayslipComputationOutcome, PreTaxDeductionCategory, PostTaxSocialCategory } from './payslip-model.js';
+import { findUnusedPrintedAmounts, type DocumentTextItem } from './document-text-guard.js';
 
 /**
  * Stage 2b (audit "CONSOLIDATED ASSIGNMENT" v12, §Stage 2b): a gate that runs BEFORE
@@ -233,9 +234,16 @@ function resolveBtTaxComponent(period: PayslipPeriod): number | null {
  * resolves which role a single printed subtotal actually plays, from the figures alone, never from
  * which field extraction happened to put it in.
  */
-export type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'unresolved' | 'none';
+// Stage 2g (§2g.0d): the reviewer's T3 found a fifth case the four-value enum didn't distinguish - a
+// document with no pre-tax deductions (or any pre-tax sum small enough that the two hypotheses land
+// within tolerance of each other) makes `printedSubtotal` match BOTH the gross and loon-voor-heffingen
+// hypotheses at once. The old code returned `confirmed_loon_voor_heffingen` for this (the `matchesLvh`
+// check ran second and didn't check whether `matchesGross` had also been true) - asserting a role the
+// arithmetic did not uniquely pick. `ambiguous_both_match` names this honestly: the number could be
+// either, and the panel shows the neutral wording for it exactly like `unresolved`.
+export type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'ambiguous_both_match' | 'unresolved' | 'none';
 
-function resolveSubtotalRole(period: PayslipPeriod, grossTotal: number, preTaxSum: number | null): SubtotalRole {
+export function resolveSubtotalRole(period: PayslipPeriod, grossTotal: number, preTaxSum: number | null): SubtotalRole {
   const hasGross = period.printed_gross_total !== null;
   const hasLvh = period.printed_loon_voor_heffingen !== null;
   if (hasGross && hasLvh) return 'both';
@@ -247,8 +255,9 @@ function resolveSubtotalRole(period: PayslipPeriod, grossTotal: number, preTaxSu
   const matchesLvh =
     lvhHypothesis !== null &&
     Math.abs(printedSubtotal - lvhHypothesis) <= reconciliationTolerance(1 + period.hour_lines.length + period.pre_tax_deductions.length);
-  if (matchesGross && !matchesLvh) return 'confirmed_gross';
-  if (matchesLvh) return 'confirmed_loon_voor_heffingen'; // covers the lvh-only match and the (rare) case both hypotheses coincide
+  if (matchesGross && matchesLvh) return 'ambiguous_both_match';
+  if (matchesGross) return 'confirmed_gross';
+  if (matchesLvh) return 'confirmed_loon_voor_heffingen';
   return 'unresolved';
 }
 
@@ -299,13 +308,22 @@ export interface ExtractionTrace {
   net_deductions: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
+  /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
+   * image_only when there was no text layer." Defaults to 'image_only' for every existing caller
+   * (unit tests, and any path with no text layer) - only the controller, holding the real
+   * `documentText` from the request, can say `'text_layer_verified'`. */
+  reading_basis: 'text_layer_verified' | 'image_only';
+  /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding on its
+   * own (a rate, a percentage base, or a reservation balance also prints two-decimal numbers that are
+   * not payment amounts, so an unused item is a possibility, not proof of a missing line). */
+  unused_printed_amounts: { count: number; sample: number[] };
 }
 
 function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted'): ExtractionTraceLine {
   return { label: description, category, amount, provenance };
 }
 
-export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome | null): ExtractionTrace {
+export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome | null, textItems: DocumentTextItem[] = []): ExtractionTrace {
   const grossTotal = period.hour_lines.reduce((sum, line) => sum + line.amount, 0);
   const preTaxLines = period.pre_tax_deductions.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
   const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
@@ -345,6 +363,11 @@ export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComp
     net_deductions: period.net_deductions.map((l) => traceLine(l.description, l.category, l.amount)),
     implied_payout: impliedPayout,
     printed_payout: period.printed_payout,
+    reading_basis: textItems.length > 0 ? 'text_layer_verified' : 'image_only',
+    unused_printed_amounts: (() => {
+      const unused = findUnusedPrintedAmounts(period, textItems);
+      return { count: unused.length, sample: unused.slice(0, 5) };
+    })(),
   };
 }
 
@@ -484,7 +507,7 @@ export function checkExtractionConsistency(
       // Stage 3: printed loon voor heffingen minus tax minus post-tax vs the document's own printed net.
       checkNetStage(period.printed_loon_voor_heffingen as number);
     }
-  } else if (subtotalRole === 'confirmed_gross' || subtotalRole === 'confirmed_loon_voor_heffingen' || subtotalRole === 'unresolved') {
+  } else if (subtotalRole === 'confirmed_gross' || subtotalRole === 'confirmed_loon_voor_heffingen' || subtotalRole === 'ambiguous_both_match' || subtotalRole === 'unresolved') {
     // Stage 2f (§2f.2): exactly one printed subtotal was read. Test it against both hypotheses rather
     // than trusting whichever field extraction happened to put it in (the Olympia trap: one number,
     // read into printed_gross_total, that is actually loon_voor_heffingen).
@@ -498,9 +521,13 @@ export function checkExtractionConsistency(
         loon_voor_heffingen_hypothesis: lvhHypothesis !== null ? Math.round(lvhHypothesis * 100) / 100 : null,
       });
     } else {
-      // Confirmed as one role or the other (or both hypotheses coincide, in which case either serves):
-      // derive the loon-voor-heffingen figure and still run the net stage - the confirmed anchor is
-      // real information even though only one number was printed.
+      // Stage 2g (§2g.0d): confirmed as one role, or `ambiguous_both_match` (both hypotheses coincide,
+      // typically because pre-tax deductions are ~0) - either way `printedSubtotal` IS the number to
+      // use as loon voor heffingen for stage 3 (for `confirmed_gross` it still needs pre-tax
+      // subtracted first; for the other two it already equals the lvh hypothesis by definition of
+      // having matched it). The confirmed/ambiguous anchor is real information even though only one
+      // number was printed - stage 3 still runs; only the PANEL'S LABEL stays neutral for
+      // `ambiguous_both_match`, never asserting which role the figure plays.
       const resolvedLoonVoorHeffingen =
         subtotalRole === 'confirmed_gross' ? (preTaxSumForReconciliation !== null ? printedSubtotal - preTaxSumForReconciliation : null) : printedSubtotal;
       if (resolvedLoonVoorHeffingen !== null) checkNetStage(resolvedLoonVoorHeffingen);

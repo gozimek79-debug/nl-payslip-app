@@ -156,7 +156,17 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
     // figures are downstream of table_tax_after_korting, so they inherit its own rounding residual
     // one-for-one and cannot be held to a tighter band than the figure they're built from. Same
     // reasoning extends to the confirmation edge.
-    push(pushable('net_mismatch', result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
+    //
+    // Stage 2g (audit v27, §2g.0a): was `result.period_net` - found live by the new HTTP-level
+    // /analyze test, the first fixture to set BOTH `reported_total_net` and a real net addition
+    // together (every existing fixture had left one or the other unset, so this never fired). The
+    // prompt's own field definition (`ocr-client.ts`, "reported_total_net... to jest suma PRZED
+    // doliczeniem zwrotów kosztów... i korekt wypłaty") says `printed_net` is the figure BEFORE net
+    // additions/deductions - `period_net` is AFTER them, so the two would misalign by exactly the net
+    // additions/deductions total on every real payslip that has any (e.g. Olympia's 90.00 travel
+    // reimbursement) and could never pass. `wage_net` is the figure actually comparable to a
+    // document's "Totaal netto" line.
+    push(pushable('net_mismatch', result.wage_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
     push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper, period.printed_payout_label));
   } else {
     // Incomplete: table_tax/bt_tax are still present (as an upper bound, or fully correct if only

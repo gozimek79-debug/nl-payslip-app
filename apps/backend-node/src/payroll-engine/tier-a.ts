@@ -392,6 +392,7 @@ export function buildTierAPeriod(input: TierAInput, grid: { hour_lines: HourLine
   return {
     period_label: null,
     period_type: input.period_type,
+    period_type_confirmed: true, // Tier A: always user-entered, never unknown
     period_end_date: null,
     is_correction: false,
     version: 1,

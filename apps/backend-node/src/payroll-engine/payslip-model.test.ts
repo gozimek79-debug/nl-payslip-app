@@ -111,6 +111,7 @@ test('payslip-model: Fixture 4 Olympia reproduces payout 776.09 (within table-ta
   const olympia: PayslipPeriod = {
     period_label: 'week 36/2026',
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: '2026-09-06',
     is_correction: false,
     version: 1,
@@ -174,6 +175,7 @@ test('payslip-model: Fixture 3 PKF reproduces payout 1754.12 (within table-tax t
   const pkf: PayslipPeriod = {
     period_label: '2026-8-M',
     period_type: 'month',
+    period_type_confirmed: true,
     period_end_date: '2026-08-31',
     is_correction: false,
     version: 1,
@@ -233,6 +235,7 @@ test('payslip-model: Fixture 1 Randstad reproduces wage_net 702.37 and signed pa
   const randstad: PayslipPeriod = {
     period_label: 'week 2026-11',
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: '2026-04-30',
     is_correction: true,
     version: 2,
@@ -304,6 +307,7 @@ test('payslip-model: Fixture 2 OTTO — BT split exact, table tax has a document
   const otto: PayslipPeriod = {
     period_label: '33/2025',
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: '2025-08-17',
     is_correction: false,
     version: 1,
@@ -406,6 +410,7 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
   return {
     period_label: null,
     period_type: 'week',
+    period_type_confirmed: true,
     period_end_date: null,
     is_correction: false,
     version: 1,

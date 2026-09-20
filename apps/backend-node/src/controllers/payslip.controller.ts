@@ -4,9 +4,8 @@ import multer from 'multer';
 import { z } from 'zod';
 import { query, transaction } from '../database.js';
 import { currentUser } from '../auth.js';
-import { extractPayslipFieldsFromImage } from '../ocr-service/ocr-client.js';
 import { explainPayslipAnalysis } from '../ai-service/ai-client.js';
-import { isGroqConfigured, isVisionConfigured } from '../ai-service/groq.js';
+import { isGroqConfigured } from '../ai-service/groq.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 const router = express.Router();
@@ -37,12 +36,6 @@ const analysisSchema = z.object({
   analysisId: z.string().uuid(),
   userVerified: z.literal(true),
   fields: fieldsSchema,
-});
-
-const imageDataUrlSchema = z.string().min(50).max(16_000_000).regex(/^data:image\/(png|jpe?g);base64,/, 'Oczekiwano obrazu PNG lub JPEG jako data URL.');
-
-const aiOcrSchema = z.object({
-  imageBase64: imageDataUrlSchema,
 });
 
 const explainSchema = z.object({
@@ -202,28 +195,9 @@ router.post('/analyze', writeRateLimit, async (req, res) => {
   });
 });
 
-/**
- * Stage 2e (audit v24, §2e.7): UNMOUNTED, not deleted (§5.1) - this route has no frontend caller
- * (TierCFlow.tsx's live upload goes through /api/tier-c/analyze, Mistral/EU-hosted) and always sent
- * the image to Groq (not EU-hosted), regardless of TIER_C_VISION_PROVIDER. Left as dead code, the
- * handler and extractPayslipFieldsFromImage() untouched, in case a future decision wires this path to
- * an EU-hosted provider deliberately - that is a new decision, not a restoration of an oversight.
- *
- * router.post('/ai-ocr', aiRateLimit, async (req, res) => {
- *   if (!isVisionConfigured()) {
- *     return res.status(503).json({ error: 'Odczyt dokumentu przez AI jest chwilowo niedostępny (brak modelu wizyjnego u dostawcy).' });
- *   }
- *   const parsed = aiOcrSchema.safeParse(req.body);
- *   if (!parsed.success) return res.status(400).json({ error: 'Nieprawidłowe dane obrazu.' });
- *   try {
- *     const fields = await extractPayslipFieldsFromImage(parsed.data.imageBase64);
- *     return res.json({ fields });
- *   } catch (error) {
- *     console.error('Groq OCR error', error);
- *     return res.status(502).json({ error: 'Nie udało się odczytać dokumentu przez AI. Popraw dane ręcznie lub spróbuj ponownie.' });
- *   }
- * });
- */
+// Stage 2e (§2e.7) unmounted /ai-ocr here; stage 2g (§2g.0f) deletes it and its only caller,
+// extractPayslipFieldsFromImage() (ocr-client.ts), rather than keeping a comment that refers to
+// code no longer in the tree. No route ever called Groq for vision after this.
 
 router.post('/explain', aiRateLimit, async (req, res) => {
   if (!isGroqConfigured()) {

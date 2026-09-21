@@ -109,6 +109,27 @@ const BT_TAX_CONFIRMATION_UPPER = 1.5;
  */
 const MINIMUM_WAGE_CONFIRMATION_UPPER = 0.1;
 
+/**
+ * Stage 2h (audit v28, §2h.3): "compare printed_net with BOTH wage_net and period_net. It is a
+ * mismatch only when it matches neither... when it matches one, record which (in the trace, not as
+ * prose)." A single pure function decides this, so the net_mismatch discrepancy below and whatever
+ * the controller attaches to a clean 'ok' response as the recorded basis can never disagree about
+ * what passed and why - the same "one place decides, everyone reads from it" shape as
+ * `resolveSubtotalRole` and the text-layer guard elsewhere in this codebase.
+ */
+export type NetReconciliationBasis = 'wage_net' | 'period_net' | 'both' | 'neither' | 'not_applicable';
+
+export function resolveNetReconciliationBasis(outcome: PayslipComputationOutcome, printedNet: number | null, tolerance: number): NetReconciliationBasis {
+  if (printedNet === null || outcome.status !== 'complete') return 'not_applicable';
+  const { wage_net: wageNet, period_net: periodNet } = outcome.result;
+  const wageMatches = Math.abs(wageNet - printedNet) <= tolerance;
+  const periodMatches = Math.abs(periodNet - printedNet) <= tolerance;
+  if (wageMatches && periodMatches) return 'both';
+  if (wageMatches) return 'wage_net';
+  if (periodMatches) return 'period_net';
+  return 'neither';
+}
+
 const pushable = (
   code: Discrepancy['code'],
   computed: number,
@@ -157,16 +178,25 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
     // one-for-one and cannot be held to a tighter band than the figure they're built from. Same
     // reasoning extends to the confirmation edge.
     //
-    // Stage 2g (audit v27, §2g.0a): was `result.period_net` - found live by the new HTTP-level
-    // /analyze test, the first fixture to set BOTH `reported_total_net` and a real net addition
-    // together (every existing fixture had left one or the other unset, so this never fired). The
-    // prompt's own field definition (`ocr-client.ts`, "reported_total_net... to jest suma PRZED
-    // doliczeniem zwrotów kosztów... i korekt wypłaty") says `printed_net` is the figure BEFORE net
-    // additions/deductions - `period_net` is AFTER them, so the two would misalign by exactly the net
-    // additions/deductions total on every real payslip that has any (e.g. Olympia's 90.00 travel
-    // reimbursement) and could never pass. `wage_net` is the figure actually comparable to a
-    // document's "Totaal netto" line.
-    push(pushable('net_mismatch', result.wage_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
+    // Stage 2g (§2g.0a) fixed this to compare `result.wage_net` instead of `result.period_net` - right
+    // for Olympia/Randstad (their one printed "net" sits BEFORE net additions/deductions) but wrong
+    // for PKF, whose own printed net is AFTER them (a real 91.25 travel reimbursement and a real
+    // 1100.00 loan deduction move the two figures apart by over a thousand euros - the reviewer
+    // measured a spurious ~1012 EUR residual reproducing this). Stage 2h (§2h.3): compare against
+    // BOTH; a mismatch fires only when NEITHER matches. `resolveNetReconciliationBasis` decides this
+    // once, so this push and whatever the controller records as the confirmed basis on a clean 'ok'
+    // response can never disagree.
+    {
+      const netBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTolerance);
+      if (netBasis === 'neither' && period.printed_net !== null) {
+        // Neither figure matches - report against whichever is numerically closer, so the shown
+        // residual is the true nearest gap, not an arbitrary pick between two comparably-wrong figures.
+        const wageResidual = Math.abs(result.wage_net - period.printed_net);
+        const periodResidual = Math.abs(result.period_net - period.printed_net);
+        const useWage = wageResidual <= periodResidual;
+        push(pushable('net_mismatch', useWage ? result.wage_net : result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
+      }
+    }
     push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper, period.printed_payout_label));
   } else {
     // Incomplete: table_tax/bt_tax are still present (as an upper bound, or fully correct if only

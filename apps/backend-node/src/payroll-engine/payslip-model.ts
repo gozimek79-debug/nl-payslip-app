@@ -192,9 +192,18 @@ export interface PayslipPeriod {
   printed_arbeidskorting: number | null;
   /** CL (audit "SEVERAL EMPLOYERS AT ONCE" round): discrepancy.ts declared net_mismatch/
    * payout_mismatch codes for two rounds without anything to compare against - these two fields are
-   * that comparison target. printed_net is the pre-payout-adjustment net (matches
-   * PayslipComputationResult.period_net); printed_payout is the final paid-out figure (matches
-   * .payout_amount, the line a worker actually sees land in their account). */
+   * that comparison target. printed_payout is the final paid-out figure (matches .payout_amount, the
+   * line a worker actually sees land in their account).
+   *
+   * Stage 2h (audit v28, §2h.3): the comment here USED to say printed_net always matches
+   * PayslipComputationResult.period_net - wrong, found by the reviewer against FIXTURES itself: a
+   * document's single printed "net" figure sits at DIFFERENT points in the chain depending on the
+   * producer's own layout. Olympia and Randstad print it BEFORE net additions/deductions (matches
+   * `wage_net`); PKF prints it AFTER them (matches `period_net`, since PKF's net_lines swing the two
+   * figures apart by over a thousand euros - a real travel reimbursement plus a real loan deduction).
+   * `discrepancy.ts`'s `resolveNetReconciliationBasis` checks BOTH and records which one (if either)
+   * the printed figure actually confirms - this field's own position in the chain is never assumed
+   * from its name alone. */
   printed_net: number | null;
   printed_payout: number | null;
 

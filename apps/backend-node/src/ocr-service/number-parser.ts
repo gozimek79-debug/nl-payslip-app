@@ -85,3 +85,127 @@ export function parsePrintedNumber(raw: string): number | null {
 export function isAmountLike(raw: string): boolean {
   return /,\d{2}(?!\d)/.test(raw.trim()) && parsePrintedNumber(raw) !== null;
 }
+
+/** A printed number, plus whether the exact string that parsed had the two-decimal EUR-amount shape
+ * (§2g.4's own rule) - carried alongside the value so a caller never has to re-derive "was this
+ * amount-like" from a different substring than the one that actually parsed. */
+export interface ExtractedNumber {
+  value: number;
+  amountLike: boolean;
+}
+
+const CURRENCY_MARKERS = ['EUR', 'PLN', 'zł', '€'];
+
+function stripCurrencyMarkers(s: string): string {
+  let out = s.trim();
+  for (const marker of CURRENCY_MARKERS) {
+    if (out.startsWith(marker)) out = out.slice(marker.length).trim();
+  }
+  for (const marker of CURRENCY_MARKERS) {
+    if (out.endsWith(marker)) out = out.slice(0, out.length - marker.length).trim();
+  }
+  return out;
+}
+
+// Punctuation that can sit against a number in running text without ever being PART of the number's
+// own syntax (unlike '.', ',' and '-', which parsePrintedNumber must see intact to parse correctly).
+function stripEdgePunctuation(s: string): string {
+  return s.replace(/^[:;()]+/, '').replace(/[:;()]+$/, '');
+}
+
+/**
+ * Stage 2h (§2h.1): the precise shape of "the first fragment of a thousands-grouped number that pdf.js
+ * (or a caller's own tokeniser) split off from its remainder" - a BARE 1-3 digit integer with no
+ * separators of its own, e.g. the "1" in "1 234,56". Deliberately narrower than "any bare number" (an
+ * earlier version of this check used exactly that and found a real bug: two ordinary, already-complete
+ * numbers sitting side by side on the same row - e.g. an hours cell "45,00" next to a rate cell
+ * "15,55" - both independently look like "a bare number fragment", so joining on that alone produces a
+ * bogus THIRD candidate ("45,00 15,55" -> tokenised right back into 45 and 15.55, duplicating both).
+ * A genuine split-thousands prefix never has its own decimal part; requiring that asymmetry is what
+ * tells the two cases apart.
+ */
+function isSplitThousandsPrefix(text: string): boolean {
+  return /^\d{1,3}$/.test(text.trim());
+}
+/** The remainder half of the same split: exactly three digits, a comma, then exactly two decimal
+ * digits - the "234,56" in "1 234,56". Exactly three digits before the comma is what a THOUSANDS
+ * grouping produces; a differently-shaped neighbour is not this pattern and is left alone. */
+function isSplitThousandsRemainder(text: string): boolean {
+  return /^\d{3},\d{2}$/.test(text.trim());
+}
+
+/**
+ * Stage 2h (§2h.1): "treat two consecutive items on the same page with the same rounded y as one
+ * candidate joined by a single space (this recovers "1" + "234,56")." Exported so
+ * `document-text-guard.ts`'s cross-item join (two SEPARATE `DocumentTextItem`s) and this file's own
+ * intra-string token join (two ADJACENT TOKENS inside one already-merged text run, e.g. "Jaarloon
+ * bijzonder tarief 1 234,56") use the exact same, precise criterion and can never disagree about what
+ * counts as a genuine split-thousands pair.
+ */
+export function looksLikeSplitThousandsPair(a: string, b: string): boolean {
+  return isSplitThousandsPrefix(a) && isSplitThousandsRemainder(b);
+}
+
+/**
+ * Stage 2h (audit v28, §2h.1): "the guard finds numbers inside text." Stage 2g's guard only ever
+ * tried `parsePrintedNumber` on a whole text item - the reviewer showed this fails the instant a real
+ * PDF glues a label and its amount into one text run ("Loon normaal 699,78") or prints a trailing
+ * currency code ("699,78 EUR"), which `parsePrintedNumber`'s strict single-number grammar correctly
+ * refuses as a whole string.
+ *
+ * Two-tier, in this order:
+ *   1. Try the WHOLE string (after stripping a leading/trailing currency marker) as one number first.
+ *      This is what makes "1 234,56" (a normal space, U+00A0, or U+202F INSIDE one string) parse as
+ *      1234.56 in one piece - `parsePrintedNumber`'s own regex already tolerates internal whitespace
+ *      of any of those three kinds (confirmed: JS `\s` matches NBSP and NNBSP). Splitting on
+ *      whitespace BEFORE this step would break exactly this case, which is why splitting only
+ *      happens as a fallback, never first.
+ *   2. Only if that whole-string parse fails (letters or other tokens are present) does it split on
+ *      ASCII whitespace, strip a currency marker and inert edge punctuction from each token, and try
+ *      each token on its own - this is what recovers 699.78 out of "Loon normaal 699,78" or
+ *      "Loon normaal 45,00 x 15,55 699,78" (three separate numbers, still found individually) without
+ *      ever breaking a single already-whole number apart.
+ *
+ * A token is matched WHOLE: "1699,78" parses to 1699.78, never partially to 699.78; "699,785" (three
+ * decimal digits) and "699,7" (one) both parse to their own, different values, never silently treated
+ * as 699.78; "699.78" (period as the decimal mark) stays unparseable, per this locale's own rule.
+ *
+ * Cross-item recovery (two SEPARATE text items forming one number, e.g. pdf.js splitting "1" from
+ * "234,56" onto two runs) is a SEPARATE concern from the intra-string one this function DOES handle
+ * (§2h.1 addition, below) - `document-text-guard.ts` joins same-page, same-y adjacent ITEMS using the
+ * identical `looksLikeSplitThousandsPair` test, so the two can never disagree about what counts as
+ * "one candidate number".
+ */
+export function extractPrintedNumbers(text: string): ExtractedNumber[] {
+  if (typeof text !== 'string') return [];
+  const whole = stripCurrencyMarkers(text.trim());
+  if (whole !== '') {
+    const wholeParsed = parsePrintedNumber(whole);
+    if (wholeParsed !== null) return [{ value: wholeParsed, amountLike: isAmountLike(whole) }];
+  }
+
+  const tokens = text.trim().split(/[ \t\n\r\f\v]+/).filter((token) => token !== '');
+  const stripped = tokens.map((rawToken) => stripEdgePunctuation(stripCurrencyMarkers(rawToken)));
+  const results: ExtractedNumber[] = [];
+  for (const s of stripped) {
+    if (s === '') continue;
+    const parsed = parsePrintedNumber(s);
+    if (parsed !== null) results.push({ value: parsed, amountLike: isAmountLike(s) });
+  }
+  // Stage 2h (§2h.1): "1 234,56" embedded inside a longer merged run (e.g. "Jaarloon ... 1 234,56")
+  // tokenises into "1" and "234,56" separately - each already parses ALONE (to 1 and 234.56), which is
+  // exactly why this must be gated on the precise split-thousands shape rather than "both look like
+  // numbers": two ordinary adjacent amounts (an hours cell next to a rate cell) would otherwise also
+  // pass and produce a bogus duplicate third candidate.
+  for (let i = 0; i < stripped.length - 1; i += 1) {
+    const a = stripped[i];
+    const b = stripped[i + 1];
+    if (a === undefined || b === undefined || a === '' || b === '') continue;
+    if (looksLikeSplitThousandsPair(a, b)) {
+      const joined = `${a} ${b}`;
+      const parsed = parsePrintedNumber(joined);
+      if (parsed !== null) results.push({ value: parsed, amountLike: isAmountLike(joined) });
+    }
+  }
+  return results;
+}

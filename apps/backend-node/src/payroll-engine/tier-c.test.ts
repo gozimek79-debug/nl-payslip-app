@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mapExtractionToPeriod, type TierCExtraction } from './tier-c.js';
-import { computePayslipPeriod, type PayslipComputationRates } from './payslip-model.js';
-import { comparePeriodToDocument } from './discrepancy.js';
+import { computePayslipPeriod, tableTaxToleranceFor, type PayslipComputationRates } from './payslip-model.js';
+import { comparePeriodToDocument, resolveNetReconciliationBasis } from './discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
 
 /**
@@ -288,6 +288,14 @@ test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepanc
     bijzonder_tarief_jaarloon: 38000,
     printed_table_tax: 276.42,
     printed_bt_tax: 222.42,
+    // Stage 2h (§2h.3): PKF's document prints ONE net-shaped figure (1754.12) that is printed AFTER
+    // its own net_lines (a 91.25 travel reimbursement, a 4.00 union deduction, a 1100.00 loan
+    // deduction) - it is "Totaal netto" and "Totaal" at once (§2h.3's own instruction: "the PKF
+    // fixture's missing reported_total_net is filled" - filled with the SAME real number as
+    // reported_net_paid below, because this document has no separate pre-net-lines figure to read).
+    // This is deliberately the fixture that would misfire under a wage_net-only comparison: the
+    // reviewer measured a spurious ~1012 EUR residual reproducing exactly that.
+    reported_total_net: 1754.12,
     reported_net_paid: 1754.12, // CL: exercises payout_mismatch with the already-verified real figure
     printed_gross_total: 3515.56, // sum of the three hour_lines above
     printed_loon_voor_heffingen: 3277.02, // 3515.56 - 238.54 (the three real pre-tax deductions)
@@ -307,8 +315,55 @@ test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepanc
   const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
   assert.deepEqual(consistencyIssues, [], `expected a correct PKF read to pass the consistency gate cleanly, got ${JSON.stringify(consistencyIssues)}`);
 
+  // Stage 2h (§2h.3): PKF's printed net (1754.12) confirms period_net, not wage_net - the two differ
+  // by over a thousand euros here (a real 91.25 reimbursement and a real 1100.00 loan deduction).
+  // Confirms the test actually exercises the distinction the fix depends on, the same way the 2g.0a
+  // regression test confirmed wage_net !== period_net for Olympia.
+  assert.notEqual(outcome.result.wage_net, outcome.result.period_net, 'PKF fixture must genuinely separate the two net figures, or this test would pass either way');
+  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'period_net');
+
   const discrepancies = comparePeriodToDocument(period, outcome);
-  assert.deepEqual(discrepancies, []);
+  assert.deepEqual(discrepancies, [], `expected NO net_mismatch on PKF's correct read; got ${JSON.stringify(discrepancies)}`);
+});
+
+test('2h.3 regression: reverting to a wage_net-only comparison must fail PKF (proves the both-fields fix is load-bearing, not incidental)', () => {
+  // Deliberately reproduces discrepancy.ts's PRE-2h.3 net_mismatch logic inline (wage_net compared
+  // alone, tableTolerance, no fallback to period_net) against the exact same PKF fixture used above -
+  // this is the "removing the fix must fail the PKF test" proof the assignment asks for, kept as a
+  // permanent regression rather than a one-off manual check.
+  const extraction = baseExtraction({
+    period_label: '2026-8-M', period_end_date: '2026-08-31', period_type: 'month',
+    employer_names: ['PKF / Post Finsterwolde BV'], hours_per_week: 40.0, minimum_wage_printed: 14.99,
+    hour_lines: [
+      { employer_index: 0, description: 'Salaris', hours: null, rate: null, percent: null, amount: 2962.27, category: 'regular', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Overwerk uren 125%', hours: 4.0, rate: 21.36, percent: 125, amount: 85.45, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+      { employer_index: 0, description: 'Overwerk uren 150%', hours: 18.25, rate: 25.64, percent: 150, amount: 467.84, category: 'overtime', tax_treatment: 'bt', adds_hours: true },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Paww Wn', amount: 3.52, category: 'paww', placement: 'pre_tax', base: 3515.56, percent: 0.1 },
+      { description: 'Pensioenpremie Wn', amount: 229.03, category: 'pension', placement: 'pre_tax', base: 1601.58, percent: 14.3 },
+      { description: 'WGA-Gat Verzekering Wn', amount: 5.99, category: 'wga_gat', placement: 'pre_tax', base: 3277.02, percent: 0.183 },
+    ],
+    post_tax_deduction_lines: [{ description: 'gediff. WGA wn', amount: 11.31, category: 'gediff_wga', placement: 'post_tax', base: 3277.02, percent: 0.345 }],
+    net_lines: [
+      { description: 'Reiskostenvergoeding (onbelast)', amount: 91.25, category: 'reimbursement' },
+      { description: 'Inhouding Personeelsvereniging', amount: 4.0, category: 'union' },
+      { description: 'Inhouding Lening', amount: 1100.0, category: 'loan' },
+    ],
+    reservation_lines: [{ type: 'vakantiegeld', opgebouwd: 281.24, paid_out: 0 }],
+    bijzonder_tarief_printed_percent: 40.2, bijzonder_tarief_jaarloon: 38000,
+    printed_table_tax: 276.42, printed_bt_tax: 222.42,
+    reported_total_net: 1754.12, reported_net_paid: 1754.12,
+    printed_gross_total: 3515.56, printed_loon_voor_heffingen: 3277.02,
+  });
+  const period = mapExtractionToPeriod(extraction, 14.99);
+  const outcome = computePayslipPeriod(period, { ...RATES_2026, period_multiplier: 12 }, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+
+  const tolerance = tableTaxToleranceFor(period.period_type);
+  const wageOnlyResidual = Math.round((outcome.result.wage_net - (period.printed_net as number)) * 100) / 100;
+  assert.ok(Math.abs(wageOnlyResidual) > tolerance, `expected the wage_net-only comparison to be WAY outside tolerance on PKF (proving the old logic would misfire), got residual ${wageOnlyResidual}`);
 });
 
 test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes and reports NO discrepancy', () => {
@@ -349,6 +404,9 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
     bijzonder_tarief_jaarloon: 46074,
     printed_table_tax: 71.31,
     printed_bt_tax: 141.24,
+    // Stage 2h (§2h.3): Randstad's "TOTAAL NETTO LOON" prints BEFORE the 36.00 travel reimbursement -
+    // confirms wage_net, per the reviewer's own T2 table.
+    reported_total_net: 702.37,
     reported_net_paid: -53.89, // CL: the real printed final figure, an amount OWED (negative) - exercises payout_mismatch on a signed value too
     printed_gross_total: 970.89, // sum of the five hour_lines above
     printed_loon_voor_heffingen: 927.25, // 970.89 - 43.64 (the three real pre-tax deductions)
@@ -363,6 +421,9 @@ test('Tier C integration: Fixture 1 Randstad (a correction, v2) maps, computes a
   assert.ok(Math.abs(outcome.result.wage_net - 702.37) <= 0.5, `wage_net ${outcome.result.wage_net} vs printed 702.37`);
   const finalPayout = outcome.result.wage_net + outcome.result.net_additions_total + outcome.result.payout_adjustments_total;
   assert.ok(Math.abs(finalPayout - -53.89) <= 0.5, `final payout ${finalPayout} vs printed -53.89 (owed)`);
+  // Stage 2h (§2h.3): period_net (wage_net + the 36.00 reimbursement) must NOT also match 702.37 -
+  // otherwise this fixture couldn't tell "matches wage_net" from "matches both" apart.
+  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'wage_net');
 
   const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
   assert.deepEqual(consistencyIssues, [], `expected a correct Randstad read to pass the consistency gate cleanly, got ${JSON.stringify(consistencyIssues)}`);
@@ -410,6 +471,11 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
     bijzonder_tarief_printed_percent: 38.45,
     printed_table_tax: 77.52,
     printed_bt_tax: 40.08,
+    // Stage 2h (§2h.3): OTTO's "KWOTA DO WYPŁATY" (598.59) is the document's only net-shaped figure,
+    // and per the reviewer's own T2 table it IS the final payout, not a distinct pre-net-lines net -
+    // this document prints no separate "Totaal netto" at all. Set in reported_net_paid (-> printed_
+    // payout), never in reported_total_net (-> printed_net, which stays null - nothing to read there).
+    reported_net_paid: 598.59,
     printed_gross_total: 924.03, // sum of the eight hour_lines above
     printed_loon_voor_heffingen: 902.38, // 924.03 - 21.65 (STIPP; Rekompensata/Opłata net to 0) - matches payslip-model.ts's own documented anchor
   });
@@ -459,6 +525,19 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   // Stage 1: a 12.28 EUR residual is 24x the weekly tolerance (0.50) - nowhere near plausible
   // single-line extraction noise (confirmation band tops out at 1.5x). Must stay 'finding'.
   assert.equal(tableTaxDiscrepancy?.status, 'finding', `expected 'finding' for OTTO's real 12.28 EUR gap, got ${tableTaxDiscrepancy?.status}`);
+
+  // Stage 2h (§2h.3): now that printed_payout is set (598.59), the SAME already-documented 12.28 gap
+  // (payout_amount === period_net here, no payout adjustments) also surfaces as payout_mismatch - not
+  // a new defect, the same root cause seen from its other comparison. net_mismatch must NOT appear:
+  // printed_net stays null on this document (nothing was printed at that position to compare).
+  const payoutDiscrepancy = discrepancies.find((d) => d.code === 'payout_mismatch');
+  assert.ok(payoutDiscrepancy, 'expected the same table-tax gap to also surface as payout_mismatch now that printed_payout is set');
+  // Same root cause as table_tax_mismatch, opposite sign as seen from the net side: our engine
+  // withholds LESS table tax than printed, so our computed payout comes out HIGHER than the printed
+  // 598.59 by the same 12.28 EUR (matches the pre-existing [2f.6] console log for period_net above).
+  assert.ok(Math.abs((payoutDiscrepancy?.residual ?? 0) - 12.28) < 0.5, `expected a residual near +12.28, got ${payoutDiscrepancy?.residual}`);
+  assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch - OTTO's document prints no separate net figure to compare, got ${JSON.stringify(discrepancies)}`);
+  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'not_applicable');
 });
 
 /**
@@ -841,6 +920,7 @@ test('2g.0a regression: net_mismatch compares wage_net (before net additions), n
   // must genuinely differ by the reimbursement amount, or this test would pass either way.
   assert.notEqual(outcome.result.wage_net, outcome.result.period_net);
   assert.ok(Math.abs(outcome.result.period_net - outcome.result.wage_net - 90) < 0.01);
+  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'wage_net');
 
   const discrepancies = comparePeriodToDocument(period, outcome);
   assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch on a correct read, got ${JSON.stringify(discrepancies)}`);

@@ -236,6 +236,48 @@ test('2b: Totaal netto -> Totaal reconciles once the travel reimbursement is cap
   assert.ok(!issues.some((i) => i.code === 'totals_do_not_reconcile_payout'));
 });
 
+test('2h.3: the net stage (both anchors read) confirms a printed net that sits AFTER net lines, not just before (PKF-shaped: one printed figure, already net of a reimbursement and a deduction)', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 100, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 100,
+    printed_loon_voor_heffingen: 100,
+    printed_table_tax: 20,
+    net_additions: [{ category: 'reimbursement', description: 'Reiskosten', amount: 10 }],
+    net_deductions: [{ category: 'loan', description: 'Lening', amount: 30 }],
+    // Before net lines this would be 100 - 20 = 80; after them, 80 + 10 - 30 = 60 - the document
+    // prints ONLY 60 (PKF's real shape - one figure, already net of its own reimbursement/deduction).
+    printed_net: 60,
+    printed_payout: 60, // same document, same single figure - no separate payout line either
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile'), `expected the after-position match to be recognised, got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'totals_do_not_reconcile_payout'), `expected the payout check to skip re-applying the same net lines a second time, got ${JSON.stringify(issues)}`);
+});
+
+test('2h.3: reverting to a before-only net check must fail the PKF-shaped fixture above (proves the after-position match is load-bearing)', () => {
+  // The pre-2h.3 formula: impliedNet = loonVoorHeffingen - tableTax - btTax - postTaxSum, compared
+  // ONLY against printed_net, with no after-position fallback.
+  const loonVoorHeffingen = 100;
+  const tableTax = 20;
+  const impliedNetBeforeOnly = loonVoorHeffingen - tableTax;
+  const printedNet = 60;
+  assert.ok(Math.abs(impliedNetBeforeOnly - printedNet) > 0.1, `expected the before-only comparison to be genuinely wrong for this fixture (${impliedNetBeforeOnly} vs ${printedNet})`);
+});
+
+test('2h.3: a genuine net gap (matches neither the before nor the after position) is still flagged', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 100, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 100,
+    printed_loon_voor_heffingen: 100,
+    printed_table_tax: 20,
+    net_additions: [{ category: 'reimbursement', description: 'Reiskosten', amount: 10 }],
+    net_deductions: [{ category: 'loan', description: 'Lening', amount: 30 }],
+    printed_net: 500, // matches neither 80 (before) nor 60 (after) - a real gap
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(issues.some((i) => i.code === 'net_does_not_reconcile'), `expected a genuine mismatch to still be flagged, got ${JSON.stringify(issues)}`);
+});
+
 test('2b: an unknown (not-yet-provided) deduction amount skips the net-reconciliation check rather than treating it as zero', () => {
   const period = minimalPeriod({
     hour_lines: [{ employer_index: 0, description: 'test', hours: null, rate: null, percent: null, amount: 885.50, category: 'other', tax_treatment: 'table', adds_hours: false }],

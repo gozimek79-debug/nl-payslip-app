@@ -4,11 +4,13 @@ import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from 
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
-import { verifyAmountsAgainstText, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
+import { verifyAmountsAgainstText, textLayerVerificationCounts, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { mapExtractionToPeriod, type TierCPeriodType } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
+import { resolveNetReconciliationBasis } from '../payroll-engine/discrepancy.js';
+import { tableTaxToleranceFor } from '../payroll-engine/payslip-model.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 /**
@@ -17,21 +19,81 @@ import { ipRateLimit } from '../rate-limiter.js';
  * control (the client could forge the images as easily)." A client-supplied `documentText` is
  * rejected field-by-field rather than the whole array on one bad entry - a single malformed item
  * should not silently disable the guard for an otherwise-fine upload.
+ *
+ * Stage 2h (audit v28, §2h.2): "no silent truncation... never cut the tail." Stage 2g's `slice(0,500)`
+ * dropped everything PAST the 500th item - on a real multi-page payslip, totals/net sit at the END of
+ * the page, so a busy document would lose exactly the figures most worth verifying. Caps raised and
+ * derived (not guessed): the densest synthetic fixture this round builds (`synthetic-pdf.test.ts`'s
+ * "dense three-page document") measures ~1000 text items on one single, deliberately crowded A4 page
+ * (every hours/rate/amount cell as its own run) - budgeting for a real document that dense on EVERY
+ * one of the three rendered pages gives 1000 x 3 = 3000 items. The character cap is the same fixture's
+ * own measured average item length (~9 chars for a typical "1.234,56"-shaped token, well under
+ * MAX_DOCUMENT_TEXT_ITEM_LENGTH's already-generous 300) times the item cap, rounded up with margin:
+ * 3000 x 20 = 60000 characters (~59 KB) - generous for genuine payslip text, small next to the actual
+ * image payload 2h.5 budgets separately.
  */
-const MAX_DOCUMENT_TEXT_ITEMS = 500;
+const MAX_DOCUMENT_TEXT_ITEMS = 3000;
 const MAX_DOCUMENT_TEXT_ITEM_LENGTH = 300;
+const MAX_DOCUMENT_TEXT_TOTAL_CHARS = 60000;
 
-function sanitizeDocumentText(raw: unknown): DocumentTextItem[] {
-  if (!Array.isArray(raw)) return [];
-  const items: DocumentTextItem[] = [];
-  for (const entry of raw.slice(0, MAX_DOCUMENT_TEXT_ITEMS)) {
+/**
+ * Stage 2h (§2h.2): "if the frontend's list is over the cap, drop items that contain no digit first
+ * (the guard only needs numbers); if it is still over, send images only and record text_layer_status:
+ * 'too_large'." Applied here, server-side, since the server is already the trust boundary for this
+ * list (2g.1) and the ONLY place this reduction is implemented - the frontend sends whatever
+ * `extractTextItems` produces and relies on this same enforcement, so there is exactly one algorithm
+ * that can ever decide "too large", never two that could disagree.
+ */
+function sanitizeDocumentText(raw: unknown): { items: DocumentTextItem[]; status: TextLayerStatus } {
+  if (!Array.isArray(raw)) return { items: [], status: 'ok' };
+  let items: DocumentTextItem[] = [];
+  for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue;
     const r = entry as Record<string, unknown>;
     if (typeof r.text !== 'string' || typeof r.page !== 'number' || typeof r.x !== 'number' || typeof r.y !== 'number') continue;
     if (!Number.isFinite(r.page) || !Number.isFinite(r.x) || !Number.isFinite(r.y)) continue;
     items.push({ page: r.page, text: r.text.slice(0, MAX_DOCUMENT_TEXT_ITEM_LENGTH), x: r.x, y: r.y });
   }
-  return items;
+
+  const totalChars = (list: DocumentTextItem[]): number => list.reduce((sum, i) => sum + i.text.length, 0);
+  const overCap = (list: DocumentTextItem[]): boolean => list.length > MAX_DOCUMENT_TEXT_ITEMS || totalChars(list) > MAX_DOCUMENT_TEXT_TOTAL_CHARS;
+
+  if (overCap(items)) {
+    // The guard only ever needs numbers (document-text-guard.ts) - a label-only item contributes
+    // nothing to verification, so it is the first, content-preserving thing to drop.
+    items = items.filter((i) => /\d/.test(i.text));
+  }
+  if (overCap(items)) {
+    return { items: [], status: 'too_large' };
+  }
+  return { items, status: 'ok' };
+}
+
+export type TextLayerStatus = 'ok' | 'too_large' | 'mismatch' | 'none';
+
+/**
+ * Stage 2h (§2h.2): "if the guard cannot find half or more of the amounts it checked... treat the
+ * layer as unusable: do not block on the guard, fall back to the image-only read with its gate."
+ * CHOSEN and labelled (per the assignment's own instruction): 0.5 - a layer that fails to confirm
+ * half the read is more likely a mismatched text layer (wrong pages, a scan with stray OCR text
+ * layer, garbled encoding) than a model that is wrong on half its fields at once.
+ */
+const TEXT_LAYER_MISMATCH_THRESHOLD = 0.5;
+
+/**
+ * Decides, from the SAME counts the trace will report (§2h.4: "amounts checked, amounts not found"),
+ * whether this upload's text layer is usable at all. Returns the unverified field list ONLY when the
+ * layer is usable (so the caller blocks exactly those fields, unchanged from 2g.3); returns an empty
+ * list and `status: 'mismatch'` when it is not (so the caller does not block on the guard at all).
+ */
+function assessTextLayer(period: PayslipPeriod, documentText: DocumentTextItem[], baseStatus: TextLayerStatus): { unverifiedFields: string[]; status: TextLayerStatus; checked: number; unverified: number } {
+  if (baseStatus === 'too_large') return { unverifiedFields: [], status: 'too_large', checked: 0, unverified: 0 };
+  if (documentText.length === 0) return { unverifiedFields: [], status: 'none', checked: 0, unverified: 0 };
+  const { checked, unverified } = textLayerVerificationCounts(period, documentText);
+  if (checked > 0 && unverified / checked >= TEXT_LAYER_MISMATCH_THRESHOLD) {
+    return { unverifiedFields: [], status: 'mismatch', checked, unverified };
+  }
+  return { unverifiedFields: verifyAmountsAgainstText(period, documentText), status: 'ok', checked, unverified };
 }
 
 /**
@@ -136,13 +198,37 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     return res.status(400).json({ error_code: 'invalid_input' });
   }
   // Stage 2g (§2g.1): optional - a plain image upload, or a PDF with no usable text layer, sends none.
-  const documentText = sanitizeDocumentText(req.body?.documentText);
+  // Stage 2h (§2h.2): the sanitizer's own status ('ok'/'too_large') is carried forward - a too-large
+  // list is never partially trusted, it is treated exactly like no text layer at all.
+  const { items: documentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
+  // Stage 2h (§2h.4): "the total request size in kilobytes" - the header the client itself sent, not
+  // a re-serialisation of req.body (which can differ from the wire size by whitespace/encoding).
+  // Falls back to a re-encode only when a client/proxy omits the header.
+  const contentLengthHeader = req.headers['content-length'];
+  const requestSizeKb = contentLengthHeader
+    ? Math.round((Number(contentLengthHeader) / 1024) * 10) / 10
+    : Math.round((Buffer.byteLength(JSON.stringify(req.body ?? {})) / 1024) * 10) / 10;
 
   try {
     const extraction = await extractTierCPayslip(images as string[], documentText);
     const referenceDate = resolveReferenceDate(extraction.period_end_date);
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
+
+    // Stage 2h (§2h.2): decide once whether this upload's text layer is usable at all, before it can
+    // block anything - a mismatched or too-large layer falls back to the image-only read and gate,
+    // never a per-field block on numbers that were never trustworthy to compare against in the first
+    // place. `textLayerTrace` is the (possibly emptied) list every `buildExtractionTrace` call below
+    // uses, so `reading_basis`/`unused_printed_amounts` agree with this decision everywhere.
+    const textLayerAssessment = assessTextLayer(period, documentText, sanitizedStatus);
+    const textLayerTrace = textLayerAssessment.status === 'ok' ? documentText : [];
+    const traceMeta = {
+      textLayerStatus: textLayerAssessment.status,
+      requestSizeKb,
+      textItemsSent: documentText.length,
+      amountsChecked: textLayerAssessment.checked,
+      amountsNotFound: textLayerAssessment.unverified,
+    };
 
     // Stage 2f (§2f.4): "unknown stays unknown after the flag" - stage 2e raised these two issues but
     // still computed with 'week' and 0 underneath them. Checked against the RAW extraction (only it
@@ -165,7 +251,9 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // Stage 2g (§2g.3): "for every amount the model returns, require that its magnitude equals...
     // some number in the text list... Applies only when a text list exists." The classic case:
     // 699.75 (= 45 x 15.55, computed) is not printed anywhere the document says 699.78.
-    for (const field of verifyAmountsAgainstText(period, documentText)) {
+    // Stage 2h (§2h.2): only the fields `assessTextLayer` decided are worth blocking on - empty when
+    // the layer was judged a mismatch or too large, exactly as if no text had been sent at all.
+    for (const field of textLayerAssessment.unverifiedFields) {
       extractionGapIssues.push({ code: 'amount_unreadable', field });
     }
     if (periodType === null || extractionGapIssues.length > 0) {
@@ -173,7 +261,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       return res.json({
         status: 'unreliable',
         issues: extractionGapIssues,
-        trace: buildExtractionTrace(period, null, documentText),
+        trace: buildExtractionTrace(period, null, textLayerTrace, traceMeta),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
@@ -212,13 +300,16 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       return res.json({
         status: 'unreliable',
         issues: consistencyIssues,
-        trace: buildExtractionTrace(period, outcome, documentText),
+        trace: buildExtractionTrace(period, outcome, textLayerTrace, traceMeta),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
       });
     }
 
+    // Stage 2h (§2h.3): the printed net's confirmed chain position (or lack of one) - structured data,
+    // never prose (§2.6); the interface decides how to word it.
+    const netReconciliationBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
     const discrepancies = comparePeriodToDocument(period, outcome);
 
     return res.json({
@@ -226,6 +317,16 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       period,
       outcome,
       discrepancies,
+      netReconciliationBasis,
+      // Stage 2h (§2h.4): shown on a successful read too, per its own "why" - the owner's one real-PDF
+      // upload result is read from this line whether or not it happens to block on anything.
+      technicalDetails: {
+        text_items_sent: documentText.length,
+        amounts_checked: textLayerAssessment.checked,
+        amounts_not_found: textLayerAssessment.unverified,
+        text_layer_status: textLayerAssessment.status,
+        request_size_kb: requestSizeKb,
+      },
       truncated: extraction.truncated,
       redactedFields: extraction.redacted_fields,
       taxRatesSource: fetched.source,
@@ -251,11 +352,91 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
  */
 const KNOWN_PERIOD_TYPES: TierCPeriodType[] = ['week', '4-weekly', 'month'];
 
-router.post('/recompute', async (req, res) => {
-  const rawPeriod = req.body?.period as PayslipPeriod | undefined;
-  if (!rawPeriod || typeof rawPeriod !== 'object' || !Array.isArray(rawPeriod.hour_lines) || typeof rawPeriod.period_type !== 'string') {
-    return res.status(400).json({ error_code: 'invalid_input' });
+function isFiniteOrNull(v: unknown): v is number | null {
+  return v === null || (typeof v === 'number' && Number.isFinite(v));
+}
+function isStringOrNull(v: unknown): v is string | null {
+  return v === null || typeof v === 'string';
+}
+function isField(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false;
+  const f = v as Record<string, unknown>;
+  return typeof f.provenance === 'string' && isFiniteOrNull(f.value);
+}
+function isFiniteAmountLine(v: unknown): boolean {
+  return !!v && typeof v === 'object' && typeof (v as Record<string, unknown>).amount === 'number' && Number.isFinite((v as Record<string, unknown>).amount);
+}
+
+/**
+ * Stage 2h (audit v28, §2h.6): "/recompute validates the shape of period (arrays present, numbers
+ * finite, known enums) and answers 400 invalid_period with no stack and no field names beyond the
+ * code." Found necessary by the reviewer's own reproduction (T3c): a period missing most
+ * `PayslipPeriod` fields reached `buildExtractionTrace`'s `.map()` calls on `undefined` and crashed
+ * with a generic 500 instead of a clean 400 - this is the fix, checked BEFORE any other logic in the
+ * route (including the period_type_confirmed gate, which itself called `buildExtractionTrace` on an
+ * unvalidated body). Deliberately does not report which field failed (§2h.6's own instruction) - the
+ * only legitimate caller is our own frontend echoing back a period this endpoint itself produced, so
+ * a shape failure here means a bug or a forged request, neither of which benefits from a field-level
+ * diagnostic in the response body.
+ */
+function isValidPayslipPeriodShape(value: unknown): value is PayslipPeriod {
+  if (!value || typeof value !== 'object') return false;
+  const p = value as Record<string, unknown>;
+  if (typeof p.period_type !== 'string' || !KNOWN_PERIOD_TYPES.includes(p.period_type as TierCPeriodType)) return false;
+  if (typeof p.period_type_confirmed !== 'boolean') return false;
+  if (!isStringOrNull(p.period_label) || !isStringOrNull(p.period_end_date)) return false;
+  if (typeof p.is_correction !== 'boolean') return false;
+  if (typeof p.version !== 'number' || !Number.isFinite(p.version)) return false;
+  if (!Array.isArray(p.employers) || !p.employers.every((e) => e && typeof e === 'object' && isStringOrNull((e as Record<string, unknown>).name) && (typeof (e as Record<string, unknown>).franchise_bearing === 'boolean' || (e as Record<string, unknown>).franchise_bearing === 'unknown'))) return false;
+  if (p.hirer !== null && !(p.hirer && typeof p.hirer === 'object' && isStringOrNull((p.hirer as Record<string, unknown>).name))) return false;
+  if (!isFiniteOrNull(p.contract_hours)) return false;
+  if (!Array.isArray(p.hour_lines) || !p.hour_lines.every(isFiniteAmountLine)) return false;
+  if (!Array.isArray(p.pre_tax_deductions) || !p.pre_tax_deductions.every((d) => d && typeof d === 'object' && isField((d as Record<string, unknown>).amount))) return false;
+  if (!p.bijzonder_tarief || typeof p.bijzonder_tarief !== 'object') return false;
+  const bt = p.bijzonder_tarief as Record<string, unknown>;
+  if (!['known', 'not_applicable', 'unknown'].includes(bt.bt_state as string)) return false;
+  if (!bt.tarief_bt || typeof bt.tarief_bt !== 'object') return false;
+  const tariefBt = bt.tarief_bt as Record<string, unknown>;
+  if (!isFiniteOrNull(tariefBt.printed) || !isFiniteOrNull(tariefBt.computed) || !isFiniteOrNull(bt.jaarloon_bt)) return false;
+  if (p.et !== null) {
+    if (!p.et || typeof p.et !== 'object') return false;
+    const et = p.et as Record<string, unknown>;
+    if (typeof et.et_applicable !== 'boolean') return false;
+    if (typeof et.et_exchange_amount !== 'number' || !Number.isFinite(et.et_exchange_amount)) return false;
+    if (!Array.isArray(et.et_reimbursements) || !et.et_reimbursements.every(isFiniteAmountLine)) return false;
+    if (!isStringOrNull(et.adres_fiskalny)) return false;
   }
+  if (!Array.isArray(p.post_tax_social) || !p.post_tax_social.every((d) => d && typeof d === 'object' && isField((d as Record<string, unknown>).amount))) return false;
+  if (!Array.isArray(p.net_additions) || !p.net_additions.every(isFiniteAmountLine)) return false;
+  if (!Array.isArray(p.net_deductions) || !p.net_deductions.every(isFiniteAmountLine)) return false;
+  if (!Array.isArray(p.payout_adjustments) || !p.payout_adjustments.every(isFiniteAmountLine)) return false;
+  if (
+    !Array.isArray(p.reservations) ||
+    !p.reservations.every(
+      (r) =>
+        r &&
+        typeof r === 'object' &&
+        typeof (r as Record<string, unknown>).opgebouwd_this_period === 'number' &&
+        Number.isFinite((r as Record<string, unknown>).opgebouwd_this_period) &&
+        typeof (r as Record<string, unknown>).paid_out_this_period === 'number' &&
+        Number.isFinite((r as Record<string, unknown>).paid_out_this_period),
+    )
+  )
+    return false;
+  if (!isFiniteOrNull(p.wml_printed) || !isFiniteOrNull(p.wml_applicable)) return false;
+  const printedNumberFields = ['printed_table_tax', 'printed_bt_tax', 'printed_algemene_heffingskorting', 'printed_arbeidskorting', 'printed_net', 'printed_payout', 'printed_gross_total', 'printed_loon_voor_heffingen'];
+  if (!printedNumberFields.every((f) => isFiniteOrNull(p[f]))) return false;
+  const printedLabelFields = ['printed_table_tax_label', 'printed_bt_tax_label', 'printed_algemene_heffingskorting_label', 'printed_arbeidskorting_label', 'printed_net_label', 'printed_payout_label'];
+  if (!printedLabelFields.every((f) => isStringOrNull(p[f]))) return false;
+  return true;
+}
+
+router.post('/recompute', async (req, res) => {
+  const rawPeriodInput = req.body?.period;
+  if (!isValidPayslipPeriodShape(rawPeriodInput)) {
+    return res.status(400).json({ error_code: 'invalid_period' });
+  }
+  const rawPeriod = rawPeriodInput;
   // Stage 2g (§2g.0b): "an unknown period type may not drive anything anywhere." Before this, any
   // string here (including the placeholder 'week' a blocked /analyze had to write into the returned
   // period so the trace panel could render) would reach fetchRates/computePayslipPeriod unchecked -
@@ -290,8 +471,20 @@ router.post('/recompute', async (req, res) => {
     return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
   }
 
+  // Stage 2h (§2h.3): same structured basis /analyze reports - a correction can change which chain
+  // position the printed net now confirms (or stops confirming).
+  const netReconciliationBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
   const discrepancies = comparePeriodToDocument(period, outcome);
-  return res.json({ status: 'ok', outcome, discrepancies, taxRatesSource: fetched.source });
+  return res.json({
+    status: 'ok',
+    outcome,
+    discrepancies,
+    netReconciliationBasis,
+    // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
+    // period) - the technical-details line still appears, honestly reporting nothing to check.
+    technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0 },
+    taxRatesSource: fetched.source,
+  });
 });
 
 export default router;

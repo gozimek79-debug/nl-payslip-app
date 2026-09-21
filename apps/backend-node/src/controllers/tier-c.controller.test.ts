@@ -165,6 +165,56 @@ test('2g.0a: /analyze with a correct Olympia extraction returns an empty issue l
   assert.deepEqual(body.discrepancies?.map((d) => d.code), ['minimum_wage_stale_on_document']);
 });
 
+/**
+ * Stage 2h (audit v28, §2h.2): "if the guard cannot find half or more of the amounts it checked...
+ * treat the layer as unusable: do not block on the guard, fall back to the image-only read." A
+ * correct Olympia read has several printed amounts to check (gross lines, StiPP, printed subtotals,
+ * minimum wage); a documentText list that confirms only ONE of them (well under half) must fall back
+ * to image-only rather than blocking on `amount_unreadable` for every unconfirmed field.
+ */
+test('2h.2: a text layer that confirms fewer than half the checked amounts falls back to image-only, never blocks per-field', async () => {
+  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      images: ['data:image/png;base64,Zg=='],
+      // Only "699,78" (one gross line) is genuinely printed here - every other real amount
+      // (116.63, 58.31, 10.78, 0.89, 4.90, 34.79, 6.46, 90.00, 885.50, 844.92, 14.71) is unconfirmed.
+      documentText: [{ page: 1, text: '699,78', x: 10, y: 10 }],
+    }),
+  });
+  const body = (await res.json()) as { status: string; issues?: Array<{ code: string }>; technicalDetails?: { text_layer_status: string; amounts_checked: number; amounts_not_found: number } };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', `expected the mismatch to fall back to a clean image-only read, got ${JSON.stringify(body)}`);
+  assert.equal(body.technicalDetails?.text_layer_status, 'mismatch');
+  assert.ok((body.technicalDetails?.amounts_checked ?? 0) > 1, 'expected more than one amount to have been checked');
+  assert.ok((body.technicalDetails?.amounts_not_found ?? 0) / (body.technicalDetails?.amounts_checked ?? 1) >= 0.5, 'expected at least half unverified, matching the mismatch threshold');
+});
+
+/**
+ * Stage 2h (§2h.2): "no silent truncation... if it is still over [after dropping non-digit items],
+ * send images only and record text_layer_status: 'too_large'." A list with more items than
+ * MAX_DOCUMENT_TEXT_ITEMS (3000), every one of them containing a digit (so the digit-only-drop step
+ * cannot reduce it below the cap), must fall back exactly like a mismatch would - never partially
+ * trusted, never silently cut down to the first 3000 (which would have looked identical to a clean,
+ * small, correct list).
+ */
+test('2h.2: a documentText list over the item cap (even after dropping non-digit items) is treated as too_large, never silently truncated', async () => {
+  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
+  const oversizedDocumentText = Array.from({ length: 3500 }, (_, i) => ({ page: 1, text: `${i},00`, x: 0, y: i }));
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: ['data:image/png;base64,Zg=='], documentText: oversizedDocumentText }),
+  });
+  const body = (await res.json()) as { status: string; technicalDetails?: { text_layer_status: string; text_items_sent: number } };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', `expected a clean image-only fallback, got ${JSON.stringify(body)}`);
+  assert.equal(body.technicalDetails?.text_layer_status, 'too_large');
+  assert.equal(body.technicalDetails?.text_items_sent, 0, 'expected the too-large list to be treated as if nothing was sent, not partially kept');
+});
+
 test('2f.11c: /recompute normalises a signed body before computing - a negative deduction is not double-subtracted', async () => {
   // A period shaped as if a caller sent one straight through with the printed sign still on it -
   // exactly the gap §2f.5 named ("/recompute... today passes the browser's period straight in").
@@ -236,4 +286,37 @@ test('2g.0b: /recompute still computes normally when period_type_confirmed is tr
   const body = (await res.json()) as { status: string; outcome?: { status: string } };
   assert.equal(res.status, 200);
   assert.equal(body.status, 'ok', JSON.stringify(body));
+});
+
+/**
+ * Stage 2h (audit v28, §2h.6): "test with the malformed body the reviewer used." RAPORT-cursor-2g.md
+ * T3c's exact reproduction: `buildExtractionTrace({ period_type:'week', period_type_confirmed:false,
+ * hour_lines:[] }, null)` crashed with `TypeError: Cannot read properties of undefined (reading
+ * 'map')` because the period is missing almost every other required field - Express's default error
+ * handler turned that into a generic 500. `isValidPayslipPeriodShape` now runs before ANY other logic
+ * in the route (including the period_type_confirmed branch that used to reach the crash), so this
+ * exact body gets a clean 400 `invalid_period` instead.
+ */
+test('2h.6: /recompute answers 400 invalid_period (not a 500 crash) on the reviewer\'s malformed body', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: { period_type: 'week', period_type_confirmed: false, hour_lines: [] } }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error_code?: string; stack?: unknown };
+  assert.equal(body.error_code, 'invalid_period');
+  assert.equal(body.stack, undefined, 'must carry no stack trace');
+  assert.deepEqual(Object.keys(body), ['error_code'], 'must carry no field names beyond the code');
+});
+
+test('2h.6: /recompute still answers 400 invalid_period on a period missing arrays entirely (not merely wrong-typed hour_lines)', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: { period_type: 'week', period_type_confirmed: true } }),
+  });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error_code?: string };
+  assert.equal(body.error_code, 'invalid_period');
 });

@@ -71,6 +71,25 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/**
+ * Stage 2h (audit v28, §2h.5): "measure the real request body for a three-page A4 PDF... if the body
+ * can exceed it, lower it (JPEG at a chosen quality or a lower render scale...) until a three-page
+ * upload is under the limit with margin." Measured (`body-size-proto*.mjs`, this round, Node +
+ * pdf-lib + pdfjs-dist legacy build + `@napi-rs/canvas`, reported in full in the round's report):
+ * the OLD settings (scale 2, PNG) cost ~0.48 MB for a dense TEXT-based synthetic fixture but ~11.5 MB
+ * for a worst-case "scanned/photographed" one (three pages of visual noise) - more than double
+ * Vercel's documented 4.5 MB function request-body limit. scale 1.5 + JPEG quality 0.9 measured at
+ * ~3.08 MB for that SAME worst-case fixture (comfortably under the limit, ~32% margin) while barely
+ * changing the text-based fixture's own size (JPEG compresses flat printed text worse than PNG does,
+ * but 1.5x scale offsets most of that difference). Chose 0.9, not a lower quality that measured
+ * smaller still, specifically to protect legibility - a Node-rendered synthetic check could not
+ * verify visual legibility here (see the report's own caveat on this), so quality was kept
+ * conservative rather than pushed to the smallest number that merely fits the byte budget.
+ */
+const RENDER_SCALE = 1.5;
+const RENDER_FORMAT = 'image/jpeg';
+const RENDER_QUALITY = 0.9;
+
 async function pdfPages(file: File): Promise<Blob[]> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const pdf = await getDocument({ data: bytes }).promise;
@@ -79,7 +98,7 @@ async function pdfPages(file: File): Promise<Blob[]> {
 
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 2 });
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
     const canvas = document.createElement('canvas');
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
@@ -87,7 +106,7 @@ async function pdfPages(file: File): Promise<Blob[]> {
     if (!context) throw new Error('Przeglądarka nie może przygotować strony PDF.');
     await page.render({ canvas, canvasContext: context, viewport }).promise;
     const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((output) => output ? resolve(output) : reject(new Error('Nie udało się przetworzyć PDF.')), 'image/png');
+      canvas.toBlob((output) => output ? resolve(output) : reject(new Error('Nie udało się przetworzyć PDF.')), RENDER_FORMAT, RENDER_QUALITY);
     });
     pages.push(blob);
   }

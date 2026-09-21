@@ -317,13 +317,41 @@ export interface ExtractionTrace {
    * own (a rate, a percentage base, or a reservation balance also prints two-decimal numbers that are
    * not payment amounts, so an unused item is a possibility, not proof of a missing line). */
   unused_printed_amounts: { count: number; sample: number[] };
+  /** Stage 2h (audit v28, §2h.4): "numbers that let a real upload speak (no content)." Every field
+   * here is a count or a status code, never a text item, a label or an amount from the document
+   * itself (grepped for at every call site that logs or forwards this object - see the report). This
+   * is what the owner's one real-PDF upload result is read from, per the stage's own "why". */
+  technical_details: {
+    text_items_sent: number;
+    amounts_checked: number;
+    amounts_not_found: number;
+    text_layer_status: 'ok' | 'mismatch' | 'too_large' | 'none';
+    request_size_kb: number;
+  };
+}
+
+/** Everything about a request's text-layer handling that only the controller (holding the raw HTTP
+ * request and the pre-fallback verification counts) can know - see `tier-c.controller.ts`'s
+ * `assessTextLayer`. Every field defaults so existing unit-test call sites (no text layer at all)
+ * need no changes. */
+export interface ExtractionTraceMeta {
+  textLayerStatus: 'ok' | 'mismatch' | 'too_large' | 'none';
+  requestSizeKb: number;
+  textItemsSent: number;
+  amountsChecked: number;
+  amountsNotFound: number;
 }
 
 function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted'): ExtractionTraceLine {
   return { label: description, category, amount, provenance };
 }
 
-export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComputationOutcome | null, textItems: DocumentTextItem[] = []): ExtractionTrace {
+export function buildExtractionTrace(
+  period: PayslipPeriod,
+  outcome: PayslipComputationOutcome | null,
+  textItems: DocumentTextItem[] = [],
+  meta: Partial<ExtractionTraceMeta> = {},
+): ExtractionTrace {
   const grossTotal = period.hour_lines.reduce((sum, line) => sum + line.amount, 0);
   const preTaxLines = period.pre_tax_deductions.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
   const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
@@ -368,6 +396,13 @@ export function buildExtractionTrace(period: PayslipPeriod, outcome: PayslipComp
       const unused = findUnusedPrintedAmounts(period, textItems);
       return { count: unused.length, sample: unused.slice(0, 5) };
     })(),
+    technical_details: {
+      text_items_sent: meta.textItemsSent ?? textItems.length,
+      amounts_checked: meta.amountsChecked ?? 0,
+      amounts_not_found: meta.amountsNotFound ?? 0,
+      text_layer_status: meta.textLayerStatus ?? (textItems.length > 0 ? 'ok' : 'none'),
+      request_size_kb: meta.requestSizeKb ?? 0,
+    },
   };
 }
 
@@ -377,6 +412,15 @@ export function checkExtractionConsistency(
   outcome: PayslipComputationOutcome,
 ): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
+  // Stage 2h (audit v28, §2h.3 principle applied here too): PKF prints exactly ONE net-shaped figure,
+  // already positioned AFTER its own net lines (a real 91.25 reimbursement and a real 1104.00 of
+  // deductions) - found by actually filling in PKF's real printed net (FIXTURES-paski-referencyjne.md
+  // fixture 3: "TOTAAL NETTO 1754,12" is both period_net AND payout_amount on this document, there is
+  // no separate earlier figure to read). `checkNetStage` below sets this when the document's OWN
+  // arithmetic confirms `printed_net` at the AFTER position rather than the usual BEFORE one, so
+  // section 4b's payout check (which otherwise assumes printed_net is always the BEFORE figure) does
+  // not double-apply the same net lines a second time.
+  let printedNetIsPostNetLines = false;
 
   // 1. Zero tax on a non-zero taxable base (§Stage 2a: 844.92 taxable, printed 152.37, engine
   // computed 0.00 - the root symptom of the period misread, a check that needs no comparison to
@@ -468,12 +512,27 @@ export function checkExtractionConsistency(
       issues.push({ code: 'printed_tax_unknown' });
       return;
     }
-    const impliedNet = loonVoorHeffingen - tableTax - btTax - postTaxSumForReconciliation;
-    const netResidual = Math.round((impliedNet - period.printed_net) * 100) / 100;
-    // n: loon voor heffingen (printed or resolved from one), table tax, BT tax, each post-tax line, printed net.
-    if (Math.abs(netResidual) > reconciliationTolerance(4 + period.post_tax_social.length)) {
-      issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(impliedNet * 100) / 100, printed_net: period.printed_net, residual: netResidual });
-    }
+    const impliedNetBefore = loonVoorHeffingen - tableTax - btTax - postTaxSumForReconciliation;
+    // Stage 2h (§2h.3 principle): the document's printed net can legitimately sit at either chain
+    // position - BEFORE net additions/deductions (Olympia, Randstad) or AFTER them (PKF, whose one
+    // printed figure already has its own reimbursement/loan lines baked in). Check both; a genuine
+    // gap is one that matches NEITHER, not merely a mismatch against whichever position was assumed.
+    const netAdditionsSum = period.net_additions.reduce((sum, l) => sum + l.amount, 0);
+    const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
+    const impliedNetAfter = impliedNetBefore + netAdditionsSum - netDeductionsSum;
+    // n (before): loon voor heffingen, table tax, BT tax, each post-tax line, printed net.
+    const nBefore = 4 + period.post_tax_social.length;
+    const nAfter = nBefore + period.net_additions.length + period.net_deductions.length;
+    const residualBefore = Math.round((impliedNetBefore - period.printed_net) * 100) / 100;
+    const residualAfter = Math.round((impliedNetAfter - period.printed_net) * 100) / 100;
+    const matchesBefore = Math.abs(residualBefore) <= reconciliationTolerance(nBefore);
+    const matchesAfter = Math.abs(residualAfter) <= reconciliationTolerance(nAfter);
+    if (matchesAfter) printedNetIsPostNetLines = true;
+    if (matchesBefore || matchesAfter) return;
+    const useBefore = Math.abs(residualBefore) <= Math.abs(residualAfter);
+    const implied = useBefore ? impliedNetBefore : impliedNetAfter;
+    const residual = useBefore ? residualBefore : residualAfter;
+    issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(implied * 100) / 100, printed_net: period.printed_net, residual });
   }
 
   const subtotalRole = resolveSubtotalRole(period, grossTotal, preTaxSumForReconciliation);
@@ -554,14 +613,21 @@ export function checkExtractionConsistency(
   // adjustments should equal the final printed payout - exactly the distinction §Stage 2a's run
   // collapsed (both the net and payout figures came back identical, with the 90.00 travel
   // reimbursement that separates them missing from the extraction entirely).
+  //
+  // Stage 2h (§2h.3 principle): this formula assumes `printed_net` sits BEFORE net additions/
+  // deductions - true for Olympia/Randstad, false for PKF, whose single printed figure is already
+  // AFTER them (`printedNetIsPostNetLines`, resolved once by `checkNetStage` above from the
+  // document's own arithmetic). Applying the before-formula to an already-after figure would
+  // double-apply the same net lines a second time - skip straight to payout adjustments instead.
   if (period.printed_net !== null && period.printed_payout !== null) {
     const additions = period.net_additions.reduce((sum, line) => sum + line.amount, 0);
     const deductions = period.net_deductions.reduce((sum, line) => sum + line.amount, 0);
     const payoutAdjustments = period.payout_adjustments.reduce((sum, line) => sum + line.amount, 0);
-    const impliedPayout = period.printed_net + additions - deductions + payoutAdjustments;
+    const impliedPayout = printedNetIsPostNetLines ? period.printed_net + payoutAdjustments : period.printed_net + additions - deductions + payoutAdjustments;
     const residual = Math.round((impliedPayout - period.printed_payout) * 100) / 100;
-    // n: printed net, each net addition/deduction/payout-adjustment line, printed payout.
-    const n = 2 + period.net_additions.length + period.net_deductions.length + period.payout_adjustments.length;
+    // n: printed net, payout-adjustment lines, printed payout - plus each net addition/deduction line
+    // ONLY when this document's printed net is at the before-position and the formula actually uses them.
+    const n = 2 + period.payout_adjustments.length + (printedNetIsPostNetLines ? 0 : period.net_additions.length + period.net_deductions.length);
     if (Math.abs(residual) > reconciliationTolerance(n)) {
       issues.push({ code: 'totals_do_not_reconcile_payout', implied_payout: Math.round(impliedPayout * 100) / 100, printed_payout: period.printed_payout, residual });
     }

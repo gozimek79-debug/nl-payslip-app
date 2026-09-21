@@ -1,4 +1,4 @@
-import { parsePrintedNumber, isAmountLike } from '../ocr-service/number-parser.js';
+import { extractPrintedNumbers, looksLikeSplitThousandsPair, type ExtractedNumber } from '../ocr-service/number-parser.js';
 import type { PayslipPeriod } from './payslip-model.js';
 
 /**
@@ -50,16 +50,45 @@ export function collectPeriodAmounts(period: PayslipPeriod): Array<{ path: strin
   if (period.printed_loon_voor_heffingen !== null) out.push({ path: 'printed_loon_voor_heffingen', magnitude: Math.abs(period.printed_loon_voor_heffingen) });
   if (period.printed_net !== null) out.push({ path: 'printed_net', magnitude: Math.abs(period.printed_net) });
   if (period.printed_payout !== null) out.push({ path: 'printed_payout', magnitude: Math.abs(period.printed_payout) });
+  // Stage 2h (audit v28, §2h.2): "include printed_algemene_heffingskorting and printed_arbeidskorting
+  // in collectPeriodAmounts" - the reviewer's T1(b) found these two absent from both the guard and the
+  // unused-amounts accounting, even though they are ordinary printed EUR figures like any other anchor.
+  if (period.printed_algemene_heffingskorting !== null) out.push({ path: 'printed_algemene_heffingskorting', magnitude: Math.abs(period.printed_algemene_heffingskorting) });
+  if (period.printed_arbeidskorting !== null) out.push({ path: 'printed_arbeidskorting', magnitude: Math.abs(period.printed_arbeidskorting) });
   return out;
 }
 
-function parsedTextMagnitudes(textItems: DocumentTextItem[]): number[] {
-  const values: number[] = [];
+/**
+ * Stage 2h (§2h.1): "verifyAmountsAgainstText and findUnusedPrintedAmounts both use it [the
+ * tokeniser], so the two can never disagree about what the page prints." One pass over the item list
+ * builds the single shared candidate list both functions read from: every number `extractPrintedNumbers`
+ * finds inside each item on its own, PLUS every number found by joining two consecutive items that
+ * share a page and a rounded y AND look like the precise two halves of one split-thousands number
+ * (`looksLikeSplitThousandsPair` - number-parser.ts's own doc comment explains why this must be exact,
+ * not "both look numeric": an hours cell next to a rate cell on the same row - e.g. "45,00" then
+ * "15,55" - both independently look like bare numbers, but joining THOSE would fabricate a bogus third
+ * candidate, duplicating both real ones and silently inflating 2g.4's "unused" count). Consecutive
+ * means adjacent in the array as received - `local-ocr.ts` already delivers items in pdf.js's own
+ * per-page reading order, never re-sorted here.
+ */
+function extractedNumbers(textItems: DocumentTextItem[]): ExtractedNumber[] {
+  const found: ExtractedNumber[] = [];
   for (const item of textItems) {
-    const parsed = parsePrintedNumber(item.text);
-    if (parsed !== null) values.push(Math.round(Math.abs(parsed) * 100) / 100);
+    found.push(...extractPrintedNumbers(item.text));
   }
-  return values;
+  for (let i = 0; i < textItems.length - 1; i += 1) {
+    const a = textItems[i];
+    const b = textItems[i + 1];
+    if (a === undefined || b === undefined) continue;
+    if (a.page === b.page && Math.round(a.y) === Math.round(b.y) && looksLikeSplitThousandsPair(a.text.trim(), b.text.trim())) {
+      found.push(...extractPrintedNumbers(`${a.text} ${b.text}`));
+    }
+  }
+  return found;
+}
+
+function parsedTextMagnitudes(textItems: DocumentTextItem[]): number[] {
+  return extractedNumbers(textItems).map((n) => Math.round(Math.abs(n.value) * 100) / 100);
 }
 
 /**
@@ -96,13 +125,28 @@ export function findUnusedPrintedAmounts(period: PayslipPeriod, textItems: Docum
   if (textItems.length === 0) return [];
   const usedMagnitudes = collectPeriodAmounts(period).map((a) => Math.round(a.magnitude * 100) / 100);
   const unused: number[] = [];
-  for (const item of textItems) {
-    if (!isAmountLike(item.text)) continue;
-    const parsed = parsePrintedNumber(item.text);
-    if (parsed === null) continue;
-    const magnitude = Math.round(Math.abs(parsed) * 100) / 100;
+  for (const n of extractedNumbers(textItems)) {
+    if (!n.amountLike) continue;
+    const magnitude = Math.round(Math.abs(n.value) * 100) / 100;
     const isUsed = usedMagnitudes.some((v) => Math.abs(v - magnitude) <= CENT_EPSILON);
     if (!isUsed) unused.push(magnitude);
   }
   return unused;
+}
+
+/**
+ * Stage 2h (§2h.2): "if the guard cannot find half or more of the amounts it checked... treat the
+ * layer as unusable." One function computes both counts so the controller's threshold decision and
+ * the trace's own reported numbers (§2h.4: "amounts checked, amounts not found") can never disagree
+ * about what was actually measured.
+ */
+export interface TextLayerVerificationCounts {
+  checked: number;
+  unverified: number;
+}
+
+export function textLayerVerificationCounts(period: PayslipPeriod, textItems: DocumentTextItem[]): TextLayerVerificationCounts {
+  const checked = collectPeriodAmounts(period).length;
+  const unverified = verifyAmountsAgainstText(period, textItems).length;
+  return { checked, unverified };
 }

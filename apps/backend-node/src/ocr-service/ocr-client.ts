@@ -133,10 +133,14 @@ linie występują PO podatku na dokumencie, nie przed): category=jedna z "wga", 
 
 et_exchange_amount=kwota, o którą regulacja ET/extraterytorialna (salary exchange/wymiana wynagrodzenia)
 zmniejsza podstawę opodatkowania - szukaj etykiet takich jak "Nieopod. część wyn." / "Nieopodatkowana
-część wynagrodzenia" / "ET" / "extraterritoriale" (prawdziwy przykład z dokumentu OTTO: "Nieopod. część
-wyn. 100%", kwota 177,00). KRYTYCZNE: taka linia NIGDY nie trafia do pre_tax_deduction_lines, nawet
-jeśli wygląda i jest wydrukowana jak zwykłe potrącenie przed opodatkowaniem (ma swoją kwotę, może
-sąsiadować z liniami StiPP/PAWW) - to osobne, własne pole, nie kategoria "other" wśród potrąceń.
+część wynagrodzenia" / "extraterritoriale" (prawdziwy przykład z dokumentu OTTO: "Nieopod. część wyn.
+100%", kwota 177,00). UWAGA: samo słowo "ET" na końcu etykiety NIE wystarczy - reguła regulacji ET
+drukuje TAKŻE zwroty netto z etykietą kończącą się na "ET" (np. "Zwrot kosztów utrzymania ET" - patrz
+et_reimbursement_lines niżej), które są czymś INNYM niż redukcja podstawy; nie myl jednego z drugim po
+samym słowie "ET" w etykiecie. KRYTYCZNE: linia redukcji podstawy NIGDY nie trafia do
+pre_tax_deduction_lines, nawet jeśli wygląda i jest wydrukowana jak zwykłe potrącenie przed
+opodatkowaniem (ma swoją kwotę, może sąsiadować z liniami StiPP/PAWW) - to osobne, własne pole, nie
+kategoria "other" wśród potrąceń.
 et_reimbursement_lines=zwroty netto wypłacone W ZAMIAN, w ramach TEJ SAMEJ regulacji ET (np. "Zwrot
 kosztów utrzymania ET", "Zwrot za zakwaterowanie ET", verblijfskosten, huisvesting) jako lista
 {description,amount} - mogą być wydrukowane w zupełnie innym miejscu dokumentu niż et_exchange_amount

@@ -549,6 +549,89 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
 });
 
 /**
+ * Stage 2j (audit v30, §2j.1): "the OTTO regression test named in 2j.1 exists, failed before the fix
+ * (shown in the report, not just asserted), and passes after." RAPORT-cursor-2i.md's MAJOR finding:
+ * the existing OTTO integration test above sets `printed_gross_total: 924.03` and
+ * `printed_loon_voor_heffingen: 902.38` - the CORRECT, computed chain values, never what OTTO's real
+ * document actually prints (which is 725.38 in the position the model calls "gross total" and 621.14 in
+ * the position it calls "loon voor heffingen" - see FIXTURES/OWNER-RETEST-2h-otto.md). 2i.1's own
+ * "OTTO" test invented a pre-tax sum of 198.65 (the ET reduction still lumped into ordinary pre-tax) to
+ * make 924.03-198.65 land on 725.38 - but 2i.3, in the SAME commit, correctly pulls that ET line OUT of
+ * pre-tax. This test is the one the reviewer asked for: the REAL printed anchors (725.38/621.14),
+ * through the REAL mapper (with the ET line misfiled as pre-tax, exactly as a live model would produce
+ * it, reclassified by 2i.3's own mapper-side backstop), through the REAL gate.
+ */
+test('2j.1 REGRESSION: the real, mislabelled OTTO anchors (725.38/621.14) through the real mapper (ET reclassified out of pre-tax by 2i.3) must pass the gate with no issues - failed before 2j.1, must pass after', () => {
+  const extraction = baseExtraction({
+    period_label: '33/2025',
+    period_end_date: '2025-08-17',
+    employer_names: ['DHL Supply Chain (NL) B.V.', 'KF Service & Beheer B.V.'],
+    minimum_wage_printed: 14.4,
+    hour_lines: [
+      { employer_index: 0, description: 'Godziny przepracowane (DHL)', hours: 24.0, rate: 14.45, percent: null, amount: 346.8, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 30%', hours: 21.25, rate: 4.34, percent: 30, amount: 92.23, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 100%', hours: 2.75, rate: 14.45, percent: 100, amount: 39.74, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 1, description: 'Godziny przepracowane (KF)', hours: 19.0, rate: 14.4, percent: null, amount: 273.6, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek wakacyjny', hours: null, rate: null, percent: null, amount: 56.31, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Wymiana pw. urlopu ustawowego', hours: 0.77, rate: 14.43, percent: null, amount: 11.11, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Jednorazowa zapłata', hours: null, rate: null, percent: null, amount: 98.24, category: 'other', tax_treatment: 'bt', adds_hours: false },
+      { employer_index: 0, description: 'Wynagrodzenie kierowcy brutto', hours: null, rate: null, percent: null, amount: 6.0, category: 'other', tax_treatment: 'bt', adds_hours: false },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: 4 },
+      { description: 'PAWW Rekompensata', amount: 0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'PAWW Opłata', amount: -0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      // The live model's actual observed filing (OWNER-RETEST-2h-otto.md): the ET reduction misfiled
+      // as an ordinary pre-tax line. 2i.3's mapper-side isEtExchangeLabel backstop must pull this out.
+      { description: 'Nieopod. część wyn. 100%', amount: 177.0, category: 'other', placement: 'pre_tax', base: null, percent: null },
+    ],
+    et_exchange_amount: null, // not read directly - reproducing the live extraction gap 2i.3 fixes via the mapper
+    et_reimbursement_lines: [
+      { description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' },
+      { description: 'Zwrot za zakwaterowanie ET', amount: 144.0, category: 'reimbursement' },
+    ],
+    net_lines: [
+      { description: 'Potrącenie własnego wkładu WHK', amount: 1.55, category: 'other' },
+      { description: 'Nominalna składka ubezpieczenia zdrowotnego', amount: 38.01, category: 'health_insurance' },
+      { description: 'Potrącenie kosztów przewozu', amount: 2.63, category: 'transport' },
+      { description: 'Potrącenie za zakwaterowanie', amount: 144.0, category: 'housing' },
+    ],
+    bijzonder_tarief_printed_percent: 38.45,
+    printed_table_tax: 77.52,
+    printed_bt_tax: 40.08,
+    reported_net_paid: 598.59,
+    // The REAL printed anchors, exactly as OTTO's own document prints them (FIXTURES /
+    // OWNER-RETEST-2h-otto.md) - the document prints ONE subtotal-shaped number (725.38, "RAZEM
+    // PODSTAWA") that the model reads into printed_gross_total (a label the document does not use at
+    // all for this figure), and a SECOND number (621.14, the normal-rate base component) into
+    // printed_loon_voor_heffingen. Neither is actually gross or lvh - this is the exact shape 2i.1/2i.2
+    // were built for but never tested against.
+    printed_gross_total: 725.38,
+    printed_loon_voor_heffingen: 621.14,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 104.24,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.4);
+  // Sanity: 2i.3's reclassifier did its job - pre-tax is 21.65 (STIPP + the Rekompensata/Opłata net-
+  // zero pair), NOT 198.65, and et_exchange_amount is 177.00, resolved from the misfiled line.
+  assert.equal(
+    period.pre_tax_deductions.reduce((sum, d) => sum + (d.amount.value ?? 0), 0),
+    21.65,
+    'expected the ET line reclassified OUT of pre-tax deductions - pre-tax must be 21.65 (STIPP), not 198.65',
+  );
+  assert.equal(period.et?.et_exchange_amount, 177, 'expected et_exchange_amount resolved from the misfiled pre-tax line');
+
+  const outcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  assert.equal(outcome.result.taxable_base, 725.38, 'sanity: the engine itself still computes the correct taxable base');
+
+  const issues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(issues, [], `expected the gate to pass on OTTO's real, mislabelled anchors once ET is resolved to the correct chain position - got ${JSON.stringify(issues)}`);
+});
+
+/**
  * Stage 2i (audit v29, §2i.2): "find out how the mapper decides which gross lines fall under the
  * special (bijzonder tarief) base... if the engine gets 104.24 right today, say so with the test that
  * shows it, and do not rebuild it." Answer, confirmed by this test: mapExtractionToPeriod does NOT

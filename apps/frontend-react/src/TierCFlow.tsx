@@ -362,6 +362,18 @@ function textLayerStatusNote(t: TierCCopy, status: TextLayerStatus): string {
   }
 }
 
+/** Stage 2j (§2j.3): "an upload that falls back to image-only mid-request is stuck with the lower,
+ * pre-chosen quality... that is the real gap... needs its own decision... or the fallback path is
+ * accepted as lower-quality for this round and stated as such on the panel." The images were rendered
+ * at the moderate `text-layer-present` setting (chosen client-side, before the server ever assessed the
+ * text layer); when the server THEN decides that same text layer does not verify (`text_layer_status
+ * === 'mismatch'`), the read falls back to image-only but the images already sent are the lower-quality
+ * ones. Shown only in exactly that combination - never a general warning about the render step alone,
+ * which is fine in the far more common case where the text layer verifies. */
+function renderQualityStuckNote(t: TierCCopy, renderStep: string, textLayerStatus: TextLayerStatus): string | null {
+  return renderStep === 'text-layer-present' && textLayerStatus === 'mismatch' ? t.renderQualityStuckNote : null;
+}
+
 /** Stage 2i (§2i.0b): "say it on the panel in one plain line" - which chain position (if any) the
  * printed net actually confirmed, never asserting a position the arithmetic didn't confirm. */
 function netPositionNote(t: TierCCopy, position: NetPosition): string {
@@ -701,6 +713,11 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <p className="form-note">
                   {t.technicalDetailsLine(trace.technical_details.text_items_sent, trace.technical_details.amounts_checked, trace.technical_details.amounts_not_found, trace.technical_details.request_size_kb, trace.technical_details.render_step)}
                 </p>
+                {/* Stage 2j (§2j.3): the images were chosen at the pre-chosen text-layer quality before
+                    the server rejected that same text layer - visible, never silent. */}
+                {renderQualityStuckNote(t, trace.technical_details.render_step, trace.technical_details.text_layer_status) && (
+                  <p className="form-note">{renderQualityStuckNote(t, trace.technical_details.render_step, trace.technical_details.text_layer_status)}</p>
+                )}
                 {/* Stage 2i (§2i.0e): "show the measured size and say which" - only worth a line when
                     the trusted Content-Length header was NOT used (the interesting case). */}
                 {trace.technical_details.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
@@ -921,6 +938,9 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
       <p className="form-note">
         {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.amounts_checked, response.technicalDetails.amounts_not_found, response.technicalDetails.request_size_kb, response.technicalDetails.render_step)}
       </p>
+      {renderQualityStuckNote(t, response.technicalDetails.render_step, response.technicalDetails.text_layer_status) && (
+        <p className="form-note">{renderQualityStuckNote(t, response.technicalDetails.render_step, response.technicalDetails.text_layer_status)}</p>
+      )}
       {response.technicalDetails.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
       <p className="form-note">{netPositionNote(t, response.net_position)}</p>
 

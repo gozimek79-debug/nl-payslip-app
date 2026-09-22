@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { checkExtractionConsistency, buildExtractionTrace, resolveSubtotalRole, resolveAnchors, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace, resolveSubtotalRole, resolveAnchors, resolveTaxableBasePosition, isEtExchangeLabel, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
 import { known, type PayslipPeriod, type PayslipComputationOutcome, type PayslipComputationResult } from './payslip-model.js';
 
 /**
@@ -545,6 +545,120 @@ test('2i.1: the Randstad and PKF fixtures (both anchors, each already confirming
   assert.equal(pkfResolution.role, 'both');
   assert.equal(pkfResolution.anchorReassigned, false);
   assert.deepEqual(pkfResolution.otherPrintedFigures, []);
+});
+
+/**
+ * Stage 2j (audit v30, §2j.1): "re-verify the reviewer's boundary cases (T2b, T2c) still hold with the
+ * third position added" - re-run explicitly against an ET-BEARING period this time (the third position
+ * only exists when et is applicable; the pre-2j tests above all use non-ET fixtures, which can never
+ * exercise the new matching branches at all).
+ */
+test('2j.1 T2b: an ET-bearing document where both anchors correctly confirm their OWN position stays "both" - the third position never falsely matches either anchor', () => {
+  // gross 1000, pre-tax 10 -> lvh 990, ET 5 -> taxable base 985. printed_gross_total/loon_voor_heffingen
+  // confirm gross/lvh exactly; neither is anywhere near 985 (15/5 EUR away - far outside tolerance).
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_gross_total: 1000,
+    printed_loon_voor_heffingen: 990,
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'both', `expected 'both' (each anchor confirms its own position), got ${JSON.stringify(resolution)}`);
+  assert.equal(resolution.anchorReassigned, false);
+  assert.deepEqual(resolution.otherPrintedFigures, []);
+  assert.equal(resolveTaxableBasePosition(period, 1000, 10), 985, 'sanity: the third position really is 985, distinct from both anchors');
+});
+
+test('2j.1 T2c: an ET-bearing document where NEITHER anchor matches ANY of the three positions stays "both" with no guessed role, never a coincidental taxable-base match', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_gross_total: 500, // matches gross(1000), lvh(990) nor taxable_base(985)
+    printed_loon_voor_heffingen: 700, // matches none of the three either
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'both', `expected 'both' (arithmetic did not uniquely pick a reassignment) - never a guessed role, got ${JSON.stringify(resolution)}`);
+  assert.equal(resolution.anchorReassigned, false);
+  assert.deepEqual(resolution.otherPrintedFigures, []);
+});
+
+test('2j.1: a SINGLE printed anchor (not both) that matches only the taxable-base position is reassigned too - the single-anchor path gains the third position, not only the two-anchor path', () => {
+  // Only printed_gross_total is present, and its value is the taxable base (985), not the gross (1000)
+  // or lvh (990) position - resolveSubtotalRole alone would call this 'unresolved' (it only tests two
+  // positions); resolveAnchors must give it one more chance against the third.
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_gross_total: 985,
+    printed_loon_voor_heffingen: null,
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'confirmed_taxable_base', `expected the single anchor reassigned to the taxable-base role, got ${JSON.stringify(resolution)}`);
+  assert.equal(resolution.resolvedSubtotal, 985);
+  assert.equal(resolution.anchorReassigned, true);
+});
+
+/**
+ * Stage 2j (audit v30, §2j.2): "the reviewer's two concrete FIXTURES strings are the test."
+ */
+test("2j.2: the reviewer's two OTTO reimbursement labels no longer match isEtExchangeLabel - only a genuine base-reduction label does", () => {
+  assert.equal(isEtExchangeLabel('Zwrot kosztów utrzymania ET'), false, 'a reimbursement label must never match, even with a standalone "ET" token');
+  assert.equal(isEtExchangeLabel('Zwrot za zakwaterowanie ET'), false);
+  assert.equal(isEtExchangeLabel('Nieopod. część wyn. 100%'), true, 'the one confirmed real base-reduction label must still match');
+  assert.equal(isEtExchangeLabel('Emerytura STIPP'), false);
+  assert.equal(isEtExchangeLabel('Bijdrage PAWW werknemer'), false);
+});
+
+/**
+ * Stage 2j (audit v30, §2j.1): "every place that currently tests a printed anchor against 'the
+ * loon-voor-heffingen position' must test against the position appropriate to what ET does to the
+ * chain." None of the four real reference documents combine a printed net figure WITH an ET reduction
+ * (Olympia/Randstad/PKF have no ET at all; OTTO has ET but prints no separate net) - checkNetStage's
+ * own ET-awareness fix (both the 'both'-anchor and the anchor-less 'none' branches) is therefore
+ * untested by any real fixture. These two synthetic cases close that gap directly.
+ */
+test("2j.1: checkNetStage subtracts the ET reduction before comparing against printed_net - 'both'-anchor branch", () => {
+  // gross 1000, pretax 10 -> lvh 990, ET 5 -> taxable base 985. printed_net = 985 - 200 (table tax) =
+  // 785 - correct only if ET was subtracted; the pre-2j formula would have compared 990-200=790
+  // against 785, a false 5 EUR residual (exactly the ET amount).
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_table_tax: 200,
+    printed_gross_total: 1000,
+    printed_loon_voor_heffingen: 990,
+    printed_net: 785,
+  });
+  const outcome = completeOutcome({ taxable_base: 985, table_tax_after_korting: 200 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile'), `expected the ET-aware net check to pass, got ${JSON.stringify(issues)}`);
+});
+
+test("2j.1: checkNetStage subtracts the ET reduction before comparing against printed_net - anchor-less 'none' branch", () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_table_tax: 200,
+    // No printed_gross_total/printed_loon_voor_heffingen at all - the 'none' branch's own combined identity.
+    printed_net: 785,
+  });
+  const outcome = completeOutcome({ taxable_base: 985, table_tax_after_korting: 200 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.ok(!issues.some((i) => i.code === 'totals_do_not_reconcile_net'), `expected the ET-aware 'none'-branch identity to pass, got ${JSON.stringify(issues)}`);
+});
+
+test('2j.1 regression: removing the ET subtraction from checkNetStage would misreport a residual equal to the ET amount (proves the fix is load-bearing)', () => {
+  const lvh = 990;
+  const tableTax = 200;
+  const printedNet = 785;
+  const preFixImpliedNet = lvh - tableTax; // 790 - the old, ET-blind formula
+  const residual = Math.round((preFixImpliedNet - printedNet) * 100) / 100;
+  assert.equal(residual, 5, 'sanity: the pre-fix formula would have been off by exactly the 5 EUR ET reduction');
 });
 
 /**

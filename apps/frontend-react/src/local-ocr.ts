@@ -1,6 +1,7 @@
 import { createWorker } from 'tesseract.js';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
+import { TEXT_LAYER_STEP, TARGET_MAX_BYTES, selectRenderSteps, type RenderStep } from './render-step-policy.ts';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -94,17 +95,28 @@ function blobToBase64(blob: Blob): Promise<string> {
  * only relative byte-size measurements were possible in this environment. `render_step` is reported
  * in the technical-details line specifically so a real upload's actual step is visible and checkable,
  * not asserted as "good enough" from here.
+ *
+ * Stage 2j (audit v30, §2j.3): "confirm explicitly (with a test, not a comment) that a text-layer-
+ * present upload never needs the image ladder's high step... say plainly whether an upload that falls
+ * back to image-only mid-request is stuck with the lower, pre-chosen quality." It is: `hasTextLayer`
+ * is decided from the CLIENT's own local `extractTextItems` read, before anything is sent - the images
+ * are rendered and fixed at `TEXT_LAYER_STEP` (moderate quality) at that point. The SERVER's own
+ * `assessTextLayer` (tier-c.controller.ts) can independently decide, after receiving both, that the
+ * text layer does not verify well enough and fall back to `reading_basis: 'image_only'` - but by then
+ * the images already sent are the ones the client chose assuming the text layer WOULD help. There is
+ * no way to "un-send" a higher-quality render after the fact within a single request. Re-architecting
+ * this into two round-trips (client sends `documentText` first, server decides which quality to
+ * request, client renders and sends images second) is a real fix but a genuinely bigger change than
+ * this stage's own scope (§2j: "not in this stage: the image reader itself") - ACCEPTED for this round
+ * as a stated limitation rather than rebuilt: the fallback path keeps the lower, pre-chosen quality,
+ * and `tier-c.controller.ts`/`TierCFlow.tsx` say so explicitly on the technical-details line whenever
+ * `render_step === 'text-layer-present'` AND the server's own `text_layer_status` is `'mismatch'` -
+ * exactly the "stuck" case - so it is visible, never silent. The step-selection decision itself
+ * (`selectRenderSteps`, `render-step-policy.ts`) is proven never to reach the image ladder's own high
+ * step while `hasTextLayer` is true by `render-step-policy.test.ts`, run under plain Node (no DOM
+ * needed for that one fact, unlike the actual rendering below).
  */
-const TEXT_LAYER_STEP = { name: 'text-layer-present', scale: 1.5, format: 'image/jpeg' as const, quality: 0.9 };
-const IMAGE_ONLY_STEPS: Array<{ name: string; scale: number; format: 'image/jpeg'; quality: number }> = [
-  { name: 'image-high', scale: 2, format: 'image/jpeg', quality: 0.92 },
-  { name: 'image-medium', scale: 2, format: 'image/jpeg', quality: 0.75 },
-  { name: 'image-low', scale: 1.5, format: 'image/jpeg', quality: 0.75 },
-  { name: 'image-floor', scale: 1, format: 'image/jpeg', quality: 0.6 },
-];
-const TARGET_MAX_BYTES = 3.5 * 1024 * 1024;
-
-async function renderPageAtStep(page: Awaited<ReturnType<Awaited<ReturnType<typeof getDocument>['promise']>['getPage']>>, step: { scale: number; format: 'image/jpeg' | 'image/png'; quality?: number }): Promise<Blob> {
+async function renderPageAtStep(page: Awaited<ReturnType<Awaited<ReturnType<typeof getDocument>['promise']>['getPage']>>, step: RenderStep): Promise<Blob> {
   const viewport = page.getViewport({ scale: step.scale });
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(viewport.width);
@@ -145,23 +157,27 @@ async function renderPdfPages(file: File, hasTextLayer: boolean): Promise<{ blob
   const pageCount = Math.min(pdf.numPages, 3);
   const pages = await Promise.all(Array.from({ length: pageCount }, (_, i) => pdf.getPage(i + 1)));
 
-  if (hasTextLayer) {
-    const blobs = await Promise.all(pages.map((page) => renderPageAtStep(page, TEXT_LAYER_STEP)));
-    return { blobs, renderStep: TEXT_LAYER_STEP.name };
+  // Stage 2j (§2j.3): the SAME decision `render-step-policy.test.ts` exercises under plain Node - never
+  // a second, inline re-derivation of "which step(s) apply" that could drift from what was tested.
+  const { usesImageLadder, steps } = selectRenderSteps(hasTextLayer);
+  if (!usesImageLadder) {
+    const step = steps[0] as RenderStep;
+    const blobs = await Promise.all(pages.map((page) => renderPageAtStep(page, step)));
+    return { blobs, renderStep: step.name };
   }
 
   let lastBlobs: Blob[] = [];
-  for (let i = 0; i < IMAGE_ONLY_STEPS.length; i += 1) {
-    const step = IMAGE_ONLY_STEPS[i]!;
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i]!;
     const blobs = await Promise.all(pages.map((page) => renderPageAtStep(page, step)));
     lastBlobs = blobs;
     const totalBytes = blobs.reduce((sum, b) => sum + b.size, 0);
-    const isLastStep = i === IMAGE_ONLY_STEPS.length - 1;
+    const isLastStep = i === steps.length - 1;
     if (totalBytes <= TARGET_MAX_BYTES || isLastStep) {
       return { blobs, renderStep: step.name };
     }
   }
-  return { blobs: lastBlobs, renderStep: IMAGE_ONLY_STEPS[IMAGE_ONLY_STEPS.length - 1]!.name };
+  return { blobs: lastBlobs, renderStep: steps[steps.length - 1]!.name };
 }
 
 /** Renderuje wszystkie strony dokumentu (maks. 3) jako obrazy base64 — do wysłania

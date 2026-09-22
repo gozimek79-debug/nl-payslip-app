@@ -60,7 +60,7 @@ export function ContractAnalysis({ lang }: { lang: Lang }) {
     if (file.size > 10 * 1024 * 1024) { setUploadState('error'); setMessage(lang === 'pl' ? 'Plik jest większy niż 10 MB.' : 'The file is larger than 10 MB.'); return; }
     setUploadState('uploading'); setMessage(t.analyzing);
     try {
-      const images = await renderPageImages(file);
+      const { images } = await renderPageImages(file, true); // Stage 2i (§2i.0d): this flow doesn't read a text layer at all - `true` keeps the same fixed, moderate setting it always used, unrelated to Tier C's adaptive image-only budget.
       const response = await fetch('/api/contracts/analyze', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ images, language: lang }),

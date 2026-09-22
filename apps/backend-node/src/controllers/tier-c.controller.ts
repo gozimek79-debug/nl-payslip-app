@@ -3,14 +3,12 @@ import { getCurrentRule, getMinimumWageAt } from '../rules-repository.js';
 import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from '../payroll-engine/calculator.js';
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
-import { checkExtractionConsistency, buildExtractionTrace, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace, resolveNetPosition, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
 import { verifyAmountsAgainstText, textLayerVerificationCounts, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
-import { mapExtractionToPeriod, type TierCPeriodType } from '../payroll-engine/tier-c.js';
+import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCPeriodType } from '../payroll-engine/tier-c.js';
 import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
-import { resolveNetReconciliationBasis } from '../payroll-engine/discrepancy.js';
-import { tableTaxToleranceFor } from '../payroll-engine/payslip-model.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 /**
@@ -77,8 +75,29 @@ export type TextLayerStatus = 'ok' | 'too_large' | 'mismatch' | 'none';
  * CHOSEN and labelled (per the assignment's own instruction): 0.5 - a layer that fails to confirm
  * half the read is more likely a mismatched text layer (wrong pages, a scan with stray OCR text
  * layer, garbled encoding) than a model that is wrong on half its fields at once.
+ *
+ * Stage 2i (audit v29, §2i.0a): "the guard cannot be switched off by one miss." The reviewer found
+ * this ratio alone falls back at `checked=2, unverified=1` - the exact shape of the classic single-
+ * invented-digit case (699.75 vs printed 699.78: one field wrong out of a short, correctly-read
+ * period), so the ratio being satisfied could silence the ONE check that exists to catch it. A floor
+ * requires BOTH the ratio AND an absolute minimum count of unverified fields before falling back.
  */
-const TEXT_LAYER_MISMATCH_THRESHOLD = 0.5;
+const TEXT_LAYER_MISMATCH_RATIO = 0.5;
+/** CHOSEN (§2i.0a's own suggestion, adopted): 3. Below 3 unverified fields, no plausible "wrong
+ * text layer" explanation is more likely than "the model got a small number of individual fields
+ * wrong" - a genuinely mismatched layer (wrong pages, OCR garbage, a different document) fails to
+ * confirm far more than a couple of fields, not exactly one or two. 3 is the smallest count that
+ * cannot be produced by the single-invented-digit case alone. */
+const TEXT_LAYER_MISMATCH_FLOOR = 3;
+
+/**
+ * Stage 2i (§2i.0a): the floor-and-ratio decision as its own pure, directly testable function -
+ * exported so the exact checked/unverified matrix the assignment names (2/1, 4/2, 6/3, 12/6, 12/1)
+ * can be tested without going through a full period/text-item fixture.
+ */
+export function isTextLayerMismatch(checked: number, unverified: number): boolean {
+  return checked > 0 && unverified >= TEXT_LAYER_MISMATCH_FLOOR && unverified / checked >= TEXT_LAYER_MISMATCH_RATIO;
+}
 
 /**
  * Decides, from the SAME counts the trace will report (§2h.4: "amounts checked, amounts not found"),
@@ -90,11 +109,35 @@ function assessTextLayer(period: PayslipPeriod, documentText: DocumentTextItem[]
   if (baseStatus === 'too_large') return { unverifiedFields: [], status: 'too_large', checked: 0, unverified: 0 };
   if (documentText.length === 0) return { unverifiedFields: [], status: 'none', checked: 0, unverified: 0 };
   const { checked, unverified } = textLayerVerificationCounts(period, documentText);
-  if (checked > 0 && unverified / checked >= TEXT_LAYER_MISMATCH_THRESHOLD) {
+  if (isTextLayerMismatch(checked, unverified)) {
     return { unverifiedFields: [], status: 'mismatch', checked, unverified };
   }
   return { unverifiedFields: verifyAmountsAgainstText(period, documentText), status: 'ok', checked, unverified };
 }
+
+/**
+ * Stage 2i (audit v29, §2i.0e): "when Content-Length is absent or disagrees with the re-encoded size
+ * by more than a margin, show the measured size and say which." A pure function so the exact
+ * agreement/disagreement boundary is directly testable without a real HTTP request (fetch computes
+ * its own Content-Length automatically, so a test cannot easily forge a mismatching one at that
+ * layer). CHOSEN margin: 10% - a genuine Content-Length legitimately differs slightly from a
+ * re-encode (chunked transfer framing, charset differences); a client-supplied header claiming a
+ * materially different size than what was actually sent is the case worth flagging, not normal
+ * encoding noise.
+ */
+export const REQUEST_SIZE_AGREEMENT_MARGIN = 0.1;
+
+export function resolveRequestSize(headerSizeKb: number | null, measuredSizeKb: number): { requestSizeKb: number; requestSizeSource: 'content_length' | 'measured' } {
+  if (headerSizeKb !== null && Number.isFinite(headerSizeKb)) {
+    const agrees = Math.abs(headerSizeKb - measuredSizeKb) <= measuredSizeKb * REQUEST_SIZE_AGREEMENT_MARGIN;
+    if (agrees) return { requestSizeKb: Math.round(headerSizeKb * 10) / 10, requestSizeSource: 'content_length' };
+  }
+  return { requestSizeKb: Math.round(measuredSizeKb * 10) / 10, requestSizeSource: 'measured' };
+}
+
+/** Stage 2i (§2i.0d): the only render-step labels the frontend can legitimately report - anything
+ * else (malformed, forged, or simply unset) becomes 'unknown' rather than surfacing arbitrary text. */
+export const KNOWN_RENDER_STEPS = ['text-layer-present', 'image-high', 'image-medium', 'image-low', 'image-floor', 'non-pdf'];
 
 /**
  * BP1.5 (audit round): the PRO bridge's fate is decided as RETIRE, not migrate-and-keep-both -
@@ -204,10 +247,21 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // Stage 2h (§2h.4): "the total request size in kilobytes" - the header the client itself sent, not
   // a re-serialisation of req.body (which can differ from the wire size by whitespace/encoding).
   // Falls back to a re-encode only when a client/proxy omits the header.
+  //
+  // Stage 2i (audit v29, §2i.0e): "when Content-Length is absent or disagrees with the re-encoded
+  // size by more than a margin, show the measured size and say which." The reviewer's own finding
+  // (T7c): a client can omit or spoof this header. Both sizes are now always computed; the trusted
+  // header is used only when it roughly agrees with an independent re-encode - otherwise the
+  // independently measured size is shown, and which source won is itself reported (never silently
+  // picking the untrusted, possibly-wrong header value without saying so).
   const contentLengthHeader = req.headers['content-length'];
-  const requestSizeKb = contentLengthHeader
-    ? Math.round((Number(contentLengthHeader) / 1024) * 10) / 10
-    : Math.round((Buffer.byteLength(JSON.stringify(req.body ?? {})) / 1024) * 10) / 10;
+  const measuredSizeKb = Math.round((Buffer.byteLength(JSON.stringify(req.body ?? {})) / 1024) * 10) / 10;
+  const { requestSizeKb, requestSizeSource } = resolveRequestSize(contentLengthHeader ? Number(contentLengthHeader) / 1024 : null, measuredSizeKb);
+  // Stage 2i (§2i.0d): "put the chosen step in the technical line" - a client-reported label only
+  // (untrusted), constrained to the known set so a malformed/forged value can never surface as
+  // arbitrary text on the panel.
+  const renderStepRaw = req.body?.renderStep;
+  const renderStep = typeof renderStepRaw === 'string' && KNOWN_RENDER_STEPS.includes(renderStepRaw) ? renderStepRaw : 'unknown';
 
   try {
     const extraction = await extractTierCPayslip(images as string[], documentText);
@@ -225,6 +279,8 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     const traceMeta = {
       textLayerStatus: textLayerAssessment.status,
       requestSizeKb,
+      requestSizeSource,
+      renderStep,
       textItemsSent: documentText.length,
       amountsChecked: textLayerAssessment.checked,
       amountsNotFound: textLayerAssessment.unverified,
@@ -239,7 +295,11 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     const periodType = extraction.period_type;
     const extractionGapIssues: ConsistencyIssue[] = [];
     if (periodType === null) extractionGapIssues.push({ code: 'period_type_unknown' });
-    if (extraction.et_reimbursement_lines.length > 0 && extraction.et_exchange_amount === null) {
+    // Stage 2i (§2i.3): reads the SAME resolution mapExtractionToPeriod uses (resolveEtExchangeAmountFromExtraction,
+    // which also recognises an ET-labelled line the model left in pre_tax_deduction_lines - see its own
+    // comment) rather than the raw `et_exchange_amount` field alone, so a reading the mapper can now
+    // resolve is never blocked here as if it were still genuinely absent.
+    if (extraction.et_reimbursement_lines.length > 0 && resolveEtExchangeAmountFromExtraction(extraction) === null) {
       extractionGapIssues.push({ code: 'et_exchange_amount_unknown' });
     }
     // Stage 2f (§2f.8): "an unreadable amount is not a zero" - hour/net/ET-reimbursement/payout/
@@ -307,9 +367,10 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       });
     }
 
-    // Stage 2h (§2h.3): the printed net's confirmed chain position (or lack of one) - structured data,
-    // never prose (§2.6); the interface decides how to word it.
-    const netReconciliationBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
+    // Stage 2h (§2h.3) / 2i (§2i.0b): the printed net's confirmed chain position (or lack of one) -
+    // structured data, never prose (§2.6); the interface decides how to word it. Same vocabulary and
+    // same resolver the trace uses, so the two can never disagree.
+    const net_position = resolveNetPosition(period, outcome);
     const discrepancies = comparePeriodToDocument(period, outcome);
 
     return res.json({
@@ -317,7 +378,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       period,
       outcome,
       discrepancies,
-      netReconciliationBasis,
+      net_position,
       // Stage 2h (§2h.4): shown on a successful read too, per its own "why" - the owner's one real-PDF
       // upload result is read from this line whether or not it happens to block on anything.
       technicalDetails: {
@@ -326,6 +387,8 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
         amounts_not_found: textLayerAssessment.unverified,
         text_layer_status: textLayerAssessment.status,
         request_size_kb: requestSizeKb,
+        request_size_source: requestSizeSource,
+        render_step: renderStep,
       },
       truncated: extraction.truncated,
       redactedFields: extraction.redacted_fields,
@@ -471,18 +534,18 @@ router.post('/recompute', async (req, res) => {
     return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
   }
 
-  // Stage 2h (§2h.3): same structured basis /analyze reports - a correction can change which chain
-  // position the printed net now confirms (or stops confirming).
-  const netReconciliationBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
+  // Stage 2h (§2h.3) / 2i (§2i.0b): same structured basis /analyze reports - a correction can change
+  // which chain position the printed net now confirms (or stops confirming).
+  const net_position = resolveNetPosition(period, outcome);
   const discrepancies = comparePeriodToDocument(period, outcome);
   return res.json({
     status: 'ok',
     outcome,
     discrepancies,
-    netReconciliationBasis,
+    net_position,
     // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
     // period) - the technical-details line still appears, honestly reporting nothing to check.
-    technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0 },
+    technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf' },
     taxRatesSource: fetched.source,
   });
 });

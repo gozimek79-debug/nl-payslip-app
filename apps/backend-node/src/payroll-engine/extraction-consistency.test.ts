@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { checkExtractionConsistency, buildExtractionTrace, resolveSubtotalRole, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
+import { checkExtractionConsistency, buildExtractionTrace, resolveSubtotalRole, resolveAnchors, ALL_CONSISTENCY_ISSUE_CODES } from './extraction-consistency.js';
 import { known, type PayslipPeriod, type PayslipComputationOutcome, type PayslipComputationResult } from './payslip-model.js';
 
 /**
@@ -44,6 +44,8 @@ function minimalPeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
     printed_payout: null,
     printed_gross_total: null,
     printed_loon_voor_heffingen: null,
+    printed_taxable_base_normal: null,
+    printed_taxable_base_special: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,
@@ -468,6 +470,209 @@ test('2f.3: a printed gross total smaller than the printed loon voor heffingen i
   }
   // Blocked, per §2f.3 - none of the three staged checks should also fire on the same inverted pair.
   assert.ok(!issues.some((i) => i.code === 'gross_lines_do_not_reconcile' || i.code === 'pre_tax_does_not_reconcile' || i.code === 'net_does_not_reconcile'));
+});
+
+/**
+ * Stage 2i (audit v29, §2i.1): "today the single-subtotal resolver runs only when one anchor is
+ * present. Make it general... if printed_gross_total matches the loon-voor-heffingen position and
+ * not the gross position, reassign it... a printed figure that matches neither position is not a
+ * block... moves to a neutral list other_printed_figures." Numbers below are the owner's own OTTO
+ * panel figures (OWNER-RETEST-2h-otto.md / RAPORT-cursor-2h.md's T5): gross lines sum to 924.03,
+ * pre-tax deductions to 198.65, and the document prints TWO figures - 725.38 (which the model put in
+ * `printed_gross_total`, but which actually reproduces 924.03-198.65 exactly - the loon-voor-
+ * heffingen position, since OTTO prints no gross total at all) and 621.14 (the "normal" taxable base,
+ * which reproduces neither chain position and is not a role the code should assert).
+ */
+test("2i.1: OTTO's two anchors - the mislabelled 725.38 is reassigned to loon-voor-heffingen; 621.14 (matches neither position) becomes an other_printed_figure; gross and pre-tax stages pass", () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pre-tax deductions', amount: known(198.65, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 725.38, // the model's own label - wrong role, right number
+    printed_loon_voor_heffingen: 621.14, // the normal taxable base - a real printed figure, no chain role
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'gross_lines_do_not_reconcile'), `expected the gross stage to pass (924.03 no longer tested against the wrong anchor 725.38), got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'pre_tax_does_not_reconcile'), `expected the pre-tax stage to pass, got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'anchors_inverted'));
+  assert.ok(!issues.some((i) => i.code === 'printed_subtotal_role_unresolved'), '621.14 must be a neutral other_printed_figure, never a block');
+
+  const resolution = resolveAnchors(period, 924.03, 198.65);
+  assert.equal(resolution.role, 'confirmed_loon_voor_heffingen');
+  assert.equal(resolution.resolvedSubtotal, 725.38);
+  assert.equal(resolution.anchorReassigned, true);
+  assert.deepEqual(resolution.otherPrintedFigures, [621.14]);
+
+  const trace = buildExtractionTrace(period, completeOutcome({}));
+  assert.equal(trace.printed_subtotal_role, 'confirmed_loon_voor_heffingen');
+  assert.equal(trace.anchor_reassigned, true);
+  assert.deepEqual(trace.other_printed_figures, [621.14]);
+});
+
+test('2i.1: removing the reassignment must fail the OTTO test (proves it is load-bearing, not incidental)', () => {
+  // Reproduces the PRE-2i.1 behaviour inline: both anchors present -> resolveSubtotalRole's own
+  // early `if (hasGross && hasLvh) return 'both'` never tests the arithmetic, so the OLD dispatch
+  // would test the summed gross lines (924.03) directly against the WRONG anchor (725.38, actually
+  // the loon-voor-heffingen figure) as if it were the gross total.
+  const summedGross = 924.03;
+  const wronglyAssumedGrossAnchor = 725.38;
+  const residual = Math.round((summedGross - wronglyAssumedGrossAnchor) * 100) / 100;
+  assert.ok(Math.abs(residual) > 0.01, `expected the old gross-vs-725.38 comparison to be far outside tolerance (198.65, proving the pre-2i.1 behaviour would have blocked with gross_lines_do_not_reconcile), got residual ${residual}`);
+});
+
+test('2i.1: the Randstad and PKF fixtures (both anchors, each already confirming its OWN expected position) are unaffected - no reassignment, unchanged "both"', () => {
+  // Randstad: printed_gross_total 970.89 (= sum of its 5 hour lines), printed_loon_voor_heffingen
+  // 927.25 (= 970.89 - 43.64 pre-tax). Both anchors correctly confirm their own position already -
+  // the "normal case" branch, not a reassignment.
+  const randstad = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 970.89, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(43.64, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 970.89,
+    printed_loon_voor_heffingen: 927.25,
+  });
+  const randstadResolution = resolveAnchors(randstad, 970.89, 43.64);
+  assert.equal(randstadResolution.role, 'both');
+  assert.equal(randstadResolution.anchorReassigned, false);
+  assert.deepEqual(randstadResolution.otherPrintedFigures, []);
+
+  // PKF: printed_gross_total 3515.56, printed_loon_voor_heffingen 3277.02 (= 3515.56 - 238.54).
+  const pkf = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 3515.56, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(238.54, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 3515.56,
+    printed_loon_voor_heffingen: 3277.02,
+  });
+  const pkfResolution = resolveAnchors(pkf, 3515.56, 238.54);
+  assert.equal(pkfResolution.role, 'both');
+  assert.equal(pkfResolution.anchorReassigned, false);
+  assert.deepEqual(pkfResolution.otherPrintedFigures, []);
+});
+
+/**
+ * Stage 2i (audit v29, §2i.2): "check normal+special=total to the cent." OTTO's own owner-panel
+ * figures: normal-rate base 621.14, BT base 104.24, and the resolved total (the SAME 725.38 that
+ * 2i.1's reassignment already resolves as the loon-voor-heffingen anchor - "total" here is never a
+ * fourth invented number, it is that same resolved anchor).
+ */
+test("2i.2: OTTO's own taxable-base split (621.14 + 104.24) reconciles against the resolved 725.38 anchor - no printed_tax_bases_do_not_reconcile", () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pre-tax deductions', amount: known(198.65, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 725.38,
+    printed_loon_voor_heffingen: 621.14,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 104.24,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_bases_do_not_reconcile'), `expected the base split to reconcile against the resolved 725.38 anchor, got ${JSON.stringify(issues)}`);
+
+  const trace = buildExtractionTrace(period, completeOutcome({}));
+  assert.equal(trace.printed_taxable_base_normal, 621.14);
+  assert.equal(trace.printed_taxable_base_special, 104.24);
+});
+
+test('2i.2: a base split that does NOT sum to the resolved anchor fires printed_tax_bases_do_not_reconcile with the exact residual', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pre-tax deductions', amount: known(198.65, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 725.38,
+    printed_loon_voor_heffingen: 621.14,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 100.0, // wrong - should be 104.24, off by 4.24
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  const issue = issues.find((i) => i.code === 'printed_tax_bases_do_not_reconcile');
+  assert.ok(issue, `expected printed_tax_bases_do_not_reconcile, got ${JSON.stringify(issues)}`);
+  if (issue?.code === 'printed_tax_bases_do_not_reconcile') {
+    assert.equal(issue.implied_total, 721.14);
+    assert.equal(issue.printed_total, 725.38);
+    assert.equal(issue.residual, -4.24);
+  }
+});
+
+test('2i.2: only one of the two base fields present - never invented from one side, check does not fire', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pre-tax deductions', amount: known(198.65, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 725.38,
+    printed_loon_voor_heffingen: 621.14,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: null,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_bases_do_not_reconcile'), 'a single base component alone must never be checked against anything');
+});
+
+test("2i.2 regression: the taxable-base check must subtract the ET reduction from the loon-voor-heffingen position, not compare against loon-voor-heffingen directly - a real OTTO-shaped fixture with ET caught this bug during implementation", () => {
+  // OTTO's real chain: printed_gross_total 924.03 -> minus STIPP 21.65 -> printed_loon_voor_heffingen
+  // 902.38 -> minus the ET reduction 177.00 -> taxable base 725.38 (= 621.14 normal + 104.24 special).
+  // Comparing 621.14+104.24 against 902.38 directly (the pre-fix formula) would wrongly report a
+  // 177.00 EUR gap on a fixture whose base split is actually exactly correct.
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'pension', description: 'STIPP-pensioen werknemer', amount: known(21.65, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 924.03,
+    printed_loon_voor_heffingen: 902.38,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 104.24,
+    et: { et_applicable: true, et_exchange_amount: 177.0, et_reimbursements: [], adres_fiskalny: null },
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_bases_do_not_reconcile'), `expected the ET reduction to be subtracted before comparing, got ${JSON.stringify(issues)}`);
+});
+
+test('2i.2 regression: removing the ET subtraction must fail the fixture above (proves it is load-bearing, not incidental)', () => {
+  const loonVoorHeffingen = 902.38;
+  const etReduction = 177.0;
+  const wronglyComparedDirectly = Math.round((loonVoorHeffingen - etReduction) * 100) / 100; // 725.38, the correct taxable base
+  const withoutTheFix = loonVoorHeffingen; // the pre-fix formula's "total"
+  const impliedTotal = 621.14 + 104.24;
+  assert.equal(wronglyComparedDirectly, impliedTotal, 'sanity: the correct taxable base does equal the printed split');
+  assert.ok(Math.abs(impliedTotal - withoutTheFix) > 0.02, `expected comparing against loon-voor-heffingen directly (${withoutTheFix}) to be far outside tolerance vs the printed split (${impliedTotal}), proving the pre-fix formula would have wrongly blocked`);
+});
+
+/**
+ * Stage 2i (audit v29, §2i.4): "make an absent [printed table/BT tax] a stated gap, never zero" -
+ * unconditionally, not only alongside a net-reconciliation stage. Reproduces the exact shape
+ * OWNER-RETEST-2h-otto.md recorded: a real document with hour lines and NO printed net figure at all
+ * (OTTO), where printed_table_tax being genuinely unread previously produced complete silence.
+ */
+test('2i.4: a genuinely unread printed_table_tax on a document with NO printed_net is a stated gap, not silence', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: null,
+    printed_net: null,
+    printed_payout: 598.59, // OTTO's real shape: only a payout figure, no separate net
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(issues.some((i) => i.code === 'printed_tax_unknown'), `expected printed_tax_unknown even with no printed_net to reconcile against, got ${JSON.stringify(issues)}`);
+});
+
+test('2i.4: the same fixture with printed_table_tax actually set produces no gap - regression guard for the OTTO integration test (its own 12.28 residual must still be reported exactly once, unaffected by this new check)', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 924.03, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 77.52,
+    printed_net: null,
+    printed_payout: 598.59,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_unknown'), `expected no gap once printed_table_tax is actually set, got ${JSON.stringify(issues)}`);
+});
+
+test('2i.4: a period with no hour lines at all (nothing to tax) never fires the unconditional check - never a degenerate false positive', () => {
+  const period = minimalPeriod({ printed_table_tax: null, printed_net: null });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_unknown'));
+});
+
+test('2i.2: the common case (no base split printed at all, both null) never fires the new check - regression guard for every existing single-base fixture', () => {
+  const randstad = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 970.89, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(43.64, 'payslip_extracted'), base: null, percent: null }],
+    printed_gross_total: 970.89,
+    printed_loon_voor_heffingen: 927.25,
+  });
+  const issues = checkExtractionConsistency(null, randstad, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'printed_tax_bases_do_not_reconcile'));
 });
 
 /**

@@ -1,5 +1,6 @@
-import type { PayslipPeriod, PayslipComputationOutcome, PreTaxDeductionCategory, PostTaxSocialCategory } from './payslip-model.js';
+import { tableTaxToleranceFor, type PayslipPeriod, type PayslipComputationOutcome, type PreTaxDeductionCategory, type PostTaxSocialCategory } from './payslip-model.js';
 import { findUnusedPrintedAmounts, type DocumentTextItem } from './document-text-guard.js';
+import { resolveNetReconciliationBasis } from './discrepancy.js';
 
 /**
  * Stage 2b (audit "CONSOLIDATED ASSIGNMENT" v12, §Stage 2b): a gate that runs BEFORE
@@ -40,6 +41,19 @@ export type ConsistencyIssue =
   | { code: 'anchors_inverted'; printed_gross_total: number; printed_loon_voor_heffingen: number }
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
+  // Stage 2i (§2i.2): "check normal+special=total to the cent" - a pure identity between three
+  // printed figures (OTTO: 621.14 + 104.24 = 725.38), exactly like gross_lines_do_not_reconcile above,
+  // never a comparison against anything the engine computed.
+  | { code: 'printed_tax_bases_do_not_reconcile'; implied_total: number; printed_total: number; residual: number }
+  // Stage 2i (§2i.3): "when base reduction equals sum of reimbursements gate can confirm reading
+  // (arithmetic, §2.13)." A genuine domain identity, not a guessed rule: an ET/extraterritorial salary
+  // exchange arrangement swaps an equal amount of taxed wage for tax-free reimbursement, so the base
+  // reduction and the reimbursement total are the SAME euro figure by construction - confirmed on the
+  // one real document seen so far (OTTO: 33.00 + 144.00 = 177.00, exact). Fires only the OTHER way -
+  // when both sides are present and do NOT match - a genuine internal inconsistency in the reading
+  // (an incomplete reimbursement list, or a base reduction read from the wrong line). A match raises
+  // nothing; silence is the confirmation, same idiom as every other reconciliation stage in this file.
+  | { code: 'et_reduction_reimbursement_mismatch'; et_exchange_amount: number; reimbursements_sum: number; residual: number }
   // Stage 2e (§2e.5): tier-c.ts previously defaulted an unread period_type to 'week' and an unread
   // et_exchange_amount to 0 - both silent, both consequential (a monthly slip taxed as weekly; an ET
   // base reduction silently dropped). Raised by the controller (it alone has the raw TierCExtraction
@@ -78,6 +92,8 @@ export const ALL_CONSISTENCY_ISSUE_CODES = [
   'anchors_inverted',
   'totals_do_not_reconcile_net',
   'totals_do_not_reconcile_payout',
+  'printed_tax_bases_do_not_reconcile',
+  'et_reduction_reimbursement_mismatch',
   'period_type_unknown',
   'et_exchange_amount_unknown',
   'amount_unreadable',
@@ -150,6 +166,27 @@ export function classifyPreTaxDeductionLabel(description: string): PreTaxDeducti
 export function classifyPostTaxDeductionLabel(description: string): PostTaxSocialCategory | null {
   const normalized = stripDiacritics(description);
   return POST_TAX_KEYWORDS.find((k) => k.pattern.test(normalized))?.category ?? null;
+}
+
+/**
+ * Stage 2i (audit v29, §2i.3): "the 177.00 'Nieopod. część wyn. 100%' is the ET exchange reduction...
+ * fix prompt and mapper so a line reducing taxable base by the ET reimbursement amount is read into
+ * et_exchange_amount." Confirmed against a real document (OWNER-RETEST-2h-otto.md): the model read the
+ * AMOUNT correctly (177.00, exact) but filed it in pre_tax_deduction_lines under category 'other' -
+ * none of PRE_TAX_KEYWORDS above recognises it, and it is not a pension/PAWW/Ziektewet/WGA-Gat line at
+ * all, so it stayed 'other' rather than being pulled out. Same "label decides" pattern as
+ * classifyPreTaxDeductionLabel (§2e.4), used by tier-c.ts as a MAPPER-SIDE backstop: it reclassifies a
+ * mislabelled pre-tax line into et_exchange_amount only when the model did not already report that
+ * field directly (never overwrites an explicit reading, never double-counts by leaving the line in
+ * both places - see mapExtractionToPeriod's own comment). Confirmed on the one real label seen so far
+ * ("Nieopod." - short for "Nieopodatkowana", ie. "untaxed") plus the two terms the prompt itself
+ * already asks the model to look for ("ET", "extraterritoriale") - narrower than a guessed general
+ * pattern, per §2.2/§2.3.
+ */
+const ET_EXCHANGE_LABEL_PATTERN = /nieopod|extraterritorial|\bet\b/;
+
+export function isEtExchangeLabel(description: string): boolean {
+  return ET_EXCHANGE_LABEL_PATTERN.test(stripDiacritics(description));
 }
 
 /** Best-effort: only fires when the document's own label prints an explicit two-date range (as
@@ -262,6 +299,74 @@ export function resolveSubtotalRole(period: PayslipPeriod, grossTotal: number, p
 }
 
 /**
+ * Stage 2i (audit v29, §2i.1): "today the single-subtotal resolver runs only when one anchor is
+ * present. Make it general. For each printed anchor, test its value against the two chain positions
+ * ... to the derived tolerance." `resolveSubtotalRole`'s own early `if (hasGross && hasLvh) return
+ * 'both'` never checked the arithmetic at all when both anchors exist - OTTO prints one number
+ * (725.38) that reproduces the loon-voor-heffingen position exactly, sitting in `printed_gross_total`
+ * (the document has no distinct gross total at all), while its OTHER anchor (621.14, the "normal"
+ * taxable base) reproduces neither position - a role no printed label decided (§2.13).
+ *
+ * Kept as a SEPARATE function from `resolveSubtotalRole` (not a signature change to it): that
+ * function is directly tested against a plain `SubtotalRole` string return value (2g.0d's T3 table),
+ * and every one of its existing single-anchor/no-anchor cases is delegated to unchanged below - only
+ * the two-anchor case gains new arithmetic it never had.
+ */
+export interface AnchorResolution {
+  role: SubtotalRole;
+  /** The one printed figure to use as "the" anchor downstream (for `resolvedLoonVoorHeffingen` in the
+   * caller) - `null` only for `'both'` (both stay independently anchored, handled separately) and
+   * `'none'` (nothing to resolve). */
+  resolvedSubtotal: number | null;
+  /** Stage 2i (§2i.1): "record anchor_reassigned in the trace" - true only when a printed figure that
+   * looked like one role (by the field the model put it in) was resolved to the OTHER role by
+   * arithmetic instead. */
+  anchorReassigned: boolean;
+  /** Stage 2i (§2i.1): "a printed figure that matches neither position is not a block - it moves to a
+   * neutral list other_printed_figures." Populated only in the two-anchor reassignment case; the
+   * single-anchor 'unresolved' case already has its own reporting path (printed_subtotal_role_unresolved). */
+  otherPrintedFigures: number[];
+}
+
+export function resolveAnchors(period: PayslipPeriod, grossTotal: number, preTaxSum: number | null): AnchorResolution {
+  const baseRole = resolveSubtotalRole(period, grossTotal, preTaxSum);
+  if (baseRole !== 'both') {
+    // Single-anchor or no-anchor case: unchanged behaviour, delegated entirely.
+    const printedSubtotal = period.printed_gross_total ?? period.printed_loon_voor_heffingen;
+    return { role: baseRole, resolvedSubtotal: printedSubtotal, anchorReassigned: false, otherPrintedFigures: [] };
+  }
+
+  const gross = period.printed_gross_total as number;
+  const lvh = period.printed_loon_voor_heffingen as number;
+  const lvhHypothesis = preTaxSum !== null ? grossTotal - preTaxSum : null;
+  const grossTolerance = reconciliationTolerance(1 + period.hour_lines.length);
+  const lvhTolerance = reconciliationTolerance(1 + period.hour_lines.length + period.pre_tax_deductions.length);
+  const grossMatchesGrossPos = Math.abs(gross - grossTotal) <= grossTolerance;
+  const grossMatchesLvhPos = lvhHypothesis !== null && Math.abs(gross - lvhHypothesis) <= lvhTolerance;
+  const lvhMatchesLvhPos = lvhHypothesis !== null && Math.abs(lvh - lvhHypothesis) <= lvhTolerance;
+  const lvhMatchesGrossPos = Math.abs(lvh - grossTotal) <= grossTolerance;
+
+  // Normal case: each anchor confirms its OWN expected position - nothing changes.
+  if (grossMatchesGrossPos && lvhMatchesLvhPos) {
+    return { role: 'both', resolvedSubtotal: null, anchorReassigned: false, otherPrintedFigures: [] };
+  }
+  // OTTO's shape: printed_gross_total is actually the loon-voor-heffingen figure (matches that
+  // position, not the gross one); printed_loon_voor_heffingen matches neither position at all.
+  if (!grossMatchesGrossPos && grossMatchesLvhPos && !lvhMatchesLvhPos && !lvhMatchesGrossPos) {
+    return { role: 'confirmed_loon_voor_heffingen', resolvedSubtotal: gross, anchorReassigned: true, otherPrintedFigures: [lvh] };
+  }
+  // The symmetric shape: printed_loon_voor_heffingen is actually the gross figure; printed_gross_total
+  // matches neither position.
+  if (!lvhMatchesLvhPos && lvhMatchesGrossPos && !grossMatchesGrossPos && !grossMatchesLvhPos) {
+    return { role: 'confirmed_gross', resolvedSubtotal: lvh, anchorReassigned: true, otherPrintedFigures: [gross] };
+  }
+  // Any other combination (both ambiguous, both fail, or an overlap not covered above) - the
+  // arithmetic did not uniquely pick a reassignment, so trust the model's own field labels as before;
+  // the unchanged stage-1/2/3 checks below still catch a genuine inconsistency on their own.
+  return { role: 'both', resolvedSubtotal: null, anchorReassigned: false, otherPrintedFigures: [] };
+}
+
+/**
  * Stage 2d (audit v19, §2d.1): "the blocking panel must show what it read." Until now, a gate firing
  * told the user (and the owner, debugging live) only that something didn't add up - not which lines
  * were read, what they were categorized as, or where in the gross-to-net chain the arithmetic broke.
@@ -327,7 +432,35 @@ export interface ExtractionTrace {
     amounts_not_found: number;
     text_layer_status: 'ok' | 'mismatch' | 'too_large' | 'none';
     request_size_kb: number;
+    /** Stage 2i (§2i.0e): "when Content-Length is absent or disagrees with the re-encoded size by
+     * more than a margin, show the measured size and say which." Which of the two numbers
+     * `request_size_kb` actually is. */
+    request_size_source: 'content_length' | 'measured';
+    /** Stage 2i (§2i.0d): "put the chosen step in the technical line." */
+    render_step: string;
   };
+  /** Stage 2i (audit v29, §2i.0b): "the dual net position is visible, and the layers still catch it."
+   * `'before'`/`'after'` name which chain position the printed net actually confirmed (Olympia/
+   * Randstad print theirs before net additions/deductions, PKF's is after); `'both'` when the two
+   * positions coincide (no net lines, or they cancel out); `'none'` when nothing was printed there,
+   * the computation never ran, or the printed figure matches neither position (a genuine gap, still
+   * reported separately as `net_does_not_reconcile`/`net_mismatch` - this field never hides that). */
+  net_position: 'before' | 'after' | 'both' | 'none';
+  /** Stage 2i (audit v29, §2i.1): "record anchor_reassigned in the trace." True only when a printed
+   * figure that sat in one anchor field (e.g. `printed_gross_total`) was resolved by arithmetic to
+   * actually be the OTHER role (OTTO: 725.38 sits in `printed_gross_total` but reproduces the
+   * loon-voor-heffingen position, not the gross-lines-sum one - the document prints no gross total
+   * at all). Never true for the ordinary single-anchor case, only the two-anchor reassignment. */
+  anchor_reassigned: boolean;
+  /** Stage 2i (§2i.1): "a printed figure that matches neither position... moves to a neutral list
+   * other_printed_figures, and is shown as such." OTTO's 621.14 (the "normal" taxable base, a real
+   * printed number that is simply not either chain-position anchor) lands here instead of blocking. */
+  other_printed_figures: number[];
+  /** Stage 2i (audit v29, §2i.2): OTTO's own taxable-base split, shown whenever the document printed
+   * one - null/null on every document that prints a single, undivided base (the common case). Never
+   * asserted from the resolved anchor above; these are only what the document itself printed. */
+  printed_taxable_base_normal: number | null;
+  printed_taxable_base_special: number | null;
 }
 
 /** Everything about a request's text-layer handling that only the controller (holding the raw HTTP
@@ -337,6 +470,8 @@ export interface ExtractionTrace {
 export interface ExtractionTraceMeta {
   textLayerStatus: 'ok' | 'mismatch' | 'too_large' | 'none';
   requestSizeKb: number;
+  requestSizeSource: 'content_length' | 'measured';
+  renderStep: string;
   textItemsSent: number;
   amountsChecked: number;
   amountsNotFound: number;
@@ -344,6 +479,20 @@ export interface ExtractionTraceMeta {
 
 function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted'): ExtractionTraceLine {
   return { label: description, category, amount, provenance };
+}
+
+/** Stage 2i (§2i.0b): translates `resolveNetReconciliationBasis`'s own vocabulary (shared with
+ * `discrepancy.ts`'s `net_mismatch`, so the two can never disagree) into the trace's plain-language
+ * one - 'wage_net'/'period_net' are engine field names, not something the panel should ever show.
+ * Exported so the controller can attach the identical value to a successful `'ok'` response too -
+ * the assignment's own "say it on the panel" is not limited to the unreliable trace view. */
+export function resolveNetPosition(period: PayslipPeriod, outcome: PayslipComputationOutcome | null): ExtractionTrace['net_position'] {
+  if (outcome === null) return 'none';
+  const basis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
+  if (basis === 'wage_net') return 'before';
+  if (basis === 'period_net') return 'after';
+  if (basis === 'both') return 'both';
+  return 'none'; // 'neither' or 'not_applicable' - no confirmed position to show
 }
 
 export function buildExtractionTrace(
@@ -369,11 +518,16 @@ export function buildExtractionTrace(
   const payoutAdjustmentsSum = period.payout_adjustments.reduce((sum, l) => sum + l.amount, 0);
   const impliedPayout = period.printed_net !== null ? Math.round((period.printed_net + netAdditionsSum - netDeductionsSum + payoutAdjustmentsSum) * 100) / 100 : null;
   const taxFields = outcome === null ? null : outcome.status === 'complete' ? outcome.result : outcome;
+  // Stage 2i (§2i.1): the SAME resolver the gate uses, so the trace's own printed_subtotal_role,
+  // anchor_reassigned and other_printed_figures can never disagree with what actually blocked (or
+  // didn't) - `checkExtractionConsistency` and `buildExtractionTrace` stay independent, side-effect-
+  // free functions, but both read the SAME piece of arithmetic here rather than each deciding alone.
+  const anchorResolution = resolveAnchors(period, grossTotal, preTaxSum);
 
   return {
     hour_lines: period.hour_lines.map((l) => traceLine(l.description, l.category, l.amount)),
     gross_total: Math.round(grossTotal * 100) / 100,
-    printed_subtotal_role: resolveSubtotalRole(period, grossTotal, preTaxSum),
+    printed_subtotal_role: anchorResolution.role,
     printed_gross_total: period.printed_gross_total,
     pre_tax_deductions: preTaxLines,
     pre_tax_deductions_sum: preTaxSum,
@@ -402,7 +556,14 @@ export function buildExtractionTrace(
       amounts_not_found: meta.amountsNotFound ?? 0,
       text_layer_status: meta.textLayerStatus ?? (textItems.length > 0 ? 'ok' : 'none'),
       request_size_kb: meta.requestSizeKb ?? 0,
+      request_size_source: meta.requestSizeSource ?? 'measured',
+      render_step: meta.renderStep ?? 'unknown',
     },
+    net_position: resolveNetPosition(period, outcome),
+    anchor_reassigned: anchorResolution.anchorReassigned,
+    other_printed_figures: anchorResolution.otherPrintedFigures,
+    printed_taxable_base_normal: period.printed_taxable_base_normal,
+    printed_taxable_base_special: period.printed_taxable_base_special,
   };
 }
 
@@ -504,6 +665,18 @@ export function checkExtractionConsistency(
   const preTaxSumForReconciliation = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
   const postTaxSumForReconciliation = sumKnownAmounts(period.post_tax_social.map((d) => d.amount));
 
+  // Stage 2i (§2i.4): "make an absent [printed table/BT tax] a stated gap, never zero" -
+  // unconditionally, not only when a net-reconciliation stage below happens to run (both of those
+  // require a printed_net to compare against, which OTTO's own document never prints at all -
+  // printed_table_tax being genuinely unread on that kind of document previously produced total
+  // silence, not a reported gap, per OWNER-RETEST-2h-otto.md: "printed table tax | unknown | ... |
+  // not read"). Only fires here when printed_net is ABSENT; when it is present, checkNetStage/the
+  // 'none' branch below already raise this exact same code from the identical condition - pushing it
+  // again here would duplicate the same issue in the list for no new information.
+  if (period.printed_net === null && period.hour_lines.length > 0 && (period.printed_table_tax === null || resolveBtTaxComponent(period) === null)) {
+    issues.push({ code: 'printed_tax_unknown' });
+  }
+
   function checkNetStage(loonVoorHeffingen: number): void {
     if (period.printed_net === null || postTaxSumForReconciliation === null) return;
     const tableTax = period.printed_table_tax;
@@ -535,7 +708,41 @@ export function checkExtractionConsistency(
     issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(implied * 100) / 100, printed_net: period.printed_net, residual });
   }
 
-  const subtotalRole = resolveSubtotalRole(period, grossTotal, preTaxSumForReconciliation);
+  // Stage 2i (§2i.1): resolves BOTH anchors by arithmetic (not just the single-anchor case) - see
+  // resolveAnchors's own doc comment for the OTTO shape this exists to catch.
+  const anchorResolution = resolveAnchors(period, grossTotal, preTaxSumForReconciliation);
+  const subtotalRole = anchorResolution.role;
+
+  // Stage 2i (§2i.2): "check normal+special=total to the cent" - "total" is the taxable-base
+  // POSITION (right before tax), not the loon-voor-heffingen position stage 2 resolves: OTTO itself
+  // has an ET reduction sitting BETWEEN the two (902.38 loon-voor-heffingen minus 177.00 ET = 725.38
+  // taxable base - the real, full OTTO fixture caught this: without the ET subtraction here, "total"
+  // came out 177.00 too high). Mirrors computePayslipPeriod's own `taxableBase = loonVoorHeffingen -
+  // etReduction` identity exactly (payslip-model.ts) - never re-derived differently here. Still built
+  // entirely from the resolved anchor plus a printed/extracted ET figure, never a fourth invented
+  // number, and never computed where a taxable-base anchor was not itself resolved.
+  const loonVoorHeffingenPositionForBasesCheck: number | null =
+    subtotalRole === 'both'
+      ? period.printed_loon_voor_heffingen
+      : subtotalRole === 'confirmed_gross'
+        ? preTaxSumForReconciliation !== null && anchorResolution.resolvedSubtotal !== null
+          ? Math.round((anchorResolution.resolvedSubtotal - preTaxSumForReconciliation) * 100) / 100
+          : null
+        : subtotalRole === 'confirmed_loon_voor_heffingen' || subtotalRole === 'ambiguous_both_match'
+          ? anchorResolution.resolvedSubtotal
+          : null;
+  const etReductionForBasesCheck = period.et?.et_applicable ? period.et.et_exchange_amount : 0;
+  const resolvedTaxableBaseForBasesCheck: number | null =
+    loonVoorHeffingenPositionForBasesCheck !== null ? Math.round((loonVoorHeffingenPositionForBasesCheck - etReductionForBasesCheck) * 100) / 100 : null;
+  if (period.printed_taxable_base_normal !== null && period.printed_taxable_base_special !== null && resolvedTaxableBaseForBasesCheck !== null) {
+    const impliedTotal = Math.round((period.printed_taxable_base_normal + period.printed_taxable_base_special) * 100) / 100;
+    const residual = Math.round((impliedTotal - resolvedTaxableBaseForBasesCheck) * 100) / 100;
+    // n: normal base, special base, the resolved total itself, plus the ET reduction when applicable -
+    // each a printed/extracted figure carrying its own half-cent of independent rounding.
+    if (Math.abs(residual) > reconciliationTolerance(period.et?.et_applicable ? 4 : 3)) {
+      issues.push({ code: 'printed_tax_bases_do_not_reconcile', implied_total: impliedTotal, printed_total: resolvedTaxableBaseForBasesCheck, residual });
+    }
+  }
 
   if (subtotalRole === 'both') {
     // Stage 2f (§2f.3): a document where the printed gross is smaller than the printed loon voor
@@ -570,7 +777,11 @@ export function checkExtractionConsistency(
     // Stage 2f (§2f.2): exactly one printed subtotal was read. Test it against both hypotheses rather
     // than trusting whichever field extraction happened to put it in (the Olympia trap: one number,
     // read into printed_gross_total, that is actually loon_voor_heffingen).
-    const printedSubtotal = (period.printed_gross_total ?? period.printed_loon_voor_heffingen) as number;
+    //
+    // Stage 2i (§2i.1): `resolvedSubtotal` (not a plain `??` fallback) - when this branch was reached
+    // via a TWO-anchor reassignment (OTTO's shape), the "confirmed" figure could be EITHER printed
+    // field depending on which one the arithmetic actually matched, not always printed_gross_total.
+    const printedSubtotal = anchorResolution.resolvedSubtotal as number;
     if (subtotalRole === 'unresolved') {
       const lvhHypothesis = preTaxSumForReconciliation !== null ? grossTotal - preTaxSumForReconciliation : null;
       issues.push({
@@ -630,6 +841,21 @@ export function checkExtractionConsistency(
     const n = 2 + period.payout_adjustments.length + (printedNetIsPostNetLines ? 0 : period.net_additions.length + period.net_deductions.length);
     if (Math.abs(residual) > reconciliationTolerance(n)) {
       issues.push({ code: 'totals_do_not_reconcile_payout', implied_payout: Math.round(impliedPayout * 100) / 100, printed_payout: period.printed_payout, residual });
+    }
+  }
+
+  // 5. Stage 2i (§2i.3): "when base reduction equals sum of reimbursements gate can confirm reading" -
+  // see the ConsistencyIssue variant's own doc comment for why this identity holds by construction for
+  // a genuine ET/extraterritorial salary exchange. Only runs when both sides exist; a document with
+  // one but not the other has its own gap already reported elsewhere (the controller's
+  // et_exchange_amount_unknown, or simply an et_reimbursement_lines-less reduction, which is not itself
+  // implausible - not every ET arrangement need be a pure exchange).
+  if (period.et?.et_applicable && period.et.et_reimbursements.length > 0) {
+    const reimbursementsSum = Math.round(period.et.et_reimbursements.reduce((sum, r) => sum + r.amount, 0) * 100) / 100;
+    const residual = Math.round((reimbursementsSum - period.et.et_exchange_amount) * 100) / 100;
+    // n: the exchange amount, plus each reimbursement line.
+    if (Math.abs(residual) > reconciliationTolerance(1 + period.et.et_reimbursements.length)) {
+      issues.push({ code: 'et_reduction_reimbursement_mismatch', et_exchange_amount: period.et.et_exchange_amount, reimbursements_sum: reimbursementsSum, residual });
     }
   }
 

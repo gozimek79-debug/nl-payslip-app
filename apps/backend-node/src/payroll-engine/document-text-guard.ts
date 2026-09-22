@@ -55,6 +55,33 @@ export function collectPeriodAmounts(period: PayslipPeriod): Array<{ path: strin
   // unused-amounts accounting, even though they are ordinary printed EUR figures like any other anchor.
   if (period.printed_algemene_heffingskorting !== null) out.push({ path: 'printed_algemene_heffingskorting', magnitude: Math.abs(period.printed_algemene_heffingskorting) });
   if (period.printed_arbeidskorting !== null) out.push({ path: 'printed_arbeidskorting', magnitude: Math.abs(period.printed_arbeidskorting) });
+  // Stage 2i (audit v29, §2i.2): OTTO's two printed taxable-base components - ordinary EUR figures
+  // like every other anchor above, so the guard/unused-list accounting must see them too.
+  if (period.printed_taxable_base_normal !== null) out.push({ path: 'printed_taxable_base_normal', magnitude: Math.abs(period.printed_taxable_base_normal) });
+  if (period.printed_taxable_base_special !== null) out.push({ path: 'printed_taxable_base_special', magnitude: Math.abs(period.printed_taxable_base_special) });
+  return out;
+}
+
+/**
+ * Stage 2i (audit v29, §2i.5): "hours, rates, percentages, BT rate, minimum wage, annual wage returned
+ * as fields count as explained numbers for the unused list (not for the guard)." OWNER-RETEST-2h-otto.md
+ * measured 27 "unused" items on a real upload that were mostly these - numbers the model DID read, into
+ * a field, just not one of the EUR-amount fields `collectPeriodAmounts` above enumerates. Kept as a
+ * SEPARATE list, deliberately not merged into `collectPeriodAmounts`: `verifyAmountsAgainstText` (the
+ * guard) exists to confirm EUR amounts specifically were not hallucinated, and an hours/rate/percent
+ * figure is a different kind of claim - the assignment is explicit that these count for the unused list
+ * ONLY, never widening what the guard itself checks. Only `findUnusedPrintedAmounts` reads this.
+ */
+export function collectExplainedNonAmountMagnitudes(period: PayslipPeriod): Array<{ path: string; magnitude: number }> {
+  const out: Array<{ path: string; magnitude: number }> = [];
+  period.hour_lines.forEach((l, i) => {
+    if (l.hours !== null) out.push({ path: `hour_lines[${i}].hours`, magnitude: Math.abs(l.hours) });
+    if (l.rate !== null) out.push({ path: `hour_lines[${i}].rate`, magnitude: Math.abs(l.rate) });
+    if (l.percent !== null) out.push({ path: `hour_lines[${i}].percent`, magnitude: Math.abs(l.percent) });
+  });
+  if (period.bijzonder_tarief.tarief_bt.printed !== null) out.push({ path: 'bijzonder_tarief.tarief_bt.printed', magnitude: Math.abs(period.bijzonder_tarief.tarief_bt.printed) });
+  if (period.wml_printed !== null) out.push({ path: 'wml_printed', magnitude: Math.abs(period.wml_printed) });
+  if (period.bijzonder_tarief.jaarloon_bt !== null) out.push({ path: 'bijzonder_tarief.jaarloon_bt', magnitude: Math.abs(period.bijzonder_tarief.jaarloon_bt) });
   return out;
 }
 
@@ -87,8 +114,19 @@ function extractedNumbers(textItems: DocumentTextItem[]): ExtractedNumber[] {
   return found;
 }
 
+/**
+ * Stage 2i (audit v29, §2i.0c): "the guard confirms an amount only with a money token. Bare integers
+ * (36, 417, 123456782, 0) never confirm an amount." The reviewer measured this exact gap: an IBAN's
+ * digit groups, a week number, or a BSN can parse to a bare integer that happens to equal an invented
+ * field's magnitude, wrongly "confirming" it. Only `shape: 'money'` candidates (exactly two decimals)
+ * are eligible to confirm anything here - `findUnusedPrintedAmounts` below already required this
+ * shape (2g.4's own rule, unchanged); this makes `verifyAmountsAgainstText` require the identical
+ * shape, so the two can never disagree about what counts as a real confirmation.
+ */
 function parsedTextMagnitudes(textItems: DocumentTextItem[]): number[] {
-  return extractedNumbers(textItems).map((n) => Math.round(Math.abs(n.value) * 100) / 100);
+  return extractedNumbers(textItems)
+    .filter((n) => n.shape === 'money')
+    .map((n) => Math.round(Math.abs(n.value) * 100) / 100);
 }
 
 /**
@@ -123,10 +161,12 @@ export function verifyAmountsAgainstText(period: PayslipPeriod, textItems: Docum
  */
 export function findUnusedPrintedAmounts(period: PayslipPeriod, textItems: DocumentTextItem[]): number[] {
   if (textItems.length === 0) return [];
-  const usedMagnitudes = collectPeriodAmounts(period).map((a) => Math.round(a.magnitude * 100) / 100);
+  // Stage 2i (§2i.5): widened with collectExplainedNonAmountMagnitudes - see that function's own
+  // comment for why this list is wider here than the guard's own collectPeriodAmounts-only check.
+  const usedMagnitudes = [...collectPeriodAmounts(period), ...collectExplainedNonAmountMagnitudes(period)].map((a) => Math.round(a.magnitude * 100) / 100);
   const unused: number[] = [];
   for (const n of extractedNumbers(textItems)) {
-    if (!n.amountLike) continue;
+    if (n.shape !== 'money') continue;
     const magnitude = Math.round(Math.abs(n.value) * 100) / 100;
     const isUsed = usedMagnitudes.some((v) => Math.abs(v - magnitude) <= CENT_EPSILON);
     if (!isUsed) unused.push(magnitude);

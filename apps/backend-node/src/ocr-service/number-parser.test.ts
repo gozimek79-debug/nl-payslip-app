@@ -121,14 +121,14 @@ test('2h.1 extractPrintedNumbers: an unparseable merged run yields no numbers, n
   assert.deepEqual(extractPrintedNumbers('week 36/2026'), []);
 });
 
-test('2h.1 extractPrintedNumbers: the 2g.4 measurement re-run - hours and rate tokens inside a merged run are found too, each carrying their own amountLike flag', () => {
+test('2h.1 extractPrintedNumbers: the 2g.4 measurement re-run - hours and rate tokens inside a merged run are found too, each carrying their own shape', () => {
   const found = extractPrintedNumbers('Loon normaal 45,00 x 15,55 699,78');
   const values = found.map((n) => n.value);
   assert.deepEqual(values, [45, 15.55, 699.78]);
-  // 45,00 and 15,55 both carry two decimals - amount-like by the same rule as any other EUR figure,
+  // 45,00 and 15,55 both carry two decimals - money-shaped by the same rule as any other EUR figure,
   // even though collectPeriodAmounts (document-text-guard.ts) never treats an hours/rate field as a
   // payslip amount. This is exactly the source of the 2g.4 "unused" measurement's real, non-zero count.
-  assert.deepEqual(found.map((n) => n.amountLike), [true, true, true]);
+  assert.deepEqual(found.map((n) => n.shape), ['money', 'money', 'money']);
 });
 
 test('2h.1 extractPrintedNumbers: a thousands amount split by whitespace INSIDE a longer merged run recombines correctly ("Jaarloon ... 1 234,56")', () => {
@@ -152,4 +152,34 @@ test('2h.1 looksLikeSplitThousandsPair: the genuine split-thousands shape - a ba
   assert.equal(looksLikeSplitThousandsPair('12', '345,67'), true);
   assert.equal(looksLikeSplitThousandsPair('Loon normaal', '699,78'), false, 'a label is never a split-thousands prefix');
   assert.equal(looksLikeSplitThousandsPair('1', '23'), false, 'the remainder must carry its own comma-decimal, or this is not the shape');
+});
+
+/**
+ * Stage 2i (audit v29, §2i.0c): "amounts are confirmed by money-shaped tokens only... Tests with the
+ * reviewer's strings (Week 36, NL91 ABNA 0417 1643 00, BSN 123456782)." Reproduces RAPORT-cursor-2h.md's
+ * T6 table exactly - every value these strings extract is real (the tokeniser is correct to find
+ * them), but NONE may carry `shape: 'money'`, since none of them has the two-decimal EUR-amount shape.
+ */
+test('2i.0c: "Week 36" extracts 36, shaped as integer, never money', () => {
+  const found = extractPrintedNumbers('Week 36');
+  assert.deepEqual(found.map((n) => n.value), [36]);
+  assert.deepEqual(found.map((n) => n.shape), ['integer']);
+});
+
+test('2i.0c: an IBAN ("NL91 ABNA 0417 1643 00") extracts its bare digit groups, all shaped as integer, never money', () => {
+  const found = extractPrintedNumbers('NL91 ABNA 0417 1643 00');
+  assert.deepEqual(found.map((n) => n.value), [417, 1643, 0]);
+  assert.ok(found.every((n) => n.shape === 'integer'), `expected every value shaped 'integer', got ${JSON.stringify(found)}`);
+});
+
+test('2i.0c: a BSN ("BSN 123456782") extracts the bare number, shaped as integer, never money', () => {
+  const found = extractPrintedNumbers('BSN 123456782');
+  assert.deepEqual(found.map((n) => n.value), [123456782]);
+  assert.deepEqual(found.map((n) => n.shape), ['integer']);
+});
+
+test('2i.0c: a genuine EUR amount is still shaped money, even alongside integer-shaped neighbours', () => {
+  const found = extractPrintedNumbers('45,00 x 15,55 = 699,75');
+  assert.deepEqual(found.map((n) => n.value), [45, 15.55, 699.75]);
+  assert.ok(found.every((n) => n.shape === 'money'), `expected every value shaped 'money' (all carry two decimals), got ${JSON.stringify(found)}`);
 });

@@ -104,6 +104,8 @@ function basePeriod(overrides: Partial<PayslipPeriod>): PayslipPeriod {
     printed_payout: null,
     printed_gross_total: null,
     printed_loon_voor_heffingen: null,
+    printed_taxable_base_normal: null,
+    printed_taxable_base_special: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,
@@ -161,13 +163,14 @@ test('2g.6: an unused printed amount (58.31) is listed when the model never retu
   assert.ok(unused.includes(58.31), `expected 58.31 among unused amounts, got: ${JSON.stringify(unused)}`);
 });
 
-test('2h.1 re-run of the 2g.4 measurement: a merged label+hours+rate+amount run now leaves the SAME 2 unused items a separate-cell layout does', async () => {
+test('2h.1 re-run of the 2g.4 measurement (SUPERSEDED by 2i.5 below): a merged label+hours+rate+amount run - re-measured again after 2i.5', async () => {
   // Stage 2g's parser only ever tried a whole text item as one number, so "Loon normaal 45,00 x
   // 15,55" (one merged item) contributed nothing at all - the 2g.4 measurement on this exact fixture
-  // was 0. Stage 2h's tokeniser (§2h.1) now recovers 45 and 15.55 out of that same merged run too,
-  // so this fixture's real, re-measured count is 2, not 0 - matching the cell-per-layout fixture
-  // below exactly. Reported as the new, checked number (§2h.1: "report the new unused counts for
-  // both layouts"), not assumed unchanged from stage 2g.
+  // was 0. Stage 2h's tokeniser (§2h.1) recovered 45 and 15.55 out of that same merged run, making
+  // the then-current count 2. Stage 2i (§2i.5): "hours, rates, percentages... count as explained
+  // numbers for the unused list" - hourLine's own default hours=45/rate=15.55 exactly match this
+  // fixture's printed figures, so they are now explained (read into a field), not unused. Re-measured
+  // again, honestly, at each stage rather than assumed unchanged - the count is 0 now, not 2.
   const bytes = await buildSyntheticPayslipPdf([
     { label: 'Loon normaal 45,00 x 15,55', amount: '699,78' },
     LOON_ONREGELM_ROW,
@@ -179,12 +182,10 @@ test('2h.1 re-run of the 2g.4 measurement: a merged label+hours+rate+amount run 
     pre_tax_deductions: [stippDeduction(34.79)],
   });
   const unused = findUnusedPrintedAmounts(period, items);
-  assert.equal(unused.length, 2, `expected the re-measured count to match this fixture; got ${unused.length} unused: ${JSON.stringify(unused)}`);
-  assert.ok(unused.includes(45), `expected the hours figure (45) among unused, got: ${JSON.stringify(unused)}`);
-  assert.ok(unused.includes(15.55), `expected the rate figure (15.55) among unused, got: ${JSON.stringify(unused)}`);
+  assert.equal(unused.length, 0, `expected 2i.5 to explain away the hours/rate figures (both match a read hour_line exactly); got ${unused.length} unused: ${JSON.stringify(unused)}`);
 });
 
-test('2g.4 measurement: a layout that prints hours and rate as their own table cells leaves those as unused amount-like items', async () => {
+test('2i.5: a layout that prints hours and rate as their own table cells no longer leaves those as unused - they are explained by the read hour_line (SUPERSEDES the 2g.4 measurement of this same fixture, which predates collectExplainedNonAmountMagnitudes)', async () => {
   const bytes = await buildSyntheticPayslipPdf([
     { label: 'Loon normaal', amount: '45,00' },
     { label: '', amount: '15,55' },
@@ -197,11 +198,12 @@ test('2g.4 measurement: a layout that prints hours and rate as their own table c
     pre_tax_deductions: [stippDeduction(34.79)],
   });
   const unused = findUnusedPrintedAmounts(period, items);
-  // 45,00 (hours) and 15,55 (rate) are amount-like and genuinely unused by collectPeriodAmounts -
-  // this is the honest, non-zero measurement for a cell-per-value layout, reported as such.
-  assert.equal(unused.length, 2, `expected exactly the hours and rate cells to be unused; got: ${JSON.stringify(unused)}`);
-  assert.ok(unused.includes(45.0));
-  assert.ok(unused.includes(15.55));
+  // Stage 2g.4 (superseded): 45,00 (hours) and 15,55 (rate) were amount-like and counted as unused,
+  // since collectPeriodAmounts never enumerated hour_lines[].hours/.rate at all. Stage 2i.5: both are
+  // now explained (the model DID read them, into hourLine's own hours=45/rate=15.55 fields) - the
+  // honest re-measurement is 0, not 2. Confirms the fix without inventing a new field: this is the
+  // SAME period, SAME document, only the accounting changed.
+  assert.equal(unused.length, 0, `expected the hours/rate cells to be explained, not unused; got: ${JSON.stringify(unused)}`);
 });
 
 /**
@@ -271,6 +273,10 @@ async function buildDenseThreePagePdf(rowsPerPage: number): Promise<Uint8Array> 
       page.drawText('45,00', { x: 200, y, size: 6, font });
       page.drawText('15,55', { x: 260, y, size: 6, font });
       page.drawText('1,23', { x: 320, y, size: 6, font });
+      // Stage 2i (§2i.5): a 5th, genuinely unexplained value on every row - hours (45,00) and rate
+      // (15,55) are now explained by the read hour_line (collectExplainedNonAmountMagnitudes), so this
+      // is the column that actually proves the dense-document "nothing truncated" guarantee below.
+      page.drawText('9,99', { x: 360, y, size: 6, font });
       y -= 7;
     }
   }
@@ -283,10 +289,9 @@ test('2h.7: a dense three-page document (>500 items) is processed in full by the
   const items = await extractPdfTextItems(bytes);
   assert.ok(items.length > 500, `expected more than 500 text items, got ${items.length}`);
 
-  // A period that correctly reads every row's amount (1,23) and rate (15,55), but never returns the
-  // "45,00" hours figure as an amount at all (collectPeriodAmounts never counts an hours field) -
-  // exactly 2h.4's own "rates/hours also print numbers" case, now measured on a genuinely dense
-  // document instead of a 3-row toy one.
+  // A period that correctly reads every row's amount (1,23), hours (45,00) and rate (15,55) - exactly
+  // 2h.4's own "rates/hours also print numbers" case, now measured on a genuinely dense document
+  // instead of a 3-row toy one.
   const period = basePeriod({ hour_lines: Array.from({ length: rowsPerPage * 3 }, () => hourLine({ amount: 1.23 })) });
   const { checked, unverified } = textLayerVerificationCounts(period, items);
   assert.equal(checked, rowsPerPage * 3, 'expected the guard to check every single hour_line, none dropped');
@@ -298,14 +303,19 @@ test('2h.7: a dense three-page document (>500 items) is processed in full by the
   const mismatchRatio = checked > 0 ? unverified / checked : 0;
   assert.ok(mismatchRatio < 0.5, 'expected this correct, dense read to stay well under the mismatch threshold');
 
-  // Nothing truncated: the rate (15,55) and hours (45,00) columns, present on EVERY one of the
-  // (rowsPerPage * 3) rows, must all still appear as unused candidates - not just the first few before
-  // some accidental cutoff.
+  // Nothing truncated: 9,99 (a genuinely unexplained value - no field on this period reads it),
+  // present on EVERY one of the (rowsPerPage * 3) rows, must all still appear as unused candidates -
+  // not just the first few before some accidental cutoff. Stage 2i (§2i.5): the rate (15,55) and hours
+  // (45,00) columns, present on every row too, are now EXPLAINED (collectExplainedNonAmountMagnitudes
+  // matches every hour_line's own hours=45/rate=15.55) and correctly absent from this list - re-measured
+  // honestly below, not assumed unchanged from 2h.7's original version of this test.
   const unused = findUnusedPrintedAmounts(period, items);
+  const unusedUnexplainedCount = unused.filter((v) => v === 9.99).length;
   const unusedRateCount = unused.filter((v) => v === 15.55).length;
   const unusedHoursCount = unused.filter((v) => v === 45).length;
-  assert.equal(unusedRateCount, rowsPerPage * 3, `expected the rate figure on every row to be counted as unused, got ${unusedRateCount} of ${rowsPerPage * 3}`);
-  assert.equal(unusedHoursCount, rowsPerPage * 3, `expected the hours figure on every row to be counted as unused, got ${unusedHoursCount} of ${rowsPerPage * 3}`);
+  assert.equal(unusedUnexplainedCount, rowsPerPage * 3, `expected the genuinely unexplained 9,99 figure on every row to be counted as unused, got ${unusedUnexplainedCount} of ${rowsPerPage * 3}`);
+  assert.equal(unusedRateCount, 0, `expected the rate figure to now be explained (2i.5), not unused, got ${unusedRateCount}`);
+  assert.equal(unusedHoursCount, 0, `expected the hours figure to now be explained (2i.5), not unused, got ${unusedHoursCount}`);
 });
 
 /**

@@ -72,52 +72,110 @@ function blobToBase64(blob: Blob): Promise<string> {
 }
 
 /**
- * Stage 2h (audit v28, §2h.5): "measure the real request body for a three-page A4 PDF... if the body
- * can exceed it, lower it (JPEG at a chosen quality or a lower render scale...) until a three-page
- * upload is under the limit with margin." Measured (`body-size-proto*.mjs`, this round, Node +
- * pdf-lib + pdfjs-dist legacy build + `@napi-rs/canvas`, reported in full in the round's report):
- * the OLD settings (scale 2, PNG) cost ~0.48 MB for a dense TEXT-based synthetic fixture but ~11.5 MB
- * for a worst-case "scanned/photographed" one (three pages of visual noise) - more than double
- * Vercel's documented 4.5 MB function request-body limit. scale 1.5 + JPEG quality 0.9 measured at
- * ~3.08 MB for that SAME worst-case fixture (comfortably under the limit, ~32% margin) while barely
- * changing the text-based fixture's own size (JPEG compresses flat printed text worse than PNG does,
- * but 1.5x scale offsets most of that difference). Chose 0.9, not a lower quality that measured
- * smaller still, specifically to protect legibility - a Node-rendered synthetic check could not
- * verify visual legibility here (see the report's own caveat on this), so quality was kept
- * conservative rather than pushed to the smallest number that merely fits the byte budget.
+ * Stage 2h (audit v28, §2h.5): measured a real request body for a three-page A4 PDF (`body-size-
+ * proto*.mjs`, Node + pdf-lib + pdfjs-dist legacy build + `@napi-rs/canvas`): the OLD settings (scale
+ * 2, PNG) cost ~0.48 MB for a dense TEXT-based synthetic fixture but ~11.5 MB for a worst-case
+ * "scanned/photographed" one - more than double Vercel's documented 4.5 MB function request-body
+ * limit. scale 1.5 + JPEG quality 0.9 measured at ~3.08 MB for that SAME worst-case fixture.
+ *
+ * Stage 2i (audit v29, §2i.0d): "replace the fixed scale 1.5 JPEG 0.9. When a text layer is found
+ * (the images only give layout) the lower setting is fine. When there is no text layer the image is
+ * the only source: start at scale 2, high quality, and step down (quality, then scale) only as far as
+ * needed to keep the whole request under the documented limit with margin (measure blobs before
+ * sending)." The reviewer's own MAJOR finding (T3/RAPORT-cursor-2h.md): the fixed low setting applied
+ * to EVERY page, including the only source for a scan, with no adaptation and unverified legibility.
+ *
+ * `TARGET_MAX_BYTES` (3.5 MB, CHOSEN): a margin under Vercel's 4.5 MB limit, leaving headroom for the
+ * JSON envelope and any `documentText` - the same margin philosophy 2h.5's own single fixed setting
+ * used (3.08 MB measured against a 4.5 MB limit).
+ *
+ * Legibility statement, unchanged from 2h.5 and restated here rather than claimed as fixed: this
+ * module cannot verify how any of these settings actually look in a real browser on a real scan -
+ * only relative byte-size measurements were possible in this environment. `render_step` is reported
+ * in the technical-details line specifically so a real upload's actual step is visible and checkable,
+ * not asserted as "good enough" from here.
  */
-const RENDER_SCALE = 1.5;
-const RENDER_FORMAT = 'image/jpeg';
-const RENDER_QUALITY = 0.9;
+const TEXT_LAYER_STEP = { name: 'text-layer-present', scale: 1.5, format: 'image/jpeg' as const, quality: 0.9 };
+const IMAGE_ONLY_STEPS: Array<{ name: string; scale: number; format: 'image/jpeg'; quality: number }> = [
+  { name: 'image-high', scale: 2, format: 'image/jpeg', quality: 0.92 },
+  { name: 'image-medium', scale: 2, format: 'image/jpeg', quality: 0.75 },
+  { name: 'image-low', scale: 1.5, format: 'image/jpeg', quality: 0.75 },
+  { name: 'image-floor', scale: 1, format: 'image/jpeg', quality: 0.6 },
+];
+const TARGET_MAX_BYTES = 3.5 * 1024 * 1024;
 
+async function renderPageAtStep(page: Awaited<ReturnType<Awaited<ReturnType<typeof getDocument>['promise']>['getPage']>>, step: { scale: number; format: 'image/jpeg' | 'image/png'; quality?: number }): Promise<Blob> {
+  const viewport = page.getViewport({ scale: step.scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext('2d', { alpha: false });
+  if (!context) throw new Error('Przeglądarka nie może przygotować strony PDF.');
+  await page.render({ canvas, canvasContext: context, viewport }).promise;
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((output) => (output ? resolve(output) : reject(new Error('Nie udało się przetworzyć PDF.'))), step.format, step.quality);
+  });
+}
+
+/** Legacy path (the unused `recognizePayslip`/tesseract flow) - kept at the same fixed, moderate
+ * setting it always used; not part of the adaptive budget below, and not this stage's scope. */
 async function pdfPages(file: File): Promise<Blob[]> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const pdf = await getDocument({ data: bytes }).promise;
   const pages: Blob[] = [];
   const pageCount = Math.min(pdf.numPages, 3);
-
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: RENDER_SCALE });
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) throw new Error('Przeglądarka nie może przygotować strony PDF.');
-    await page.render({ canvas, canvasContext: context, viewport }).promise;
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((output) => output ? resolve(output) : reject(new Error('Nie udało się przetworzyć PDF.')), RENDER_FORMAT, RENDER_QUALITY);
-    });
-    pages.push(blob);
+    pages.push(await renderPageAtStep(page, TEXT_LAYER_STEP));
   }
   return pages;
 }
 
+/**
+ * Stage 2i (§2i.0d): renders all pages (max 3) of a PDF, adapting the render settings to whether a
+ * text layer was found. With a text layer, images are only a layout aid for the model - the fixed,
+ * already-small setting is used once, no measuring needed. Without one, images are the ONLY source of
+ * truth: starts at the highest-quality step and measures the real combined blob size before accepting
+ * it, stepping down (quality first, then scale) until the total fits under `TARGET_MAX_BYTES` or the
+ * step list is exhausted (the floor is used regardless, rather than failing the upload outright).
+ */
+async function renderPdfPages(file: File, hasTextLayer: boolean): Promise<{ blobs: Blob[]; renderStep: string }> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await getDocument({ data: bytes }).promise;
+  const pageCount = Math.min(pdf.numPages, 3);
+  const pages = await Promise.all(Array.from({ length: pageCount }, (_, i) => pdf.getPage(i + 1)));
+
+  if (hasTextLayer) {
+    const blobs = await Promise.all(pages.map((page) => renderPageAtStep(page, TEXT_LAYER_STEP)));
+    return { blobs, renderStep: TEXT_LAYER_STEP.name };
+  }
+
+  let lastBlobs: Blob[] = [];
+  for (let i = 0; i < IMAGE_ONLY_STEPS.length; i += 1) {
+    const step = IMAGE_ONLY_STEPS[i]!;
+    const blobs = await Promise.all(pages.map((page) => renderPageAtStep(page, step)));
+    lastBlobs = blobs;
+    const totalBytes = blobs.reduce((sum, b) => sum + b.size, 0);
+    const isLastStep = i === IMAGE_ONLY_STEPS.length - 1;
+    if (totalBytes <= TARGET_MAX_BYTES || isLastStep) {
+      return { blobs, renderStep: step.name };
+    }
+  }
+  return { blobs: lastBlobs, renderStep: IMAGE_ONLY_STEPS[IMAGE_ONLY_STEPS.length - 1]!.name };
+}
+
 /** Renderuje wszystkie strony dokumentu (maks. 3) jako obrazy base64 — do wysłania
- * do modelu wizyjnego AI, bez lokalnego OCR (AI samo odczytuje całą treść). */
-export async function renderPageImages(file: File): Promise<string[]> {
-  const images = file.type === 'application/pdf' ? await pdfPages(file) : [file];
-  return Promise.all(images.map((image) => blobToBase64(image)));
+ * do modelu wizyjnego AI, bez lokalnego OCR (AI samo odczytuje całą treść).
+ *
+ * Stage 2i (§2i.0d): `hasTextLayer` picks the fixed low-cost setting or the adaptive, measured one -
+ * see `renderPdfPages`. `renderStep` is returned so the caller can report it on the technical line. */
+export async function renderPageImages(file: File, hasTextLayer: boolean): Promise<{ images: string[]; renderStep: string }> {
+  if (file.type !== 'application/pdf') {
+    return { images: [await blobToBase64(file)], renderStep: 'non-pdf' };
+  }
+  const { blobs, renderStep } = await renderPdfPages(file, hasTextLayer);
+  const images = await Promise.all(blobs.map((blob) => blobToBase64(blob)));
+  return { images, renderStep };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapExtractionToPeriod, type TierCExtraction } from './tier-c.js';
+import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCExtraction } from './tier-c.js';
 import { computePayslipPeriod, tableTaxToleranceFor, type PayslipComputationRates } from './payslip-model.js';
 import { comparePeriodToDocument, resolveNetReconciliationBasis } from './discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
@@ -97,6 +97,8 @@ function baseExtraction(overrides: Partial<TierCExtraction>): TierCExtraction {
     reported_net_paid: null,
     printed_gross_total: null,
     printed_loon_voor_heffingen: null,
+    printed_taxable_base_normal: null,
+    printed_taxable_base_special: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,
@@ -538,6 +540,205 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   assert.ok(Math.abs((payoutDiscrepancy?.residual ?? 0) - 12.28) < 0.5, `expected a residual near +12.28, got ${payoutDiscrepancy?.residual}`);
   assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch - OTTO's document prints no separate net figure to compare, got ${JSON.stringify(discrepancies)}`);
   assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'not_applicable');
+  // Stage 2i (§2i.0e): "group payout_mismatch under table_tax_mismatch when they have the same cause
+  // (structured related_to, one row on the panel; the OTTO 12.28 case)." The two residuals mirror
+  // exactly (-12.28 vs +12.28), so the arithmetic itself - not merely both codes firing together -
+  // links them.
+  assert.equal(payoutDiscrepancy?.related_to, 'table_tax_mismatch', `expected payout_mismatch linked to table_tax_mismatch as the same root cause, got ${JSON.stringify(payoutDiscrepancy)}`);
+  assert.equal(tableTaxDiscrepancy?.related_to, null, 'the root cause itself carries no related_to - it is not related to itself');
+});
+
+/**
+ * Stage 2i (audit v29, §2i.2): "find out how the mapper decides which gross lines fall under the
+ * special (bijzonder tarief) base... if the engine gets 104.24 right today, say so with the test that
+ * shows it, and do not rebuild it." Answer, confirmed by this test: mapExtractionToPeriod does NOT
+ * decide anything - `tax_treatment: line.tax_treatment` (tier-c.ts) is a straight pass-through of
+ * whatever the model itself read per hour_line, exactly like every other AK2 "read, never inferred"
+ * field. The actual split into normal-base vs BT-base sums happens downstream, in
+ * payslip-model.ts's `summariseHourLines` (`tableGross`/`btGross`, keyed off each line's own
+ * tax_treatment) - already proven exact for OTTO by payslip-model.test.ts's own "Fixture 2 OTTO" test
+ * (bt_tax.toFixed(2) === '40.08', the flat 38.45% of 104.24). This test adds the mapping-boundary half
+ * of that proof: an extraction whose two BT lines are tagged 'bt' (as the OTTO document read) maps
+ * straight through into a PayslipPeriod that reproduces the same 104.24/621.14 split - and stays
+ * correct even with the new printed_taxable_base_normal/special fields set, since those two fields are
+ * a passive verification target (2i.2), never an input the split itself uses.
+ */
+test("2i.2: the mapper does not decide the BT split - tax_treatment is a straight per-line pass-through, and printed_taxable_base_normal/special map through unchanged", () => {
+  const extraction = baseExtraction({
+    period_label: '33/2025',
+    period_end_date: '2025-08-17',
+    employer_names: ['DHL Supply Chain (NL) B.V.', 'KF Service & Beheer B.V.'],
+    minimum_wage_printed: 14.4,
+    hour_lines: [
+      { employer_index: 0, description: 'Godziny przepracowane (DHL)', hours: 24.0, rate: 14.45, percent: null, amount: 346.8, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 30%', hours: 21.25, rate: 4.34, percent: 30, amount: 92.23, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 100%', hours: 2.75, rate: 14.45, percent: 100, amount: 39.74, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 1, description: 'Godziny przepracowane (KF)', hours: 19.0, rate: 14.4, percent: null, amount: 273.6, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek wakacyjny', hours: null, rate: null, percent: null, amount: 56.31, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Wymiana pw. urlopu ustawowego', hours: 0.77, rate: 14.43, percent: null, amount: 11.11, category: 'other', tax_treatment: 'table', adds_hours: false },
+      // The two lines OTTO's own model read tagged 'bt' - nothing in tier-c.ts's mapping layer
+      // inspects "Jednorazowa zapłata" or "Wynagrodzenie kierowcy brutto" by name to decide this;
+      // relabelling them 'table' here (proving the pass-through) would change the computed split.
+      { employer_index: 0, description: 'Jednorazowa zapłata', hours: null, rate: null, percent: null, amount: 98.24, category: 'other', tax_treatment: 'bt', adds_hours: false },
+      { employer_index: 0, description: 'Wynagrodzenie kierowcy brutto', hours: null, rate: null, percent: null, amount: 6.0, category: 'other', tax_treatment: 'bt', adds_hours: false },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: 4 },
+      { description: 'PAWW Rekompensata', amount: 0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'PAWW Opłata', amount: -0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+    ],
+    et_exchange_amount: 177.0,
+    et_reimbursement_lines: [
+      { description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' },
+      { description: 'Zwrot za zakwaterowanie ET', amount: 144.0, category: 'reimbursement' },
+    ],
+    bijzonder_tarief_printed_percent: 38.45,
+    printed_table_tax: 77.52,
+    printed_bt_tax: 40.08,
+    reported_net_paid: 598.59,
+    printed_gross_total: 924.03,
+    printed_loon_voor_heffingen: 902.38,
+    // Stage 2i (§2i.2): the owner's panel figures - the split verification target, never the input.
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 104.24,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.4);
+  // The mapping boundary: tax_treatment on each hour_line survived unchanged, in order.
+  const jednorazowa = period.hour_lines.find((l) => l.description === 'Jednorazowa zapłata');
+  const kierowca = period.hour_lines.find((l) => l.description === 'Wynagrodzenie kierowcy brutto');
+  assert.equal(jednorazowa?.tax_treatment, 'bt');
+  assert.equal(kierowca?.tax_treatment, 'bt');
+  assert.equal(period.printed_taxable_base_normal, 621.14);
+  assert.equal(period.printed_taxable_base_special, 104.24);
+
+  const outcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  // The downstream split, driven entirely by the per-line tags just confirmed above - the engine
+  // reproduces both the special base (98.24 + 6.00) and the normal base (725.38 - 104.24) exactly,
+  // with no rebuild needed for this stage (§2i.2's own instruction).
+  assert.equal(outcome.result.taxable_base, 725.38);
+  assert.equal(outcome.result.bt_tax.toFixed(2), '40.08');
+
+  // The new 2i.2 consistency check: 621.14 + 104.24 must reconcile against the resolved 725.38 anchor
+  // (2i.1's own reassignment) - it does, so the gate stays clean, same as the un-split OTTO fixture.
+  const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.ok(!consistencyIssues.some((i) => i.code === 'printed_tax_bases_do_not_reconcile'), `expected the base split to reconcile, got ${JSON.stringify(consistencyIssues)}`);
+});
+
+/**
+ * Stage 2i (audit v29, §2i.3): "the 177.00 'Nieopod. część wyn. 100%' is the ET exchange reduction...
+ * fix prompt and mapper so a line reducing taxable base by the ET reimbursement amount is read into
+ * et_exchange_amount." Reproduces the EXACT failure OWNER-RETEST-2h-otto.md recorded on the live
+ * build: the model read the amount correctly (177.00) but left it in pre_tax_deduction_lines under
+ * category 'other' - this test proves the mapper-side backstop reclassifies it without any prompt
+ * change at all (the prompt fix is the OTHER half - a mocked-model test can prove the mapper handles a
+ * misfiled line; it cannot prove the live model now files it correctly in the first place - only a real
+ * upload can, per the assignment's own "say what mocked-model tests can/cannot prove").
+ */
+test("2i.3: an ET-labelled line left in pre_tax_deduction_lines is reclassified into et_exchange_amount and removed from pre_tax_deductions", () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    pre_tax_deduction_lines: [
+      { description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: 4 },
+      { description: 'Nieopod. część wyn. 100%', amount: 177.0, category: 'other', placement: 'pre_tax', base: null, percent: null },
+    ],
+    et_exchange_amount: null, // the model did NOT report it directly - exactly the observed live failure
+    et_reimbursement_lines: [
+      { description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' },
+      { description: 'Zwrot za zakwaterowanie ET', amount: 144.0, category: 'reimbursement' },
+    ],
+  });
+
+  assert.equal(resolveEtExchangeAmountFromExtraction(extraction), 177, 'expected the shared resolver to find 177.00 via the mislabelled pre-tax line');
+
+  const period = mapExtractionToPeriod(extraction, null);
+  assert.equal(period.pre_tax_deductions.length, 1, 'expected the ET-labelled line removed from pre_tax_deductions, leaving only STIPP');
+  assert.equal(period.pre_tax_deductions[0]?.description, 'Emerytura STIPP');
+  assert.ok(period.et?.et_applicable);
+  assert.equal(period.et?.et_exchange_amount, 177, 'expected the reclassified amount to land in et_exchange_amount');
+  assert.equal(period.et?.et_reimbursements.length, 2);
+});
+
+test('2i.3: an explicit et_exchange_amount is never overwritten by a mislabelled pre-tax line, but the line is still pulled out of pre-tax (never double-counted)', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    pre_tax_deduction_lines: [
+      { description: 'Nieopod. część wyn. 100%', amount: 999.0, category: 'other', placement: 'pre_tax', base: null, percent: null }, // a stale/duplicate reading, deliberately wrong
+    ],
+    et_exchange_amount: 177.0, // the model's own direct reading wins
+    et_reimbursement_lines: [],
+  });
+  assert.equal(resolveEtExchangeAmountFromExtraction(extraction), 177, 'expected the explicit reading to win over the mislabelled line');
+  const period = mapExtractionToPeriod(extraction, null);
+  assert.equal(period.pre_tax_deductions.length, 0, 'expected the ET-labelled line excluded from pre-tax even though it was not the source of the value used');
+  assert.equal(period.et?.et_exchange_amount, 177);
+});
+
+test('2i.3: no ET-labelled line and no explicit reading resolves to null - never invented', () => {
+  const extraction = baseExtraction({
+    pre_tax_deduction_lines: [{ description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: 4 }],
+    et_exchange_amount: null,
+    et_reimbursement_lines: [],
+  });
+  assert.equal(resolveEtExchangeAmountFromExtraction(extraction), null);
+  const period = mapExtractionToPeriod(extraction, null);
+  assert.equal(period.et, null, 'expected no ET arrangement at all - nothing printed, nothing to reclassify');
+});
+
+test("2i.3: the controller's own gap check must read the SAME resolution as the mapper - reproduced here as a direct call, proving the two cannot disagree", () => {
+  // The exact shape that would have falsely blocked before this fix: reimbursements present, the raw
+  // et_exchange_amount field null, but a mislabelled pre-tax line the mapper CAN resolve.
+  const extraction = baseExtraction({
+    pre_tax_deduction_lines: [{ description: 'Nieopod. część wyn. 100%', amount: 177.0, category: 'other', placement: 'pre_tax', base: null, percent: null }],
+    et_exchange_amount: null,
+    et_reimbursement_lines: [{ description: 'Zwrot kosztów utrzymania ET', amount: 177.0, category: 'reimbursement' }],
+  });
+  // tier-c.controller.ts's own gap check: `et_reimbursement_lines.length > 0 && resolveEtExchangeAmountFromExtraction(extraction) === null`.
+  const wouldBlock = extraction.et_reimbursement_lines.length > 0 && resolveEtExchangeAmountFromExtraction(extraction) === null;
+  assert.equal(wouldBlock, false, 'expected the controller to NOT raise et_exchange_amount_unknown once the mapper can resolve the reading');
+});
+
+/**
+ * Stage 2i (§2i.3): "when base reduction equals sum of reimbursements gate can confirm reading" - the
+ * new et_reduction_reimbursement_mismatch check, direct on checkExtractionConsistency.
+ */
+test('2i.3: 33.00 + 144.00 reimbursements matching a 177.00 exchange amount exactly - no mismatch issue (the gate confirms the reading)', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    et_exchange_amount: 177.0,
+    et_reimbursement_lines: [
+      { description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' },
+      { description: 'Zwrot za zakwaterowanie ET', amount: 144.0, category: 'reimbursement' },
+    ],
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const outcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  const issues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.ok(!issues.some((i) => i.code === 'et_reduction_reimbursement_mismatch'), `expected the matching reimbursements to confirm the reading, got ${JSON.stringify(issues)}`);
+});
+
+test('2i.3: an incomplete reimbursement list (only 33.00 of a 177.00 reduction) fires et_reduction_reimbursement_mismatch with the exact residual', () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: 40, rate: 15, percent: null, amount: 600, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    et_exchange_amount: 177.0,
+    et_reimbursement_lines: [{ description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' }], // the 144.00 line missing
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const outcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  const issues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  const issue = issues.find((i) => i.code === 'et_reduction_reimbursement_mismatch');
+  assert.ok(issue, `expected et_reduction_reimbursement_mismatch, got ${JSON.stringify(issues)}`);
+  if (issue?.code === 'et_reduction_reimbursement_mismatch') {
+    assert.equal(issue.et_exchange_amount, 177);
+    assert.equal(issue.reimbursements_sum, 33);
+    assert.equal(issue.residual, -144);
+  }
 });
 
 /**
@@ -693,6 +894,12 @@ test('CL: a reimbursement misclassified as a deduction now correctly surfaces as
   // single-line extraction noise (the confirmation band tops out at 1.5x tableTolerance) - this must
   // classify as 'finding', stated plainly, never softened into a mere confirmation question.
   assert.equal(payoutMismatch?.status, 'finding', `expected 'finding' for a 72 EUR swing, got ${payoutMismatch?.status}`);
+  // Stage 2i (§2i.0e): this fixture's table tax IS correct (71.31, unchanged) - no table_tax_mismatch
+  // exists to link against, so the genuinely UNRELATED payout error must stay unlinked, not grouped
+  // under a tax discrepancy that never fired. Proves the linking is gated on the arithmetic actually
+  // being present, not merely "any tax code plus any payout code in the same list".
+  assert.ok(!discrepancies.some((d) => d.code === 'table_tax_mismatch'), 'expected no table_tax_mismatch in this fixture (its printed tax is correct)');
+  assert.equal(payoutMismatch?.related_to, null, 'expected an unrelated payout error to stay unlinked when no tax discrepancy exists to link it to');
 });
 
 test('BW2: a small ambiguous line misclassified table->bt (a plausible AI judgment error) - measured', () => {

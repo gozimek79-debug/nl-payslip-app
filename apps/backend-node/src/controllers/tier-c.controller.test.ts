@@ -25,6 +25,8 @@ import type { Request as ExpressRequest, Response as ExpressResponse, NextFuncti
  */
 
 let app: (typeof import('../app.js'))['default'];
+let isTextLayerMismatch: (typeof import('./tier-c.controller.js'))['isTextLayerMismatch'];
+let resolveRequestSize: (typeof import('./tier-c.controller.js'))['resolveRequestSize'];
 let server: ReturnType<typeof app.listen>;
 let baseUrl: string;
 let originalFetch: typeof fetch;
@@ -54,6 +56,7 @@ before(async () => {
     },
   });
   ({ default: app } = await import('../app.js'));
+  ({ isTextLayerMismatch, resolveRequestSize } = await import('./tier-c.controller.js'));
 
   originalApiKey = process.env.MISTRAL_API_KEY;
   process.env.MISTRAL_API_KEY = 'test-key-2f11';
@@ -157,12 +160,59 @@ test('2g.0a: /analyze with the live read-2 (aaaeae1) extraction names the unreso
 test('2g.0a: /analyze with a correct Olympia extraction returns an empty issue list', async () => {
   globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }> };
+  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }>; net_position?: string };
   assert.equal(res.status, 200);
   assert.equal(body.status, 'ok', JSON.stringify(body));
   // Only the already-known printed-minimum-wage staleness (14.71 printed vs 14.99 current) - the same
   // single expected discrepancy tier-c.test.ts's own Olympia fixture asserts.
   assert.deepEqual(body.discrepancies?.map((d) => d.code), ['minimum_wage_stale_on_document']);
+  // Stage 2i (§2i.0b): Olympia's printed net (686.09) confirms the BEFORE position - matches
+  // tier-c.test.ts's own "2h.3" assertion for the same fixture shape via resolveNetReconciliationBasis.
+  assert.equal(body.net_position, 'before');
+});
+
+/**
+ * Stage 2i (audit v29, §2i.0b): "build the reviewer's construction (overstated printed table tax by
+ * 50, a compensating net addition of 50, printed_payout equal to the same net) and run it through the
+ * real HTTP path: the user must still see table_tax_mismatch of 50 from the discrepancy layer."
+ * Reproduces RAPORT-cursor-2h.md's T1(b) exactly, verified end to end with `node` against `dist/`
+ * before being written into this HTTP test (numbers below are measured, not assumed): a single clean
+ * 1000 EUR gross line, no deductions, whose engine-computed table tax is 228.26 - overstate the
+ * PRINTED table tax by exactly 50 (278.26) and add ONE fake 50 EUR net addition; the +50 overstatement
+ * and the +50 fake addition cancel out exactly in the gate's own AFTER-position arithmetic (loon voor
+ * heffingen − printed_table_tax + 50 = loon voor heffingen − real_table_tax), landing printed_net
+ * exactly on the coincidence value (771.74) with zero gate issues - but the discrepancy layer compares
+ * the ENGINE's own computed tax (228.26) against the still-wrong printed one (278.26) independently of
+ * any net-position coincidence, so `table_tax_mismatch` still fires.
+ */
+test("2i.0b: an overstated printed_table_tax + a compensating fake net line that makes the gate's dual check coincide still surfaces as table_tax_mismatch from the discrepancy layer", async () => {
+  const GATE_COINCIDENCE_CONSTRUCTION = {
+    period_label: 'week 1/2026', period_end_date: null, payment_date: null, period_type: 'week',
+    is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
+    hour_lines: [{ description: 'Loon normaal', hours: 50, rate: 20, percent: null, amount: 1000, category: 'regular', tax_treatment: 'table', adds_hours: true, employer_index: 0 }],
+    pre_tax_deduction_lines: [], post_tax_deduction_lines: [],
+    bijzonder_tarief_printed_percent: null, bijzonder_tarief_jaarloon: null,
+    et_exchange_amount: null, et_reimbursement_lines: [], payout_adjustment_lines: [], reservation_lines: [],
+    printed_table_tax: 278.26, // overstated by exactly 50 vs the engine's own 228.26 computation
+    printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+    printed_gross_total: 1000, printed_loon_voor_heffingen: 1000,
+    net_lines: [{ description: 'Fake compensating net addition', amount: 50.0, category: 'reimbursement' }],
+    // The coincidence value: matches the gate's own AFTER-position arithmetic exactly (measured, see
+    // the doc comment above) - printed_payout equal to the same net, per the reviewer's construction.
+    reported_total_net: 771.74,
+    reported_net_paid: 771.74,
+    printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+  };
+  globalThis.fetch = mockCompletion(GATE_COINCIDENCE_CONSTRUCTION) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string; residual: number | null; status: string }> };
+  // Confirms the reviewer's finding is real and reproduced: the gate itself does NOT block.
+  assert.equal(body.status, 'ok', `expected the gate's dual-position check to let this through (reproducing the reviewer's construction), got ${JSON.stringify(body)}`);
+  // The discrepancy layer must still catch the wrong tax - this is what makes the construction safe.
+  const tableTaxDiscrepancy = body.discrepancies?.find((d) => d.code === 'table_tax_mismatch');
+  assert.ok(tableTaxDiscrepancy, `expected table_tax_mismatch to still surface despite the gate passing, got ${JSON.stringify(body.discrepancies)}`);
+  assert.ok(Math.abs((tableTaxDiscrepancy?.residual ?? 0) + 50) < 0.5, `expected a residual near -50, got ${tableTaxDiscrepancy?.residual}`);
+  assert.equal(tableTaxDiscrepancy?.status, 'finding', '50 EUR is far outside the confirmation band - must be a finding, not a question');
 });
 
 /**
@@ -213,6 +263,67 @@ test('2h.2: a documentText list over the item cap (even after dropping non-digit
   assert.equal(body.status, 'ok', `expected a clean image-only fallback, got ${JSON.stringify(body)}`);
   assert.equal(body.technicalDetails?.text_layer_status, 'too_large');
   assert.equal(body.technicalDetails?.text_items_sent, 0, 'expected the too-large list to be treated as if nothing was sent, not partially kept');
+});
+
+/**
+ * Stage 2i (audit v29, §2i.0a): "the guard cannot be switched off by one miss. The fallback needs
+ * both a ratio and an absolute floor... Tests at checked 2/1, 4/2, 6/3, 12/6, 12/1." The reviewer's
+ * own MAJOR finding: at checked=2, unverified=1 (ratio exactly 0.5) the old ratio-only rule already
+ * fell back - precisely the shape of a single invented digit (e.g. 699.75 vs printed 699.78) in an
+ * otherwise short, correctly-read period, silencing the one check built to catch it.
+ */
+const MISMATCH_MATRIX: Array<{ checked: number; unverified: number; expectMismatch: boolean; label: string }> = [
+  { checked: 2, unverified: 1, expectMismatch: false, label: 'ratio 0.5 but under the floor - the classic single-invented-digit shape, must still block per-field' },
+  { checked: 4, unverified: 2, expectMismatch: false, label: 'ratio 0.5 but under the floor' },
+  { checked: 6, unverified: 3, expectMismatch: true, label: 'ratio 0.5 and at the floor - falls back' },
+  { checked: 12, unverified: 6, expectMismatch: true, label: 'ratio 0.5 and well over the floor - falls back' },
+  { checked: 12, unverified: 1, expectMismatch: false, label: 'over the floor is not even reached - ratio alone (0.083) is far below the threshold' },
+];
+
+for (const { checked, unverified, expectMismatch, label } of MISMATCH_MATRIX) {
+  test(`2i.0a: isTextLayerMismatch(${checked}, ${unverified}) - ${label}`, () => {
+    assert.equal(isTextLayerMismatch(checked, unverified), expectMismatch);
+  });
+}
+
+/**
+ * Stage 2i (audit v29, §2i.0e): "when Content-Length is absent or disagrees with the re-encoded size
+ * by more than a margin, show the measured size and say which." A pure-function test, since fetch
+ * computes its own real Content-Length automatically and cannot easily be made to send a spoofed one.
+ */
+test('2i.0e: resolveRequestSize trusts a Content-Length header that roughly agrees with the measured size', () => {
+  const result = resolveRequestSize(100, 101); // within the 10% margin
+  assert.deepEqual(result, { requestSizeKb: 100, requestSizeSource: 'content_length' });
+});
+
+test('2i.0e: resolveRequestSize falls back to the measured size when the header disagrees by more than the margin', () => {
+  const result = resolveRequestSize(50, 100); // header claims half the real size
+  assert.deepEqual(result, { requestSizeKb: 100, requestSizeSource: 'measured' });
+});
+
+test('2i.0e: resolveRequestSize falls back to the measured size when the header is absent entirely', () => {
+  const result = resolveRequestSize(null, 250);
+  assert.deepEqual(result, { requestSizeKb: 250, requestSizeSource: 'measured' });
+});
+
+test('2i.0d: /analyze echoes back a known render_step exactly as sent', async () => {
+  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: ['data:image/png;base64,Zg=='], renderStep: 'image-medium' }),
+  });
+  const body = (await res.json()) as { technicalDetails?: { render_step: string } };
+  assert.equal(body.technicalDetails?.render_step, 'image-medium');
+});
+
+test('2i.0d: /analyze normalises an unrecognised render_step to "unknown" rather than surfacing arbitrary text', async () => {
+  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: ['data:image/png;base64,Zg=='], renderStep: '<script>alert(1)</script>' }),
+  });
+  const body = (await res.json()) as { technicalDetails?: { render_step: string } };
+  assert.equal(body.technicalDetails?.render_step, 'unknown');
 });
 
 test('2f.11c: /recompute normalises a signed body before computing - a negative deduction is not double-subtracted', async () => {
@@ -277,7 +388,10 @@ test('2g.0b: /recompute still computes normally when period_type_confirmed is tr
         pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
         et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
         wml_printed: null, wml_applicable: null,
-        printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+        // Stage 2i (§2i.4): "make an absent printed table tax a stated gap" - now fires unconditionally
+        // (not only alongside a printed_net check), so this fixture (unrelated to tax reading - it
+        // tests only the period_type_confirmed gate) needs a non-null printed_table_tax to stay 'ok'.
+        printed_table_tax: 170.46, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
         printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
         printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
       },

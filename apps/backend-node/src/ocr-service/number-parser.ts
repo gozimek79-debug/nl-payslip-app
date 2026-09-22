@@ -86,12 +86,18 @@ export function isAmountLike(raw: string): boolean {
   return /,\d{2}(?!\d)/.test(raw.trim()) && parsePrintedNumber(raw) !== null;
 }
 
-/** A printed number, plus whether the exact string that parsed had the two-decimal EUR-amount shape
- * (§2g.4's own rule) - carried alongside the value so a caller never has to re-derive "was this
- * amount-like" from a different substring than the one that actually parsed. */
+/**
+ * Stage 2i (audit v29, §2i.0c): "extractPrintedNumbers returns each token with a shape: money
+ * (exactly two decimals) or integer." Renamed from 2g.4's plain `amountLike` boolean to a named
+ * shape, carried alongside the value so a caller never has to re-derive it from a different
+ * substring than the one that actually parsed. `'money'` is `isAmountLike`'s own two-decimal test;
+ * `'integer'` is everything else that still parses (a bare integer like the reviewer's IBAN/week/BSN
+ * fragments, but also a one- or three-decimal figure like an hours count or a rate - the assignment's
+ * own two-way split, not a claim that every non-money value is literally an integer).
+ */
 export interface ExtractedNumber {
   value: number;
-  amountLike: boolean;
+  shape: 'money' | 'integer';
 }
 
 const CURRENCY_MARKERS = ['EUR', 'PLN', 'zł', '€'];
@@ -181,7 +187,7 @@ export function extractPrintedNumbers(text: string): ExtractedNumber[] {
   const whole = stripCurrencyMarkers(text.trim());
   if (whole !== '') {
     const wholeParsed = parsePrintedNumber(whole);
-    if (wholeParsed !== null) return [{ value: wholeParsed, amountLike: isAmountLike(whole) }];
+    if (wholeParsed !== null) return [{ value: wholeParsed, shape: isAmountLike(whole) ? 'money' : 'integer' }];
   }
 
   const tokens = text.trim().split(/[ \t\n\r\f\v]+/).filter((token) => token !== '');
@@ -190,7 +196,7 @@ export function extractPrintedNumbers(text: string): ExtractedNumber[] {
   for (const s of stripped) {
     if (s === '') continue;
     const parsed = parsePrintedNumber(s);
-    if (parsed !== null) results.push({ value: parsed, amountLike: isAmountLike(s) });
+    if (parsed !== null) results.push({ value: parsed, shape: isAmountLike(s) ? 'money' : 'integer' });
   }
   // Stage 2h (§2h.1): "1 234,56" embedded inside a longer merged run (e.g. "Jaarloon ... 1 234,56")
   // tokenises into "1" and "234,56" separately - each already parses ALONE (to 1 and 234.56), which is
@@ -204,7 +210,7 @@ export function extractPrintedNumbers(text: string): ExtractedNumber[] {
     if (looksLikeSplitThousandsPair(a, b)) {
       const joined = `${a} ${b}`;
       const parsed = parsePrintedNumber(joined);
-      if (parsed !== null) results.push({ value: parsed, amountLike: isAmountLike(joined) });
+      if (parsed !== null) results.push({ value: parsed, shape: isAmountLike(joined) ? 'money' : 'integer' });
     }
   }
   return results;

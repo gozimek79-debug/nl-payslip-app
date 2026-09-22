@@ -418,6 +418,8 @@ export function buildTierAPeriod(input: TierAInput, grid: { hour_lines: HourLine
     printed_payout: null,
     printed_gross_total: null,
     printed_loon_voor_heffingen: null,
+    printed_taxable_base_normal: null,
+    printed_taxable_base_special: null,
     printed_table_tax_label: null,
     printed_bt_tax_label: null,
     printed_algemene_heffingskorting_label: null,

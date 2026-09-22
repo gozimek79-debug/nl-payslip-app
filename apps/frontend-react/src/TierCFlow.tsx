@@ -38,6 +38,20 @@ interface TierCPeriodResponse {
    * (`{...basePeriod, [field]: value}`), so the real value survived as an untyped extra property
    * regardless. Declaring it here closes the type gap without changing that runtime behaviour. */
   period_type_confirmed: boolean;
+  /** Stage 2i (audit v29, §2i.0e): "add the missing fields to the frontend period type." The
+   * reviewer's own finding (T2/T9): this mirror omitted `period_end_date`, `is_correction`,
+   * `version`, `contract_hours`, `payout_adjustments`, `bijzonder_tarief` and `et` - runtime was
+   * already correct (the same full-object-spread reasoning as `period_type_confirmed` above), but a
+   * hand-built partial period would type-check here without them and then be REJECTED by the
+   * backend's `isValidPayslipPeriodShape` (2h.6) with no compile-time warning. Declared with the
+   * same shape the backend's `PayslipPeriod` uses. */
+  period_end_date: string | null;
+  is_correction: boolean;
+  version: number;
+  contract_hours: number | null;
+  payout_adjustments: Array<{ description: string; amount: number }>;
+  bijzonder_tarief: { jaarloon_bt: number | null; bt_state: 'known' | 'not_applicable' | 'unknown'; tarief_bt: { printed: number | null; computed: number | null } };
+  et: { et_applicable: boolean; et_exchange_amount: number; et_reimbursements: Array<{ description: string; amount: number }>; adres_fiskalny: string | null } | null;
   employers: EmployerResponse[];
   hirer: { name: string | null } | null;
   hour_lines: TierCHourLineResponse[];
@@ -75,9 +89,14 @@ interface CompleteResult {
 type Outcome = { status: 'complete'; result: CompleteResult } | { status: 'incomplete'; missing_fields: string[]; tax_is_upper_bound: boolean; gross_total: number; taxable_base: number; table_tax_after_korting: number; bt_tax: number; total_tax: number };
 
 type DiscrepancyCode = 'table_tax_mismatch' | 'bt_tax_mismatch' | 'algemene_heffingskorting_mismatch' | 'arbeidskorting_mismatch' | 'net_mismatch' | 'payout_mismatch' | 'minimum_wage_stale_on_document' | 'minimum_wage_violation';
-interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed: number; residual: number | null; tolerance: number; confirmation_upper: number; status: 'confirm' | 'finding'; printed_label: string | null }
+/** Stage 2i (§2i.0e): `related_to` names the OTHER discrepancy code whose arithmetic explains this
+ * one (e.g. a wrong table tax moving the final payout by exactly its own error) - `null` for a root
+ * cause or an unrelated finding. See discrepancy.ts's own doc comment for how this is decided. */
+interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed: number; residual: number | null; tolerance: number; confirmation_upper: number; status: 'confirm' | 'finding'; printed_label: string | null; related_to: DiscrepancyCode | null }
 
-type NetReconciliationBasis = 'wage_net' | 'period_net' | 'both' | 'neither' | 'not_applicable';
+/** Stage 2i (§2i.0b): "the dual net position is visible... say it on the panel in one plain line."
+ * Mirrors extraction-consistency.ts's own `ExtractionTrace['net_position']` vocabulary exactly. */
+type NetPosition = 'before' | 'after' | 'both' | 'none';
 type TextLayerStatus = 'ok' | 'mismatch' | 'too_large' | 'none';
 /** Stage 2h (§2h.4): "numbers that let a real upload speak (no content)" - counts and a status code
  * only, never a text item, label or amount from the document. */
@@ -87,6 +106,13 @@ interface TechnicalDetails {
   amounts_not_found: number;
   text_layer_status: TextLayerStatus;
   request_size_kb: number;
+  /** Stage 2i (§2i.0e): which of the two numbers request_size_kb actually is - the client-sent
+   * Content-Length header (when it roughly agreed with an independent re-encode) or the measured
+   * re-encode itself (when the header was absent or disagreed by more than a small margin). */
+  request_size_source: 'content_length' | 'measured';
+  /** Stage 2i (§2i.0d): "put the chosen step in the technical line" - which render setting this
+   * upload's images actually used (client-reported; see local-ocr.ts's `renderPageImages`). */
+  render_step: string;
 }
 
 interface OkResponse {
@@ -94,9 +120,9 @@ interface OkResponse {
   period: TierCPeriodResponse;
   outcome: Outcome;
   discrepancies: Discrepancy[];
-  /** Stage 2h (§2h.3): which chain position (if any) the printed net actually confirms - structured
-   * data (§2.6), the panel below decides the wording. */
-  netReconciliationBasis: NetReconciliationBasis;
+  /** Stage 2h (§2h.3) / 2i (§2i.0b): which chain position (if any) the printed net actually
+   * confirms - structured data (§2.6), the panel below decides the wording. */
+  net_position: NetPosition;
   technicalDetails: TechnicalDetails;
   truncated: boolean;
   redactedFields: string[];
@@ -124,6 +150,8 @@ type ConsistencyIssue =
   | { code: 'anchors_inverted'; printed_gross_total: number; printed_loon_voor_heffingen: number }
   | { code: 'totals_do_not_reconcile_net'; implied_net: number; printed_net: number; residual: number }
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
+  | { code: 'printed_tax_bases_do_not_reconcile'; implied_total: number; printed_total: number; residual: number }
+  | { code: 'et_reduction_reimbursement_mismatch'; et_exchange_amount: number; reimbursements_sum: number; residual: number }
   | { code: 'period_type_unknown' }
   | { code: 'et_exchange_amount_unknown' }
   | { code: 'amount_unreadable'; field: string };
@@ -164,6 +192,17 @@ interface ExtractionTrace {
   unused_printed_amounts: { count: number; sample: number[] };
   /** Stage 2h (§2h.4): numbers only, never document content - see TechnicalDetails above. */
   technical_details: TechnicalDetails;
+  /** Stage 2i (§2i.0b): see NetPosition above. */
+  net_position: NetPosition;
+  /** Stage 2i (§2i.1): true only when a printed figure sitting in one anchor field was resolved by
+   * arithmetic to actually be the OTHER role (OTTO's shape - see resolveAnchors's own doc comment). */
+  anchor_reassigned: boolean;
+  /** Stage 2i (§2i.1): a printed figure matching neither chain position - shown as a neutral list,
+   * never as a block. */
+  other_printed_figures: number[];
+  /** Stage 2i (§2i.2): OTTO's own taxable-base split, when the document prints one. */
+  printed_taxable_base_normal: number | null;
+  printed_taxable_base_special: number | null;
 }
 
 interface UnreliableResponse {
@@ -293,6 +332,10 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueTotalsNet(money(issue.implied_net), money(issue.printed_net), money(issue.residual));
     case 'totals_do_not_reconcile_payout':
       return t.issueTotalsPayout(money(issue.implied_payout), money(issue.printed_payout), money(issue.residual));
+    case 'printed_tax_bases_do_not_reconcile':
+      return t.issueTaxBasesReconcile(money(issue.implied_total), money(issue.printed_total), money(issue.residual));
+    case 'et_reduction_reimbursement_mismatch':
+      return t.issueEtReductionMismatch(money(issue.et_exchange_amount), money(issue.reimbursements_sum), money(issue.residual));
     case 'period_type_unknown':
       return t.issuePeriodTypeUnknown;
     case 'et_exchange_amount_unknown':
@@ -319,6 +362,17 @@ function textLayerStatusNote(t: TierCCopy, status: TextLayerStatus): string {
   }
 }
 
+/** Stage 2i (§2i.0b): "say it on the panel in one plain line" - which chain position (if any) the
+ * printed net actually confirmed, never asserting a position the arithmetic didn't confirm. */
+function netPositionNote(t: TierCCopy, position: NetPosition): string {
+  switch (position) {
+    case 'before': return t.netPositionBefore;
+    case 'after': return t.netPositionAfter;
+    case 'both': return t.netPositionBoth;
+    case 'none': return t.netPositionNone;
+  }
+}
+
 export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
   const t = translations[lang].tierC;
   const progressLabels = translations[lang].progress;
@@ -336,25 +390,29 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     if (file.size > 10 * 1024 * 1024) { setUploadState('error'); setMessage(lang === 'pl' ? 'Plik jest większy niż 10 MB.' : 'The file is larger than 10 MB.'); return; }
     setUploadState('uploading'); setMessage(t.analyzing);
     try {
-      const images = await renderPageImages(file);
       // Stage 2g (§2g.1): the PDF's own text layer, when it has one, read on the SAME pages rendered
-      // above - sent alongside the images, never instead of them. Empty for a plain image upload or a
+      // below - sent alongside the images, never instead of them. Empty for a plain image upload or a
       // scanned PDF with no usable text layer (extractTextItems' own threshold decides that).
       //
       // Stage 2h (§2h.5): "the upload cannot be broken by the new path." extractTextItems runs a PDF
-      // worker (`getTextContent`) that can fail independently of the image render above (a corrupt or
+      // worker (`getTextContent`) that can fail independently of the image render (a corrupt or
       // unusual PDF, a worker timeout) - wrapped in its OWN try so that failure degrades to an
       // image-only upload (documentText: []), never the upload's error state. The upload error state
       // stays reserved for the image path itself failing.
+      //
+      // Stage 2i (§2i.0d): text extraction now runs BEFORE rendering - the render step needs to know
+      // whether a usable text layer exists (images are only a layout aid then) or not (images are the
+      // only source, so the render adapts and measures itself against the request-size budget).
       let documentText: Awaited<ReturnType<typeof extractTextItems>> = [];
       try {
         documentText = await extractTextItems(file);
       } catch (textLayerError) {
         console.warn('Text-layer extraction failed - continuing image-only', textLayerError);
       }
+      const { images, renderStep } = await renderPageImages(file, documentText.length > 0);
       const res = await fetch('/api/tier-c/analyze', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images, documentText }),
+        body: JSON.stringify({ images, documentText, renderStep }),
       });
       // Stage 2h (§2h.5): "show a clear message on a 413 instead of a generic error." A platform-level
       // rejection (Vercel's own request-body-size limit, before this ever reaches our Express handler)
@@ -386,20 +444,20 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     setDispositions(current => ({ ...current, [code]: { kind: 'confirmed' } }));
   }
 
-  async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; netReconciliationBasis: NetReconciliationBasis; technicalDetails: TechnicalDetails; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[]; trace: ExtractionTrace })> {
+  async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; net_position: NetPosition; technicalDetails: TechnicalDetails; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[]; trace: ExtractionTrace })> {
     const correctedPeriod = { ...basePeriod, [field]: value };
     const res = await fetch('/api/tier-c/recompute', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ period: correctedPeriod }),
     });
-    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; netReconciliationBasis?: NetReconciliationBasis; technicalDetails?: TechnicalDetails; issues?: ConsistencyIssue[]; trace?: ExtractionTrace; taxRatesSource?: 'database' | 'static'; error_code?: string };
+    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; net_position?: NetPosition; technicalDetails?: TechnicalDetails; issues?: ConsistencyIssue[]; trace?: ExtractionTrace; taxRatesSource?: 'database' | 'static'; error_code?: string };
     if (!res.ok || !data.status) throw new Error(t.error);
     if (data.status === 'unreliable') {
       if (!data.issues || !data.trace) throw new Error(t.error);
       return { status: 'unreliable', period: correctedPeriod, issues: data.issues, trace: data.trace };
     }
-    if (!data.outcome || !data.discrepancies || !data.taxRatesSource || !data.netReconciliationBasis || !data.technicalDetails) throw new Error(t.error);
-    return { status: 'ok', period: correctedPeriod, outcome: data.outcome, discrepancies: data.discrepancies, netReconciliationBasis: data.netReconciliationBasis, technicalDetails: data.technicalDetails, taxRatesSource: data.taxRatesSource };
+    if (!data.outcome || !data.discrepancies || !data.taxRatesSource || !data.net_position || !data.technicalDetails) throw new Error(t.error);
+    return { status: 'ok', period: correctedPeriod, outcome: data.outcome, discrepancies: data.discrepancies, net_position: data.net_position, technicalDetails: data.technicalDetails, taxRatesSource: data.taxRatesSource };
   }
 
   async function correctDiscrepancy(code: DiscrepancyCode) {
@@ -431,7 +489,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         setResponse({ status: 'unreliable', period: result.period, issues: result.issues, trace: result.trace, truncated: false, redactedFields: [] });
         return;
       }
-      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, netReconciliationBasis: result.netReconciliationBasis, technicalDetails: result.technicalDetails, truncated: response.truncated, redactedFields: response.redactedFields, taxRatesSource: result.taxRatesSource });
+      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, net_position: result.net_position, technicalDetails: result.technicalDetails, truncated: response.truncated, redactedFields: response.redactedFields, taxRatesSource: result.taxRatesSource });
       setDispositions(current => ({ ...current, [code]: { kind: 'corrected', correctedTo: value } }));
     } catch {
       setMessage(t.error);
@@ -454,7 +512,9 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         setResponse({ status: 'unreliable', period: result.period, issues: result.issues, trace: result.trace, truncated: false, redactedFields: [] });
         return;
       }
-      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, netReconciliationBasis: result.netReconciliationBasis, technicalDetails: result.technicalDetails, truncated: false, redactedFields: [], taxRatesSource: 'static' });
+      // Stage 2i (§2i.0e): was hardcoded 'static' (the reviewer's own finding, T9b/T8b) - the server's
+      // own reported source, exactly like correctDiscrepancy already does above.
+      setResponse({ status: 'ok', period: result.period, outcome: result.outcome, discrepancies: result.discrepancies, net_position: result.net_position, technicalDetails: result.technicalDetails, truncated: false, redactedFields: [], taxRatesSource: result.taxRatesSource });
       setDispositions({});
     } catch {
       setMessage(t.error);
@@ -588,10 +648,16 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                     <strong>{money(trace.printed_loon_voor_heffingen)}</strong>
                   </p>
                 )}
+                {trace.anchor_reassigned && <p className="form-note">{t.traceAnchorReassignedNote}</p>}
+                {trace.other_printed_figures.length > 0 && (
+                  <p className="form-note">{t.traceOtherPrintedFigures(trace.other_printed_figures.map((v) => money(v)).join(', '))}</p>
+                )}
 
-                <p><strong>{t.traceTaxTitle}</strong>{(hasIssue('zero_tax_nonzero_base') || hasIssue('printed_tax_unknown')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
+                <p><strong>{t.traceTaxTitle}</strong>{(hasIssue('zero_tax_nonzero_base') || hasIssue('printed_tax_unknown') || hasIssue('printed_tax_bases_do_not_reconcile')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 <p>{t.traceTaxPrintedTable}: <strong>{trace.printed_table_tax === null ? t.traceUnknown : money(trace.printed_table_tax)}</strong></p>
                 {trace.printed_bt_tax !== null && <p>{t.traceTaxPrintedBt}: <strong>{money(trace.printed_bt_tax)}</strong></p>}
+                {trace.printed_taxable_base_normal !== null && <p>{t.traceTaxBaseNormal}: <strong>{money(trace.printed_taxable_base_normal)}</strong></p>}
+                {trace.printed_taxable_base_special !== null && <p>{t.traceTaxBaseSpecial}: <strong>{money(trace.printed_taxable_base_special)}</strong></p>}
                 <p>{t.traceTaxComputed}: <strong>{trace.computed_table_tax_after_korting === null ? t.traceUnknown : money(trace.computed_table_tax_after_korting)}</strong></p>
 
                 <p><strong>{t.tracePostTaxSocial}</strong></p>
@@ -633,8 +699,14 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                     what the owner's real-PDF upload result is read from. */}
                 <p className="form-note">{textLayerStatusNote(t, trace.technical_details.text_layer_status)}</p>
                 <p className="form-note">
-                  {t.technicalDetailsLine(trace.technical_details.text_items_sent, trace.technical_details.amounts_checked, trace.technical_details.amounts_not_found, trace.technical_details.request_size_kb)}
+                  {t.technicalDetailsLine(trace.technical_details.text_items_sent, trace.technical_details.amounts_checked, trace.technical_details.amounts_not_found, trace.technical_details.request_size_kb, trace.technical_details.render_step)}
                 </p>
+                {/* Stage 2i (§2i.0e): "show the measured size and say which" - only worth a line when
+                    the trusted Content-Length header was NOT used (the interesting case). */}
+                {trace.technical_details.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
+                {/* Stage 2i (§2i.0b): "the dual net position is visible" - one plain line, never
+                    hiding that the gate's own arithmetic check can still be satisfied this way. */}
+                <p className="form-note">{netPositionNote(t, trace.net_position)}</p>
               </div>
             </div>
           );
@@ -697,7 +769,15 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
     if (disposition?.kind === 'confirmed') return 'finding';
     return d.status;
   }
-  const visibleDiscrepancies = discrepancies.filter(d => dispositions[d.code]?.kind !== 'corrected');
+  const uncorrectedDiscrepancies = discrepancies.filter(d => dispositions[d.code]?.kind !== 'corrected');
+  // Stage 2i (§2i.0e): "group payout_mismatch under table_tax_mismatch when they have the same cause
+  // (structured related_to, one row on the panel; the OTTO 12.28 case)." A discrepancy with
+  // `related_to` set is shown as a short note under its ROOT's row, not as its own separate row.
+  const linkedByRoot = new Map<DiscrepancyCode, Discrepancy[]>();
+  for (const d of uncorrectedDiscrepancies) {
+    if (d.related_to) linkedByRoot.set(d.related_to, [...(linkedByRoot.get(d.related_to) ?? []), d]);
+  }
+  const visibleDiscrepancies = uncorrectedDiscrepancies.filter(d => !d.related_to);
   const findingsCount = visibleDiscrepancies.filter(d => effectiveStatus(d) === 'finding').length;
 
   return (
@@ -821,6 +901,13 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                       {d.computed === null ? t.findingBodyUnknownComputed(money(d.printed)) : t.findingBody(money(d.computed), money(d.printed))}
                     </p>
                   )}
+                  {/* Stage 2i (§2i.0e): the OTTO 12.28 case - a downstream discrepancy the SAME
+                      arithmetic already explains, named rather than shown as a second, separate row. */}
+                  {linkedByRoot.has(d.code) && (
+                    <p className="form-note">
+                      {t.relatedDiscrepanciesNote(linkedByRoot.get(d.code)!.map(linked => discrepancyLabel(t, linked.code)).join(', '))}
+                    </p>
+                  )}
                 </div>
               );
             })}
@@ -832,8 +919,10 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
           owner's real-PDF result will be read from" this line either way. */}
       <p className="form-note">{textLayerStatusNote(t, response.technicalDetails.text_layer_status)}</p>
       <p className="form-note">
-        {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.amounts_checked, response.technicalDetails.amounts_not_found, response.technicalDetails.request_size_kb)}
+        {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.amounts_checked, response.technicalDetails.amounts_not_found, response.technicalDetails.request_size_kb, response.technicalDetails.render_step)}
       </p>
+      {response.technicalDetails.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
+      <p className="form-note">{netPositionNote(t, response.net_position)}</p>
 
       <p className="form-note calc-reliability-note">{t.reliabilityNoteC}</p>
       <p className="form-note calc-reliability-note">{t.permanentLimitationNote}</p>

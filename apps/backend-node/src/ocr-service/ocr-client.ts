@@ -82,6 +82,7 @@ Zwróć WYŁĄCZNIE obiekt JSON (bez markdown) o strukturze:
 "printed_table_tax":number|null,"printed_bt_tax":number|null,
 "printed_algemene_heffingskorting":number|null,"printed_arbeidskorting":number|null,
 "printed_gross_total":number|null,"printed_loon_voor_heffingen":number|null,
+"printed_taxable_base_normal":number|null,"printed_taxable_base_special":number|null,
 "reported_total_net":number|null,"reported_net_paid":number|null,
 "printed_table_tax_label":string|null,"printed_bt_tax_label":string|null,
 "printed_algemene_heffingskorting_label":string|null,"printed_arbeidskorting_label":string|null,
@@ -130,9 +131,20 @@ post_tax_deduction_lines=potrącenia PO opodatkowaniu (WGA, gediff. WGA, WHK wł
 linie występują PO podatku na dokumencie, nie przed): category=jedna z "wga", "gediff_wga", "whk",
 "other". Ta sama zasada: etykieta zawierająca "WHK"/"WGA" dostaje właściwą kategorię, nie "other".
 
-et_exchange_amount=kwota redukcji podstawy z tytułu regulacji ET/extraterritorialne (jeśli obecna -
-szukaj "ET", "extraterritoriale", "nieopodatkowana część wynagrodzenia"), et_reimbursement_lines=
-zwroty netto ET (np. verblijfskosten, huisvesting ET) jako lista {description,amount}.
+et_exchange_amount=kwota, o którą regulacja ET/extraterytorialna (salary exchange/wymiana wynagrodzenia)
+zmniejsza podstawę opodatkowania - szukaj etykiet takich jak "Nieopod. część wyn." / "Nieopodatkowana
+część wynagrodzenia" / "ET" / "extraterritoriale" (prawdziwy przykład z dokumentu OTTO: "Nieopod. część
+wyn. 100%", kwota 177,00). KRYTYCZNE: taka linia NIGDY nie trafia do pre_tax_deduction_lines, nawet
+jeśli wygląda i jest wydrukowana jak zwykłe potrącenie przed opodatkowaniem (ma swoją kwotę, może
+sąsiadować z liniami StiPP/PAWW) - to osobne, własne pole, nie kategoria "other" wśród potrąceń.
+et_reimbursement_lines=zwroty netto wypłacone W ZAMIAN, w ramach TEJ SAMEJ regulacji ET (np. "Zwrot
+kosztów utrzymania ET", "Zwrot za zakwaterowanie ET", verblijfskosten, huisvesting) jako lista
+{description,amount} - mogą być wydrukowane w zupełnie innym miejscu dokumentu niż et_exchange_amount
+(np. w sekcji netto, nie w sekcji potrąceń), więc szukaj ich osobno, nie tylko bezpośrednio obok linii
+redukcji. Zasada regulacji ET: suma kwot w et_reimbursement_lines zwykle RÓWNA SIĘ dokładnie
+et_exchange_amount (wymiana 1:1 opodatkowanego wynagrodzenia na nieopodatkowany zwrot, prawdziwy
+przykład OTTO: 33,00 + 144,00 = 177,00) - jeśli znajdziesz jedną z tych dwóch rzeczy na dokumencie,
+przeszukaj cały dokument uważnie pod kątem drugiej, zanim zwrócisz null albo pustą listę.
 
 net_lines=pozycje na poziomie netto (dodatki/potrącenia niepodatkowe): category=jedna z
 "reimbursement"=zwrot/dodatek (np. reiskosten), "loan"=pożyczka, "housing"=zakwaterowanie,
@@ -144,10 +156,18 @@ reservation_lines=rezerwacje (vakantiegeld/vakantiedagen NALICZANE w tym okresie
 type=jedna z "vakantiegeld", "vakantiedagen", "vakantiedagen_bovenwettelijk", "verlofuren", "other".
 accrued=naliczono w tym okresie, paid_out=wypłacono w tym okresie (0 jeśli to czysta rezerwacja).
 
-printed_table_tax=wydrukowana kwota "loonheffing"/podatek wg tabeli, printed_bt_tax=wydrukowana kwota
-podatku wg bijzonder tarief (jeśli osobna linia), printed_algemene_heffingskorting=wydrukowana
-algemene heffingskorting (jeśli widoczna osobno), printed_arbeidskorting=wydrukowana arbeidskorting
-(jeśli widoczna osobno).
+printed_table_tax i printed_bt_tax - określ każdą WYŁĄCZNIE po jej ROLI (od jakiej podstawy jest
+liczona), tak jak printed_taxable_base_normal/special powyżej, nigdy po samej etykiece:
+printed_table_tax=wydrukowany podatek liczony OD PODSTAWY OPODATKOWANIA WG ZWYKŁEJ STAWKI TABELI
+(zwykle podpisany "loonheffing", ale to POZYCJA/ROLA decyduje, nie to słowo). printed_bt_tax=wydrukowany
+podatek liczony OD PODSTAWY WG BIJZONDER TARIEF (jeśli osobna linia - dokument może drukować te dwie
+kwoty podatku osobno, tak jak osobno drukuje dwie podstawy). Prawdziwy przykład z dokumentu OTTO: -77,52
+to podatek od podstawy normalnej 621,14 (loonheffing), -40,08 to podatek od podstawy bijzonder tarief
+104,24 - obie kwoty są na dokumencie, każda przy SWOJEJ podstawie, nie w jednym wspólnym wierszu. Jeśli
+nie widzisz żadnej z tych dwóch kwot wprost wydrukowanej - zwróć null, nigdy nie oblicz jej sam z
+podstawy i stawki procentowej (patrz "przepisuj, nigdy nie licz" niżej).
+printed_algemene_heffingskorting=wydrukowana algemene heffingskorting (jeśli widoczna osobno),
+printed_arbeidskorting=wydrukowana arbeidskorting (jeśli widoczna osobno).
 
 printed_gross_total i printed_loon_voor_heffingen to DWIE RÓŻNE liczby w tym samym łańcuchu - określ
 każdą WYŁĄCZNIE po jej POZYCJI w łańcuchu (co jest PRZED nią i co PO niej), NIGDY po konkretnym słowie
@@ -176,6 +196,17 @@ Przykłady z prawdziwych dokumentów, żeby POZYCJA była jasna, nie etykieta:
 Oba pola null, jeśli dokument nie drukuje osobnej liczby w tej pozycji (np. przechodzi od razu z
 pojedynczej linii brutto do podatku, bez osobnego podsumowania po każdym etapie).
 
+printed_taxable_base_normal i printed_taxable_base_special: NIEKTÓRE dokumenty (np. OTTO) drukują
+podstawę opodatkowania PODZIELONĄ na dwie oddzielne liczby zamiast jednej - jedną podstawę, od której
+liczony jest podatek wg ZWYKŁEJ STAWKI TABELI, i drugą podstawę, od której liczony jest podatek wg
+BIJZONDER TARIEF (specjalnej stawki). Rozpoznaj obie WYŁĄCZNIE po tej roli (która stawka podatku jest
+od niej liczona), NIGDY po konkretnym słowie w etykiecie - tak jak przy printed_gross_total/
+printed_loon_voor_heffingen powyżej, etykieta może się różnić między dokumentami.
+printed_taxable_base_normal=podstawa opodatkowania wg zwykłej stawki tabeli (np. OTTO "RAZEM PODSTAWA"
+minus część bijzonder tarief). printed_taxable_base_special=podstawa opodatkowania wg bijzonder
+tarief. Oba null, jeśli dokument drukuje tylko JEDNĄ, niepodzieloną podstawę (typowy przypadek) - nie
+zgaduj podziału, jeśli nie jest wydrukowany wprost jako dwie oddzielne liczby.
+
 reported_total_net=wydrukowana kwota przy etykiecie "Totaal netto"/"Nettoloon"/"Netto loon" - to jest
 suma PRZED doliczeniem zwrotów kosztów (reiskosten), dodatków netto i korekt wypłaty.
 reported_net_paid=wydrukowana kwota przy etykiecie "Totaal"/"Netto te betalen"/"Uit te betalen" - to
@@ -203,7 +234,8 @@ Zasady: kropka jako separator dziesiętny; brak wartości = null (nie 0 i nie zg
 potrzebę.
 
 KRYTYCZNE - przepisuj, nigdy nie licz: każda kwota ("amount", "printed_table_tax", "printed_bt_tax",
-"printed_gross_total", "printed_loon_voor_heffingen", "reported_total_net", "reported_net_paid" itd.)
+"printed_gross_total", "printed_loon_voor_heffingen", "printed_taxable_base_normal",
+"printed_taxable_base_special", "reported_total_net", "reported_net_paid" itd.)
 to liczba WYDRUKOWANA na dokumencie, przepisana DOKŁADNIE - NIGDY wynik własnego mnożenia/dodawania
 (np. godziny × stawka), nawet jeśli wynik wydaje się "powinien" pasować. Jeśli wydrukowana liczba jest
 nieczytelna, zwróć null - NIGDY nie zastępuj jej obliczonym przybliżeniem.
@@ -512,6 +544,8 @@ export async function extractTierCPayslip(imageDataUrls: string[], textItems: Do
     printed_arbeidskorting: toNullableNumber(parsed.printed_arbeidskorting),
     printed_gross_total: toNullableNumber(parsed.printed_gross_total),
     printed_loon_voor_heffingen: toNullableNumber(parsed.printed_loon_voor_heffingen),
+    printed_taxable_base_normal: toNullableNumber(parsed.printed_taxable_base_normal),
+    printed_taxable_base_special: toNullableNumber(parsed.printed_taxable_base_special),
     reported_total_net: toNullableNumber(parsed.reported_total_net),
     reported_net_paid: toNullableNumber(parsed.reported_net_paid),
     printed_table_tax_label: sanitizeText(parsed.printed_table_tax_label, 'printed_table_tax_label', redactedFields),

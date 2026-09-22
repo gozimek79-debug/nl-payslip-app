@@ -21,7 +21,6 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@napi-rs/canvas": "^1.0.9",
     "@types/cors": "^2.8.0",
     "@types/express": "^5.0.0",
     "@types/multer": "^2.0.0",

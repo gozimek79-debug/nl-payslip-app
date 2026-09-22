@@ -29,16 +29,18 @@ import { tableTaxToleranceFor, type PayslipComputationOutcome, type PayslipPerio
  */
 export type DiscrepancyStatus = 'confirm' | 'finding';
 
+export type DiscrepancyCode =
+  | 'table_tax_mismatch'
+  | 'bt_tax_mismatch'
+  | 'algemene_heffingskorting_mismatch'
+  | 'arbeidskorting_mismatch'
+  | 'net_mismatch'
+  | 'payout_mismatch'
+  | 'minimum_wage_stale_on_document'
+  | 'minimum_wage_violation';
+
 export interface Discrepancy {
-  code:
-    | 'table_tax_mismatch'
-    | 'bt_tax_mismatch'
-    | 'algemene_heffingskorting_mismatch'
-    | 'arbeidskorting_mismatch'
-    | 'net_mismatch'
-    | 'payout_mismatch'
-    | 'minimum_wage_stale_on_document'
-    | 'minimum_wage_violation';
+  code: DiscrepancyCode;
   computed: number | null;
   printed: number;
   residual: number | null;
@@ -52,6 +54,14 @@ export interface Discrepancy {
    * label for it (never a canonical stand-in; the consumer falls back to a generic translated term
    * in that case, per CONVENTIONS.md - the sentence-building stays in the interface, not here). */
   printed_label: string | null;
+  /** Stage 2i (audit v29, §2i.0e): "group payout_mismatch under table_tax_mismatch when they have the
+   * same cause (structured related_to, one row on the panel; the OTTO 12.28 case)." Set when this
+   * discrepancy's own residual is the near-exact mirror (equal magnitude, opposite sign - a wrong tax
+   * figure moves net/payout by exactly its own error, one-for-one) of a table_tax_mismatch or
+   * bt_tax_mismatch discrepancy ALSO present in the same list - never asserted from the code alone,
+   * only from the arithmetic actually cancelling out (`linkRelatedDiscrepancies` below). `null` when
+   * this discrepancy has no such match, including every case where it is the root cause itself. */
+  related_to: DiscrepancyCode | null;
 }
 
 /**
@@ -143,8 +153,30 @@ const pushable = (
   const magnitude = Math.abs(residual);
   if (magnitude <= tolerance) return null; // silent - the original BP4 guarantee, unchanged
   const status: DiscrepancyStatus = magnitude <= confirmationUpper ? 'confirm' : 'finding';
-  return { code, computed, printed, residual, tolerance, confirmation_upper: confirmationUpper, status, printed_label: printedLabel };
+  return { code, computed, printed, residual, tolerance, confirmation_upper: confirmationUpper, status, printed_label: printedLabel, related_to: null };
 };
+
+/**
+ * Stage 2i (audit v29, §2i.0e): "group payout_mismatch under table_tax_mismatch when they have the
+ * same cause... the OTTO 12.28 case." A wrong table (or BT) tax figure moves `wage_net`/`period_net`/
+ * `payout_amount` by exactly its own error, one for one - so a downstream discrepancy caused SOLELY by
+ * that tax error has a residual that is the near-exact mirror (equal magnitude, opposite sign) of the
+ * tax discrepancy's own. Only linked when the arithmetic actually cancels this closely - never merely
+ * because both codes happened to fire in the same read (a genuinely SEPARATE net/payout error would
+ * not cancel this precisely against an unrelated tax error).
+ */
+const RELATED_DISCREPANCY_EPSILON = 0.05;
+
+function linkRelatedDiscrepancies(discrepancies: Discrepancy[]): Discrepancy[] {
+  const taxRoot = discrepancies.find((d) => d.code === 'table_tax_mismatch') ?? discrepancies.find((d) => d.code === 'bt_tax_mismatch');
+  if (!taxRoot || taxRoot.residual === null) return discrepancies;
+  return discrepancies.map((d) => {
+    if ((d.code === 'net_mismatch' || d.code === 'payout_mismatch') && d.residual !== null && Math.abs(d.residual + taxRoot.residual!) < RELATED_DISCREPANCY_EPSILON) {
+      return { ...d, related_to: taxRoot.code };
+    }
+    return d;
+  });
+}
 
 /**
  * BP4's shipping condition, restated as the actual acceptance test this function exists to satisfy:
@@ -214,5 +246,5 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
     push(pushable('minimum_wage_stale_on_document', period.wml_applicable, period.wml_printed, 0.005, MINIMUM_WAGE_CONFIRMATION_UPPER));
   }
 
-  return discrepancies;
+  return linkRelatedDiscrepancies(discrepancies);
 }

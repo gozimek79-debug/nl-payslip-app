@@ -5,7 +5,7 @@ import {
   type NetLineItem, type NetDeductionCategory, type ReservationBalance, type ReservationType,
   type ExtraterritorialArrangement,
 } from './payslip-model.js';
-import { classifyPreTaxDeductionLabel, classifyPostTaxDeductionLabel } from './extraction-consistency.js';
+import { classifyPreTaxDeductionLabel, classifyPostTaxDeductionLabel, isEtExchangeLabel } from './extraction-consistency.js';
 import { normalizePeriodSigns } from './sign-policy.js';
 
 /** Stage 2e (audit v24, §2e.1) found the sign bug; stage 2f (§2f.5) found stage 2e's own fix was
@@ -177,6 +177,12 @@ export interface TierCExtraction {
    * subtotal at that position. */
   printed_gross_total: number | null;
   printed_loon_voor_heffingen: number | null;
+  /** Stage 2i (audit v29, §2i.2): OTTO's own taxable-base split (normal-rate base 621.14, BT base
+   * 104.24) - see PayslipPeriod's identically-named fields for the full reasoning. Named by ROLE in
+   * the prompt (which rate applies to this base), never by a document's own label, per §2.13. null
+   * when the document prints no such breakdown (the common case). */
+  printed_taxable_base_normal: number | null;
+  printed_taxable_base_special: number | null;
   /** Stage 2 body ("Dutch terms as printed... not canonical"): the as-printed label next to each of
    * the six reference figures above, captured verbatim exactly like hour_lines[].description already
    * is - null (never a guessed canonical term) when the document has no distinct label for that
@@ -194,6 +200,21 @@ export interface TierCExtraction {
    * changed for this), but a non-empty list here means that 0 is a "could not read", never a "model
    * said zero". The controller raises `amount_unreadable` and blocks on any entry. */
   unreadable_amount_fields: string[];
+}
+
+/**
+ * Stage 2i (§2i.3): the ET-relabelling logic, factored out so `mapExtractionToPeriod` below and the
+ * controller's own raw-extraction gap check (`et_exchange_amount_unknown`, tier-c.controller.ts) read
+ * the SAME resolution and can never disagree - exactly the "one function, two callers" shape
+ * `resolveNetPosition` (extraction-consistency.ts) already uses for the same reason. Returns the
+ * amount only; the caller decides what to do with a mismatch between this and any pre-existing
+ * `extraction.et_exchange_amount`.
+ */
+export function resolveEtExchangeAmountFromExtraction(extraction: TierCExtraction): number | null {
+  if (extraction.et_exchange_amount !== null) return extraction.et_exchange_amount;
+  const etLabeledPreTaxLines = extraction.pre_tax_deduction_lines.filter((l) => isEtExchangeLabel(l.description));
+  if (etLabeledPreTaxLines.length === 0 || !etLabeledPreTaxLines.every((l) => l.amount !== null)) return null;
+  return etLabeledPreTaxLines.reduce((sum, l) => sum + (l.amount as number), 0);
 }
 
 /**
@@ -228,6 +249,17 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     adds_hours: line.adds_hours,
   }));
 
+  // Stage 2i (§2i.3): "fix prompt AND mapper so a line reducing taxable base by the ET reimbursement
+  // amount is read into et_exchange_amount." Confirmed live (OWNER-RETEST-2h-otto.md): OTTO's "Nieopod.
+  // część wyn. 100%" (177.00, exact) was read correctly but left in pre_tax_deduction_lines under
+  // 'other' - a mapper-side backstop, same shape as the classify*Label overrides just below, pulled
+  // out BEFORE those run so an ET-labelled line is never also offered to the four known deduction
+  // families. resolveEtExchangeAmountFromExtraction never overwrites an explicit et_exchange_amount
+  // reading, and the controller's own gap check reads the identical resolution (see that function's
+  // own doc comment) - the two can never disagree about whether this field is genuinely unread.
+  const preTaxDeductionLinesExcludingEt = extraction.pre_tax_deduction_lines.filter((l) => !isEtExchangeLabel(l.description));
+  const resolvedEtExchangeAmount = resolveEtExchangeAmountFromExtraction(extraction);
+
   // Stage 2e (§2e.4): "the label decides for known families... the model's category is advisory."
   // classifyPreTaxDeductionLabel/classifyPostTaxDeductionLabel are now the SOLE source of truth for
   // the four known families - overriding whatever category the extraction itself proposed, not
@@ -235,7 +267,7 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
   // AFTER this and is a dormant backstop for Tier C's own pipeline, per that file's comment). A label
   // matching no keyword is 'other' - the model's own guess is never used as a fallback, per "never
   // guess a category for an unmatched label."
-  const preTaxDeductions: PreTaxDeduction[] = extraction.pre_tax_deduction_lines.map((line) => ({
+  const preTaxDeductions: PreTaxDeduction[] = preTaxDeductionLinesExcludingEt.map((line) => ({
     category: classifyPreTaxDeductionLabel(line.description) ?? 'other',
     description: line.description,
     amount: line.amount === null ? unknownField() : known(line.amount, 'payslip_extracted'), // sign normalised once, below, by normalizePeriodSigns
@@ -262,16 +294,17 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     .filter((l) => l.category !== 'reimbursement')
     .map((l) => ({ category: l.category as NetDeductionCategory, description: l.description, amount: l.amount }));
 
-  const et: ExtraterritorialArrangement | null = extraction.et_exchange_amount !== null || extraction.et_reimbursement_lines.length > 0
+  const et: ExtraterritorialArrangement | null = resolvedEtExchangeAmount !== null || extraction.et_reimbursement_lines.length > 0
     ? {
         et_applicable: true,
         // Stage 2f (§2f.4): a genuinely unread et_exchange_amount (reimbursements present, base
-        // reduction not) is now caught by the controller (`et_exchange_amount_unknown`, raised from the
-        // raw extraction) BEFORE computePayslipPeriod ever runs on this period - this `?? 0` is never
-        // reached on a path that produces a shown net/tax figure. It stays only because
+        // reduction not, and no ET-labelled pre-tax line to reclassify either) is now caught by the
+        // controller (`et_exchange_amount_unknown`, raised from resolveEtExchangeAmountFromExtraction -
+        // see that function's own comment) BEFORE computePayslipPeriod ever runs on this period - this
+        // `?? 0` is never reached on a path that produces a shown net/tax figure. It stays only because
         // ExtraterritorialArrangement.et_exchange_amount is a plain, non-nullable number (like
         // HourLine.amount and friends) and this period must still be buildable for the trace panel.
-        et_exchange_amount: extraction.et_exchange_amount ?? 0,
+        et_exchange_amount: resolvedEtExchangeAmount ?? 0,
         et_reimbursements: extraction.et_reimbursement_lines.map((l) => ({ description: l.description, amount: l.amount })),
         adres_fiskalny: null, // not requested from extraction - not needed by computePayslipPeriod, informational only in the model
       }
@@ -336,6 +369,8 @@ export function mapExtractionToPeriod(extraction: TierCExtraction, applicableMin
     printed_payout: extraction.reported_net_paid,
     printed_gross_total: extraction.printed_gross_total,
     printed_loon_voor_heffingen: extraction.printed_loon_voor_heffingen,
+    printed_taxable_base_normal: extraction.printed_taxable_base_normal,
+    printed_taxable_base_special: extraction.printed_taxable_base_special,
     printed_table_tax_label: extraction.printed_table_tax_label,
     printed_bt_tax_label: extraction.printed_bt_tax_label,
     printed_algemene_heffingskorting_label: extraction.printed_algemene_heffingskorting_label,

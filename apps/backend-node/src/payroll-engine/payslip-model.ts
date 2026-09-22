@@ -190,6 +190,15 @@ export interface PayslipPeriod {
   printed_bt_tax: number | null;
   printed_algemene_heffingskorting: number | null;
   printed_arbeidskorting: number | null;
+  /** Stage 2i (audit v29, §2i.2): OTTO prints its taxable base split into two components - the base
+   * taxed at the ordinary table rate and the base taxed at bijzonder tarief (98.24 "Jednorazowa
+   * zapłata" + 6.00 "Wynagr. kierowcy brutto" = 104.24 BT, 725.38 - 104.24 = 621.14 normal) - and the
+   * engine already reproduces both exactly via each hour_line's own tax_treatment (never re-derived
+   * here; see payslip-model.test.ts's OTTO fixture). These two fields exist only to VERIFY that split
+   * against what the document itself printed, same purpose as printed_table_tax above - null when the
+   * document prints no such breakdown at all (most documents print one undivided base). */
+  printed_taxable_base_normal: number | null;
+  printed_taxable_base_special: number | null;
   /** CL (audit "SEVERAL EMPLOYERS AT ONCE" round): discrepancy.ts declared net_mismatch/
    * payout_mismatch codes for two rounds without anything to compare against - these two fields are
    * that comparison target. printed_payout is the final paid-out figure (matches .payout_amount, the

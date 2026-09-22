@@ -58,6 +58,10 @@ export const PAYSLIP_PERIOD_SIGN_POLICY = {
   printed_payout: 'keep',
   printed_gross_total: 'magnitude',
   printed_loon_voor_heffingen: 'magnitude',
+  // Stage 2i (§2i.2): NEW - a taxable base is never printed negative on any confirmed document
+  // (OTTO's are the only real-document instance seen so far), same reasoning as printed_gross_total.
+  printed_taxable_base_normal: 'magnitude',
+  printed_taxable_base_special: 'magnitude',
   printed_table_tax_label: 'not_an_amount',
   printed_bt_tax_label: 'not_an_amount',
   printed_algemene_heffingskorting_label: 'not_an_amount',
@@ -136,6 +140,8 @@ export function normalizePeriodSigns(period: PayslipPeriod): PayslipPeriod {
     printed_bt_tax: magnitudeOrNull(period.printed_bt_tax),
     printed_gross_total: magnitudeOrNull(period.printed_gross_total),
     printed_loon_voor_heffingen: magnitudeOrNull(period.printed_loon_voor_heffingen),
+    printed_taxable_base_normal: magnitudeOrNull(period.printed_taxable_base_normal),
+    printed_taxable_base_special: magnitudeOrNull(period.printed_taxable_base_special),
     // hour_lines, payout_adjustments, printed_net, printed_payout, printed_algemene_heffingskorting,
     // printed_arbeidskorting: 'keep' per the table above - sign is the direction, untouched.
   };

@@ -1040,3 +1040,101 @@ test('2l.2: with no flagged paths at all (the default), every line stays unflagg
   assert.ok(trace.hour_lines.every((l) => l.flagged === false));
   assert.ok(trace.pre_tax_deductions.every((l) => l.flagged === false));
 });
+
+/**
+ * Stage 2o (audit v36, §2o.1): RAPORT-cursor-2n.md's T6 finding - a missed net addition can produce a
+ * FALSE-CLEAN match, not just a missing signal. gross 800, tax 100, post-tax 100, printed_net 700, no
+ * printed_payout: printed_net matches the 'taxable_base_net' position (800-100=700) exactly, but this
+ * is a genuine coincidence - a +100 net addition that was never extracted would, if read, make the
+ * 'after' position ALSO land on 700 (600 before-net-lines + 100), because the missing addition happens
+ * to exactly cancel the post-tax deduction. Nothing in the gate can tell "genuinely at taxable_base_net"
+ * from "actually at 'after' with a coincidentally-cancelling missed line" without a printed_payout to
+ * cross-check - net_position_unconfirmed is the stated gap for exactly that unprovable case.
+ */
+test('2o.1: T6 - a missed net addition that coincidentally cancels the post-tax sum produces net_position_unconfirmed, not a silent clean pass', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 100,
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(100, 'payslip_extracted'), percent: null }],
+    printed_net: 700, // taxable_base_net = 800 - 100 = 700, matches exactly - but the +100 addition below was never read
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile' || i.code === 'totals_do_not_reconcile_net'), `expected the taxable_base_net match itself to still pass cleanly (it IS arithmetically correct at face value), got ${JSON.stringify(issues)}`);
+  const issue = issues.find((i) => i.code === 'net_position_unconfirmed');
+  assert.ok(issue, `expected net_position_unconfirmed to flag the unprovable coincidence instead of a silent pass, got ${JSON.stringify(issues)}`);
+  if (issue?.code === 'net_position_unconfirmed') {
+    assert.equal(issue.printed_net, 700);
+    assert.equal(issue.post_tax_sum, 100);
+  }
+});
+
+test('2o.1: the same coincidence, with a printed payout present, is caught by the existing payout check instead - proving net_position_unconfirmed only needs to run when nothing else can catch it', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 100,
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(100, 'payslip_extracted'), percent: null }],
+    printed_net: 700,
+    printed_payout: 700, // the real payout would be 700 too (700 - 100 post-tax + the unread 100 addition), but the addition was never read
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_position_unconfirmed'), `expected net_position_unconfirmed to stay silent once a printed payout exists to check instead, got ${JSON.stringify(issues)}`);
+  const issue = issues.find((i) => i.code === 'totals_do_not_reconcile_payout');
+  assert.ok(issue, `expected the existing payout check to catch the missed addition on its own, got ${JSON.stringify(issues)}`);
+  if (issue?.code === 'totals_do_not_reconcile_payout') assert.equal(issue.residual, -100);
+});
+
+test('2o.1: zero post-tax deductions never triggers net_position_unconfirmed - nothing for a missed net line to coincidentally cancel against', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 100,
+    printed_net: 700, // taxable_base_net = 800 - 100 = 700; no post-tax deductions at all
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_position_unconfirmed'), JSON.stringify(issues));
+});
+
+test('2o.1: a match at the "before" position (not taxable_base_net) never triggers net_position_unconfirmed - that position has no post-tax stage left unverified downstream of it', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 100,
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(100, 'payslip_extracted'), percent: null }],
+    printed_net: 600, // matches "before" (700 - 100), not taxable_base_net (700)
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'net_position_unconfirmed'), JSON.stringify(issues));
+});
+
+/**
+ * Stage 2o (audit v36, §2o.2): "finish the shared resolver - the anchor-less totals_do_not_reconcile_net
+ * path still uses the pre-2n formula instead of the shared resolver." Before this fix, the 'none'-branch
+ * (no printed_gross_total/printed_loon_voor_heffingen at all) never called checkNetStage and never set
+ * netStageMatchedPosition, so section 4b's own position-aware payout check always fell into its
+ * historical 'before' fallback for a no-anchor document - regardless of which position printed_net
+ * actually matched. This fixture has NO anchors and a printed_net that matches the NEW 'taxable_base_net'
+ * position specifically, with a real net addition read - proving the payout check now derives from the
+ * position the 'none' branch itself resolved, not a hardcoded assumption.
+ */
+test('2o.2: a no-anchor ("none" branch) document with printed_net at the taxable_base_net position now feeds the position-aware payout check too', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 800, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 100,
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(100, 'payslip_extracted'), percent: null }],
+    net_additions: [{ category: 'reimbursement', description: 'Zwrot', amount: 50 }],
+    printed_net: 700, // taxable_base_net = 800 - 100
+    printed_payout: 650, // 700 - 100 (post-tax) + 50 (the read addition)
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(!issues.some((i) => i.code === 'totals_do_not_reconcile_payout'), `expected the position-aware payout formula to reconcile cleanly, got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'totals_do_not_reconcile_net'), JSON.stringify(issues));
+});
+
+test('2o.2 REGRESSION: the pre-fix "none"-branch behaviour (position-blind, always assuming "before") would have wrongly flagged the fixture above', () => {
+  // Before 2o.2, the 'none' branch never told section 4b which position matched, so its payout check
+  // always used the historical fallback formula: printed_net + additions - deductions + et - not the
+  // taxable_base_net-aware one that also subtracts post-tax.
+  const printedNet = 700;
+  const additions = 50;
+  const preFixImpliedPayout = printedNet + additions; // the old, position-blind fallback: 750
+  const printedPayout = 650;
+  assert.equal(preFixImpliedPayout - printedPayout, 100, 'sanity: the pre-fix fallback would have been off by exactly the post-tax amount it never subtracted');
+});

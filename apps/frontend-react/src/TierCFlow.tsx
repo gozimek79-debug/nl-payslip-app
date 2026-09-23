@@ -154,6 +154,7 @@ type ConsistencyIssue =
   | { code: 'totals_do_not_reconcile_payout'; implied_payout: number; printed_payout: number; residual: number }
   | { code: 'printed_tax_bases_do_not_reconcile'; implied_total: number; printed_total: number; residual: number }
   | { code: 'et_reduction_reimbursement_mismatch'; et_exchange_amount: number; reimbursements_sum: number; residual: number }
+  | { code: 'net_position_unconfirmed'; printed_net: number; post_tax_sum: number }
   | { code: 'period_type_unknown' }
   | { code: 'et_exchange_amount_unknown' }
   | { code: 'amount_unreadable'; field: string };
@@ -351,6 +352,8 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueTaxBasesReconcile(money(issue.implied_total), money(issue.printed_total), money(issue.residual));
     case 'et_reduction_reimbursement_mismatch':
       return t.issueEtReductionMismatch(money(issue.et_exchange_amount), money(issue.reimbursements_sum), money(issue.residual));
+    case 'net_position_unconfirmed':
+      return t.issueNetPositionUnconfirmed(money(issue.printed_net), money(issue.post_tax_sum));
     case 'period_type_unknown':
       return t.issuePeriodTypeUnknown;
     case 'et_exchange_amount_unknown':

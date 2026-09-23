@@ -506,6 +506,35 @@ router.post('/recompute', async (req, res) => {
     return res.status(400).json({ error_code: 'invalid_period' });
   }
   const rawPeriod = rawPeriodInput;
+
+  // Stage 2m (audit v33, §2m.1): "a flagged amount must stay excluded even through a repost." A
+  // blocked /analyze response's own `period` still carries the guessed amount, and until this stage
+  // /recompute had no way to know it was ever flagged at all - not merely a display gap (2l.2 only
+  // ever fixed the TRACE's own sum), but a real one: with no gate to stop it, a client that reposted
+  // that period would have had computePayslipPeriod run its REAL tax computation on the guessed value,
+  // producing a `status: 'ok'` result that looks exactly as trustworthy as a genuine read. The
+  // reviewer's own choice offered ("thread the paths through" vs "make it impossible to recompute a
+  // period that still carries an unresolved flagged field"): this refuses outright, never silently
+  // re-excluding - the caller has to actually resolve (correct) every flagged field before /recompute
+  // will run at all, exactly the discipline §2.3 ("never invent a value because one is needed") already
+  // asks of the reading side. Reuses the SAME `amount_unreadable` issue code and trace shape /analyze's
+  // own extraction-gap return already uses (not a new response shape, not a new frontend switch-case
+  // needed - `issueMessage`'s existing case handles it), so a future correction flow sees the identical
+  // "still unresolved" signal regardless of which route produced it.
+  const flaggedFieldPathsInput = req.body?.flaggedFieldPaths;
+  if (flaggedFieldPathsInput !== undefined && (!Array.isArray(flaggedFieldPathsInput) || !flaggedFieldPathsInput.every((f) => typeof f === 'string'))) {
+    return res.status(400).json({ error_code: 'invalid_period' });
+  }
+  const flaggedFieldPaths: string[] = flaggedFieldPathsInput ?? [];
+  if (flaggedFieldPaths.length > 0) {
+    console.error('[consistency-gate] blocked on /recompute - unresolved flagged fields:', JSON.stringify(flaggedFieldPaths));
+    return res.json({
+      status: 'unreliable',
+      issues: flaggedFieldPaths.map((field) => ({ code: 'amount_unreadable' as const, field })),
+      trace: buildExtractionTrace(rawPeriod, null, [], { flaggedFieldPaths }),
+    });
+  }
+
   // Stage 2g (§2g.0b): "an unknown period type may not drive anything anywhere." Before this, any
   // string here (including the placeholder 'week' a blocked /analyze had to write into the returned
   // period so the trace panel could render) would reach fetchRates/computePayslipPeriod unchecked -

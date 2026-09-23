@@ -250,6 +250,102 @@ test('2l.2: /analyze wires amount_unreadable field paths through to the trace - 
 });
 
 /**
+ * Stage 2m (audit v33, §2m.1): "a flagged amount must stay excluded even through a repost... one test
+ * that reposts the exact blocked period from 2l.2's own fixture and confirms the guessed amount stays
+ * out of the sum." Reproduces RAPORT-cursor-2l.md's own MINOR finding: a blocked /analyze response's
+ * `period` still carries the guessed 'onbekend'-amount (stored as 0 by toNumberTracked's non-finite
+ * fallback here, but the SAME field-path mechanism applies regardless of the stored value - see
+ * extraction-consistency.test.ts's own 2l.2 tests for the non-zero case). Before this stage, /recompute
+ * had no way to know that field was ever flagged at all, and would have happily computed a REAL tax
+ * outcome from it - not merely a wrong display sum, an `status: 'ok'` result built on an admitted guess.
+ */
+test('2m.1: reposting the exact blocked period (from the 2l.2 fixture above) to /recompute, WITH its flagged field paths, refuses to compute rather than silently re-including the guess', async () => {
+  const UNREADABLE_HOUR_LINE = {
+    period_label: 'week 1/2026', period_end_date: null, payment_date: null, period_type: 'week',
+    is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
+    hour_lines: [
+      { description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.78, category: 'regular', tax_treatment: 'table', adds_hours: true, employer_index: 0 },
+      { description: 'Onleesbare kwota', hours: null, rate: null, percent: null, amount: 'onbekend', category: 'other', tax_treatment: 'table', adds_hours: false, employer_index: 0 },
+    ],
+    pre_tax_deduction_lines: [], post_tax_deduction_lines: [],
+    bijzonder_tarief_printed_percent: null, bijzonder_tarief_jaarloon: null,
+    et_exchange_amount: null, et_reimbursement_lines: [], net_lines: [], payout_adjustment_lines: [], reservation_lines: [],
+    printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+    printed_gross_total: null, printed_loon_voor_heffingen: null,
+    reported_total_net: null, reported_net_paid: null,
+    printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+  };
+  globalThis.fetch = mockCompletion(UNREADABLE_HOUR_LINE) as typeof fetch;
+  const analyzeRes = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const analyzeBody = (await analyzeRes.json()) as { status: string; issues: Array<{ code: string; field?: string }>; period: unknown };
+  assert.equal(analyzeBody.status, 'unreliable');
+  const flaggedFieldPaths = analyzeBody.issues.filter((i) => i.code === 'amount_unreadable').map((i) => i.field as string);
+  assert.deepEqual(flaggedFieldPaths, ['hour_lines[1].amount'], 'sanity: the same single flagged path as the 2l.2 test above');
+
+  // The exact repost the reviewer's finding describes: the blocked response's own `period`, still
+  // carrying the guessed amount, posted straight to /recompute - this time WITH the flagged paths the
+  // client can already read off `issues` (no new field needed on the /analyze response at all).
+  const recomputeRes = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: analyzeBody.period, flaggedFieldPaths }),
+  });
+  const recomputeBody = (await recomputeRes.json()) as { status: string; issues?: Array<{ code: string; field?: string }>; trace?: { gross_total: number; hour_lines: Array<{ flagged: boolean }> }; outcome?: unknown };
+  assert.equal(recomputeRes.status, 200);
+  assert.equal(recomputeBody.status, 'unreliable', `expected /recompute to refuse rather than compute an 'ok' outcome from the guessed amount, got ${JSON.stringify(recomputeBody)}`);
+  assert.equal(recomputeBody.outcome, undefined, 'expected no computed outcome at all - the guess never reached the engine');
+  assert.ok(recomputeBody.issues?.some((i) => i.code === 'amount_unreadable' && i.field === 'hour_lines[1].amount'), `expected the same amount_unreadable issue to survive the repost, got ${JSON.stringify(recomputeBody.issues)}`);
+  assert.equal(recomputeBody.trace?.gross_total, 699.78, `expected the guessed amount still excluded from gross_total on the /recompute trace too, got ${recomputeBody.trace?.gross_total}`);
+  assert.equal(recomputeBody.trace?.hour_lines[1]?.flagged, true, 'expected the flagged line still marked on the /recompute response');
+});
+
+test('2m.1: /recompute with NO flaggedFieldPaths at all (the ordinary case, untouched by this fix) still computes normally', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      period: {
+        period_label: null, period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
+        employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+        hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+        pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+        et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+        wml_printed: null, wml_applicable: null,
+        printed_table_tax: 170.46, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+        printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+        printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+      },
+    }),
+  });
+  const body = (await res.json()) as { status: string };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', `expected the ordinary, no-flagged-fields case unaffected by 2m.1, got ${JSON.stringify(body)}`);
+});
+
+test('2m.1: /recompute rejects a malformed flaggedFieldPaths (not an array of strings) with invalid_period, never crashes', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      period: {
+        period_label: null, period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
+        employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+        hour_lines: [], pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+        et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+        wml_printed: null, wml_applicable: null,
+        printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+        printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+        printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+      },
+      flaggedFieldPaths: [123, 'ok'],
+    }),
+  });
+  const body = (await res.json()) as { error_code?: string };
+  assert.equal(res.status, 400);
+  assert.equal(body.error_code, 'invalid_period');
+});
+
+/**
  * Stage 2h (audit v28, §2h.2): "if the guard cannot find half or more of the amounts it checked...
  * treat the layer as unusable: do not block on the guard, fall back to the image-only read." A
  * correct Olympia read has several printed amounts to check (gross lines, StiPP, printed subtotals,

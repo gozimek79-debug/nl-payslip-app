@@ -941,3 +941,102 @@ test('2g.0c: every backend ConsistencyIssue code has a real switch-case in TierC
   const missing = ALL_CONSISTENCY_ISSUE_CODES.filter((code) => !new RegExp(`case '${code}':`).test(frontendSource));
   assert.deepEqual(missing, [], `TierCFlow.tsx's issueMessage() has no "case '<code>':" for: ${missing.join(', ')}`);
 });
+
+/**
+ * Stage 2l (audit v32, §2l.1): "show the ET reduction as its own step between loon voor heffingen and
+ * implied net, so the implied line is the sum of the rows the panel just printed." RAPORT-cursor-2k.md's
+ * FINDING: the owner's live OTTO read showed `implied_net: 421.59`, but hand-summing the panel's own
+ * VISIBLE rows (loon_voor_heffingen 902.38, minus the two taxes, minus post-tax) gave 598.59 - a real,
+ * hidden 177.00 EUR step (the ET reduction) the panel never showed.
+ */
+test("2l.1: et_reduction and taxable_base_position make implied_net follow from the rows the panel shows - reproduces the owner's real OTTO figures (421.59)", () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.62, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(22.24, 'payslip_extracted'), base: null, percent: null }],
+    bijzonder_tarief: { jaarloon_bt: null, bt_state: 'known', tarief_bt: { printed: 38.45, computed: null } },
+    et: { et_applicable: true, et_exchange_amount: 177.0, et_reimbursements: [{ description: 'Zwrot', amount: 177.0 }], adres_fiskalny: null },
+    post_tax_social: [{ category: 'whk', description: 'post-tax', amount: known(186.19, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 77.52,
+    printed_bt_tax: 40.08,
+  });
+  const trace = buildExtractionTrace(period, completeOutcome({ taxable_base: 725.38, table_tax_after_korting: 77.52 }));
+  assert.equal(trace.loon_voor_heffingen, 902.38, 'sanity: the pre-ET row the panel already showed');
+  assert.equal(trace.et_reduction, 177, 'expected the ET reduction shown as its own explicit step');
+  assert.equal(trace.taxable_base_position, 725.38, 'expected the post-ET taxable-base position shown explicitly');
+  assert.equal(trace.implied_net, 421.59, "sanity: reproduces the owner's own reported implied_net exactly");
+  // The actual point of 2l.1: hand-summing the now-fully-visible rows (loon_voor_heffingen minus
+  // et_reduction minus both taxes minus post-tax) must equal implied_net - no longer a hidden step.
+  const handSum = Math.round((trace.loon_voor_heffingen! - trace.et_reduction! - trace.printed_table_tax! - trace.printed_bt_tax! - trace.post_tax_deductions_sum!) * 100) / 100;
+  assert.equal(handSum, trace.implied_net, `expected implied_net to follow from the now-visible rows; hand sum ${handSum} vs implied_net ${trace.implied_net}`);
+});
+
+test('2l.1: et_reduction and taxable_base_position are populated on the amount_unreadable-BLOCKED trace too (outcome null) - not only the clean/ok path', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross lines', hours: null, rate: null, percent: null, amount: 924.62, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(22.24, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 177.0, et_reimbursements: [{ description: 'Zwrot', amount: 177.0 }], adres_fiskalny: null },
+  });
+  const trace = buildExtractionTrace(period, null); // outcome null - the blocked-trace shape
+  assert.equal(trace.et_reduction, 177, 'expected et_reduction populated even with no outcome - computed from the period alone');
+  assert.equal(trace.taxable_base_position, 725.38, 'expected taxable_base_position populated even with no outcome');
+  assert.equal(trace.computed_taxable_base, null, 'sanity: the ENGINE-computed figure is still null with no outcome - taxable_base_position is a DIFFERENT, period-only field');
+});
+
+test('2l.1: a document with no ET at all shows et_reduction as null (never 0), and taxable_base_position equals loon_voor_heffingen exactly', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: null,
+  });
+  const trace = buildExtractionTrace(period, completeOutcome({}));
+  assert.equal(trace.et_reduction, null, 'expected null (absent), never 0, for a document with no ET at all');
+  assert.equal(trace.taxable_base_position, trace.loon_voor_heffingen, 'expected the two positions to coincide exactly when there is no ET reduction');
+});
+
+/**
+ * Stage 2l (audit v32, §2l.2): "a flagged amount should not sit inside a sum shown as fact... fix so a
+ * flagged amount is visibly excluded, or visibly marked... do not silently drop it either." Owner's
+ * report: "Suma brutto (924.62) and the pre-tax deduction sum both add in the flagged 0.59 values as if
+ * they were ordinary figures."
+ */
+test('2l.2: a flagged pre_tax_deductions amount is excluded from pre_tax_deductions_sum, and its own line is marked flagged - never silently dropped', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [
+      { category: 'pension', description: 'STIPP', amount: known(21.65, 'payslip_extracted'), base: null, percent: null },
+      { category: 'paww', description: 'PAWW Rekompensata (misread 0.59, printed 0.51)', amount: known(0.59, 'payslip_extracted'), base: null, percent: null },
+    ],
+  });
+  const trace = buildExtractionTrace(period, completeOutcome({}), [], { flaggedFieldPaths: ['pre_tax_deductions[1].amount'] });
+  assert.equal(trace.pre_tax_deductions_sum, 21.65, `expected the flagged 0.59 excluded from the sum, got ${trace.pre_tax_deductions_sum}`);
+  assert.equal(trace.pre_tax_deductions[0]?.flagged, false, 'the unflagged line must stay unflagged');
+  assert.equal(trace.pre_tax_deductions[1]?.flagged, true, 'expected the flagged line marked, not dropped');
+  assert.equal(trace.pre_tax_deductions[1]?.amount, 0.59, 'expected the flagged line still shows its own (wrong) value - never silently dropped from the trace');
+  assert.equal(trace.pre_tax_deductions.length, 2, 'expected both lines still present - the row itself is never removed, only excluded from the sum');
+});
+
+test('2l.2: a flagged hour_lines amount is excluded from gross_total, and its own line is marked flagged', () => {
+  const period = minimalPeriod({
+    hour_lines: [
+      { employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.78, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Misread line', hours: null, rate: null, percent: null, amount: 0.59, category: 'other', tax_treatment: 'table', adds_hours: false },
+    ],
+  });
+  const trace = buildExtractionTrace(period, completeOutcome({}), [], { flaggedFieldPaths: ['hour_lines[1].amount'] });
+  assert.equal(trace.gross_total, 699.78, `expected the flagged line excluded from gross_total, got ${trace.gross_total}`);
+  assert.equal(trace.hour_lines[0]?.flagged, false);
+  assert.equal(trace.hour_lines[1]?.flagged, true);
+  assert.equal(trace.hour_lines[1]?.amount, 0.59, 'still shown, just excluded from the sum');
+});
+
+test('2l.2: with no flagged paths at all (the default), every line stays unflagged and every sum is unaffected - regression guard for the ordinary/ok path', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+  });
+  const trace = buildExtractionTrace(period, completeOutcome({}));
+  assert.equal(trace.gross_total, 1000);
+  assert.equal(trace.pre_tax_deductions_sum, 10);
+  assert.ok(trace.hour_lines.every((l) => l.flagged === false));
+  assert.ok(trace.pre_tax_deductions.every((l) => l.flagged === false));
+});

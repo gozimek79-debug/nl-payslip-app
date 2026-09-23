@@ -158,8 +158,12 @@ type ConsistencyIssue =
 
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
-interface ExtractionTraceLine { label: string; category: string; amount: number | null; provenance: string }
-type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'ambiguous_both_match' | 'unresolved' | 'none';
+// Stage 2l (§2l.2): "flagged" - true only when this line's own field path was named by
+// amount_unreadable; the panel must show it as excluded from the sum above it, never silently drop it.
+interface ExtractionTraceLine { label: string; category: string; amount: number | null; provenance: string; flagged: boolean }
+// Stage 2j (§2j.1): 'confirmed_taxable_base' - a printed figure resolved by arithmetic to the third
+// chain position (gross minus pre-tax minus the ET reduction), not gross or loon-voor-heffingen.
+type SubtotalRole = 'both' | 'confirmed_gross' | 'confirmed_loon_voor_heffingen' | 'confirmed_taxable_base' | 'ambiguous_both_match' | 'unresolved' | 'none';
 interface ExtractionTrace {
   hour_lines: ExtractionTraceLine[];
   gross_total: number;
@@ -171,6 +175,12 @@ interface ExtractionTrace {
   pre_tax_deductions_sum: number | null;
   loon_voor_heffingen: number | null;
   printed_loon_voor_heffingen: number | null;
+  /** Stage 2l (§2l.1): the ET reduction as its own explicit step - null (never 0) when ET does not
+   * apply to this document at all. */
+  et_reduction: number | null;
+  /** Stage 2l (§2l.1): the actual taxable-base position (loon_voor_heffingen minus et_reduction) -
+   * available even on the amount_unreadable-blocked trace, unlike computed_taxable_base below. */
+  taxable_base_position: number | null;
   printed_table_tax: number | null;
   printed_bt_tax: number | null;
   /** Stage 2f (§2f.4): null when the caller could not compute at all (an unread period_type or
@@ -621,9 +631,14 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <p key={i}>
                   {l.label} <span className="form-note nl-term">({l.category})</span>: <strong>{l.amount === null ? t.traceUnknown : money(l.amount)}</strong>
                   {miscategorized.has(l.label) && <span className="form-note"> {t.traceStepFailed}</span>}
+                  {/* Stage 2l (§2l.2): "a flagged amount should not sit inside a sum shown as fact...
+                      do not silently drop it either." The row stays, marked, and excluded from the
+                      sum printed just above it. */}
+                  {l.flagged && <span className="form-note"> {t.traceLineFlagged}</span>}
                 </p>
               ))
             );
+          const flaggedCount = (lines: ExtractionTraceLine[]) => lines.filter((l) => l.flagged).length;
           return (
             <div className="notice-card">
               <ShieldCheck/>
@@ -632,6 +647,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 <p><strong>{t.traceHourLines}</strong>{hasIssue('gross_lines_do_not_reconcile') && <span className="form-note"> {t.traceStepFailed}</span>}</p>
                 {renderLines(trace.hour_lines)}
                 <p>{t.traceGrossTotal}: <strong>{money(trace.gross_total)}</strong></p>
+                {flaggedCount(trace.hour_lines) > 0 && <p className="form-note">{t.traceSumExcludesFlagged(flaggedCount(trace.hour_lines))}</p>}
                 {/* Stage 2f (§2f.2): "the panel must not label a subtotal 'gross' unless it reconciles
                     as gross; until then it shows 'printed subtotal'." A value sitting in
                     printed_gross_total that resolveSubtotalRole did NOT confirm as the gross role
@@ -653,6 +669,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 </p>
                 {renderLines(trace.pre_tax_deductions)}
                 <p>{t.tracePreTaxSum}: <strong>{trace.pre_tax_deductions_sum === null ? t.traceUnknown : money(trace.pre_tax_deductions_sum)}</strong></p>
+                {flaggedCount(trace.pre_tax_deductions) > 0 && <p className="form-note">{t.traceSumExcludesFlagged(flaggedCount(trace.pre_tax_deductions))}</p>}
                 <p>{t.traceLoonVoorHeffingen}: <strong>{trace.loon_voor_heffingen === null ? t.traceUnknown : money(trace.loon_voor_heffingen)}</strong></p>
                 {trace.printed_loon_voor_heffingen !== null && (
                   <p>
@@ -663,6 +680,15 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                 {trace.anchor_reassigned && <p className="form-note">{t.traceAnchorReassignedNote}</p>}
                 {trace.other_printed_figures.length > 0 && (
                   <p className="form-note">{t.traceOtherPrintedFigures(trace.other_printed_figures.map((v) => money(v)).join(', '))}</p>
+                )}
+                {/* Stage 2l (§2l.1): "show the ET reduction as its own step between loon voor
+                    heffingen and implied net" - previously invisible even though implied_net (since
+                    2j.1) was already computed from the post-ET position below. */}
+                {trace.et_reduction !== null && (
+                  <p>{t.traceEtReduction}: <strong>{money(trace.et_reduction)}</strong></p>
+                )}
+                {trace.taxable_base_position !== null && trace.et_reduction !== null && (
+                  <p>{t.traceTaxableBasePosition}: <strong>{money(trace.taxable_base_position)}</strong></p>
                 )}
 
                 <p><strong>{t.traceTaxTitle}</strong>{(hasIssue('zero_tax_nonzero_base') || hasIssue('printed_tax_unknown') || hasIssue('printed_tax_bases_do_not_reconcile')) && <span className="form-note"> {t.traceStepFailed}</span>}</p>

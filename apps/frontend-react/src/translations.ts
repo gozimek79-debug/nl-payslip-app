@@ -318,6 +318,14 @@ const pl = {
     traceTaxBaseSpecial: 'Wydrukowana podstawa opodatkowania wg bijzonder tarief',
     traceAnchorReassignedNote: 'Jedna z wydrukowanych sum została rozpoznana po arytmetyce jako inna pozycja w łańcuchu niż sugerowałoby pole, w którym ją odczytano (patrz etykieta powyżej).',
     traceOtherPrintedFigures: (sample: string) => `Inne wydrukowane liczby, które nie pasują do żadnej znanej pozycji w łańcuchu (nie są błędem, tylko niesklasyfikowane): ${sample}.`,
+    // Stage 2l (§2l.1): the ET reduction as its own explicit chain step, between "loon voor
+    // heffingen" and the podstawa opodatkowania it becomes after the reduction.
+    traceEtReduction: 'Redukcja podstawy z tytułu regulacji ET',
+    traceTaxableBasePosition: 'Podstawa opodatkowania (po redukcji ET)',
+    // Stage 2l (§2l.2): shown next to a flagged line's own row, and as a summary next to the sum it
+    // was excluded from.
+    traceLineFlagged: '⚠ nieodczytana wiarygodnie - wykluczona z sumy powyżej',
+    traceSumExcludesFlagged: (n: number) => `Suma powyżej NIE zawiera ${n} nieodczytaln${n === 1 ? 'ej' : 'ych'} wartośc${n === 1 ? 'i' : 'i'} oznaczon${n === 1 ? 'ej' : 'ych'} powyżej jako "nieodczytana wiarygodnie" - liczba jest tam pokazana, ale nie liczy się do tej sumy.`,
     startOver: 'Spróbuj ponownie z innym plikiem',
   },
 } satisfies Record<string, Record<string, unknown>>;
@@ -625,6 +633,10 @@ const en: typeof pl = {
     traceTaxBaseSpecial: 'Printed taxable base at bijzonder tarief',
     traceAnchorReassignedNote: 'One of the printed subtotals was resolved by arithmetic to a different chain position than the field it was read into suggests (see the label above).',
     traceOtherPrintedFigures: (sample: string) => `Other printed figures that match no known chain position (not an error, just unclassified): ${sample}.`,
+    traceEtReduction: 'ET arrangement base reduction',
+    traceTaxableBasePosition: 'Taxable base (after the ET reduction)',
+    traceLineFlagged: '⚠ not reliably read - excluded from the sum above',
+    traceSumExcludesFlagged: (n: number) => `The sum above does NOT include ${n} unreadable value${n === 1 ? '' : 's'} marked above as "not reliably read" - the figure is still shown, it just does not count toward this sum.`,
     startOver: 'Try again with a different file',
   },
 };

@@ -464,6 +464,13 @@ export interface ExtractionTraceLine {
   category: string;
   amount: number | null;
   provenance: string;
+  /** Stage 2l (audit v32, §2l.2): "a flagged amount should not sit inside a sum shown as fact." True
+   * only when this line's own field path was named in `amount_unreadable` (the guard's text-layer
+   * verification, or a non-finite raw value) - the panel must show it as excluded from the sum above,
+   * never silently drop the row itself (§2.2: the gap between "what's summed" and "what's printed"
+   * stays visible). Always false when the caller passed no flagged paths at all (every existing
+   * `buildExtractionTrace` call site, and the clean/'ok' path, which never has any). */
+  flagged: boolean;
 }
 
 export interface ExtractionTrace {
@@ -481,6 +488,20 @@ export interface ExtractionTrace {
   pre_tax_deductions_sum: number | null;
   loon_voor_heffingen: number | null;
   printed_loon_voor_heffingen: number | null;
+  /** Stage 2l (audit v32, §2l.1): "show the ET reduction as its own step between loon voor heffingen
+   * and implied net, so the implied line is the sum of the rows the panel just printed" - the reviewer's
+   * own finding (RAPORT-cursor-2k.md): `implied_net` was already computed from the post-ET taxable base
+   * (since 2j.1's fix), but the panel jumped straight from the pre-ET `loon_voor_heffingen` line to
+   * `implied_net` with no visible step for the 177.00 EUR in between. null when ET is not applicable to
+   * this document at all - never 0 for "not applicable" (that would look like a real, printed zero
+   * reduction rather than an absent one). */
+  et_reduction: number | null;
+  /** Stage 2l (§2l.1): the actual taxable-base position (loon_voor_heffingen minus et_reduction) - the
+   * SAME value `resolveTaxableBasePosition` computes for the gate and for `implied_net` below, exposed
+   * here so the panel can show the full chain even on the `amount_unreadable`-blocked trace (which has
+   * no `outcome`, so `computed_taxable_base` below is null there) - computed from the period alone,
+   * never gated on the engine having run. */
+  taxable_base_position: number | null;
   printed_table_tax: number | null;
   printed_bt_tax: number | null;
   /** Stage 2f (§2f.4): null when the caller could not compute AT ALL (an unread period_type or
@@ -558,10 +579,32 @@ export interface ExtractionTraceMeta {
   textItemsSent: number;
   amountsChecked: number;
   amountsNotFound: number;
+  /** Stage 2l (§2l.2): the exact `amount_unreadable` field paths (e.g. "hour_lines[7].amount",
+   * "pre_tax_deductions[0].amount") the controller already raised as gaps - only the controller,
+   * holding the raw extraction's `unreadable_amount_fields` and the guard's own `unverifiedFields`,
+   * knows this. Defaults to empty for every existing caller (the 'ok' path never has any at this
+   * point - see mapExtractionToPeriod's own callers). */
+  flaggedFieldPaths: string[];
 }
 
-function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted'): ExtractionTraceLine {
-  return { label: description, category, amount, provenance };
+function traceLine(description: string, category: string, amount: number | null, provenance = 'payslip_extracted', flagged = false): ExtractionTraceLine {
+  return { label: description, category, amount, provenance, flagged };
+}
+
+// Stage 2l (§2l.2): matches an `amount_unreadable` field path (e.g. "hour_lines[7].amount") to the
+// hour_lines/pre_tax_deductions index it names - the only two lists this stage's fix scopes to (the
+// ones feeding gross_total/pre_tax_deductions_sum, the two sums the owner's report showed a flagged
+// guess silently sitting inside).
+const HOUR_LINE_AMOUNT_PATH = /^hour_lines\[(\d+)\]\.amount$/;
+const PRE_TAX_AMOUNT_PATH = /^pre_tax_deductions\[(\d+)\]\.amount$/;
+
+function flaggedIndices(paths: string[], pattern: RegExp): Set<number> {
+  const out = new Set<number>();
+  for (const path of paths) {
+    const match = pattern.exec(path);
+    if (match) out.add(Number(match[1]));
+  }
+  return out;
 }
 
 /** Stage 2i (§2i.0b): translates `resolveNetReconciliationBasis`'s own vocabulary (shared with
@@ -584,9 +627,15 @@ export function buildExtractionTrace(
   textItems: DocumentTextItem[] = [],
   meta: Partial<ExtractionTraceMeta> = {},
 ): ExtractionTrace {
-  const grossTotal = period.hour_lines.reduce((sum, line) => sum + line.amount, 0);
-  const preTaxLines = period.pre_tax_deductions.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
-  const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.map((d) => d.amount));
+  // Stage 2l (§2l.2): "a flagged amount should not sit inside a sum shown as fact." A field named in
+  // `amount_unreadable` is excluded from the sum it would otherwise feed - never silently dropped from
+  // the trace entirely, which is why the line itself is still built below, just marked `flagged: true`.
+  const flaggedFieldPaths = meta.flaggedFieldPaths ?? [];
+  const flaggedHourLineIndices = flaggedIndices(flaggedFieldPaths, HOUR_LINE_AMOUNT_PATH);
+  const flaggedPreTaxIndices = flaggedIndices(flaggedFieldPaths, PRE_TAX_AMOUNT_PATH);
+  const grossTotal = period.hour_lines.reduce((sum, line, i) => (flaggedHourLineIndices.has(i) ? sum : sum + line.amount), 0);
+  const preTaxLines = period.pre_tax_deductions.map((d, i) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance, flaggedPreTaxIndices.has(i)));
+  const preTaxSum = sumKnownAmounts(period.pre_tax_deductions.filter((_, i) => !flaggedPreTaxIndices.has(i)).map((d) => d.amount));
   const postTaxLines = period.post_tax_social.map((d) => traceLine(d.description, d.category, d.amount.value, d.amount.provenance));
   const postTaxSum = sumKnownAmounts(period.post_tax_social.map((d) => d.amount));
   const loonVoorHeffingen = preTaxSum !== null ? Math.round((grossTotal - preTaxSum) * 100) / 100 : null;
@@ -598,6 +647,10 @@ export function buildExtractionTrace(
   // document (the same bug class as checkNetStage's own pre-2j formula). `loon_voor_heffingen` above
   // keeps its own, distinct meaning (the pre-ET position) unchanged - only this summary figure moves.
   const taxableBasePosition = resolveTaxableBasePosition(period, grossTotal, preTaxSum);
+  // Stage 2l (§2l.1): the ET reduction itself, as its own explicit step - null (never 0) when ET is not
+  // applicable to this document, exactly the same "absent vs. genuinely zero" distinction every other
+  // printed/extracted figure in this trace already makes.
+  const etReduction = period.et?.et_applicable ? period.et.et_exchange_amount : null;
   const impliedNet =
     taxableBasePosition !== null && postTaxSum !== null && tableTax !== null && btTax !== null
       ? Math.round((taxableBasePosition - tableTax - btTax - postTaxSum) * 100) / 100
@@ -614,7 +667,7 @@ export function buildExtractionTrace(
   const anchorResolution = resolveAnchors(period, grossTotal, preTaxSum);
 
   return {
-    hour_lines: period.hour_lines.map((l) => traceLine(l.description, l.category, l.amount)),
+    hour_lines: period.hour_lines.map((l, i) => traceLine(l.description, l.category, l.amount, undefined, flaggedHourLineIndices.has(i))),
     gross_total: Math.round(grossTotal * 100) / 100,
     printed_subtotal_role: anchorResolution.role,
     printed_gross_total: period.printed_gross_total,
@@ -622,6 +675,8 @@ export function buildExtractionTrace(
     pre_tax_deductions_sum: preTaxSum,
     loon_voor_heffingen: loonVoorHeffingen,
     printed_loon_voor_heffingen: period.printed_loon_voor_heffingen,
+    et_reduction: etReduction,
+    taxable_base_position: taxableBasePosition,
     printed_table_tax: period.printed_table_tax,
     printed_bt_tax: period.printed_bt_tax,
     computed_taxable_base: taxFields === null ? null : taxFields.taxable_base,

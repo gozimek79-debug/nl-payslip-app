@@ -216,6 +216,40 @@ test("2i.0b: an overstated printed_table_tax + a compensating fake net line that
 });
 
 /**
+ * Stage 2l (audit v32, §2l.2): "a flagged amount should not sit inside a sum shown as fact." Confirms
+ * the controller actually WIRES the amount_unreadable field paths it already raises (from
+ * extraction.unreadable_amount_fields, via toNumberTracked's non-finite check) into
+ * buildExtractionTrace's flaggedFieldPaths - unit-tested directly in extraction-consistency.test.ts's
+ * own "2l.2" tests; this is the HTTP-level proof the wiring itself is not missing a step.
+ */
+test('2l.2: /analyze wires amount_unreadable field paths through to the trace - the flagged line is marked and excluded from gross_total over the real HTTP path', async () => {
+  const UNREADABLE_HOUR_LINE = {
+    period_label: 'week 1/2026', period_end_date: null, payment_date: null, period_type: 'week',
+    is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
+    hour_lines: [
+      { description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 699.78, category: 'regular', tax_treatment: 'table', adds_hours: true, employer_index: 0 },
+      { description: 'Onleesbare kwota', hours: null, rate: null, percent: null, amount: 'onbekend', category: 'other', tax_treatment: 'table', adds_hours: false, employer_index: 0 },
+    ],
+    pre_tax_deduction_lines: [], post_tax_deduction_lines: [],
+    bijzonder_tarief_printed_percent: null, bijzonder_tarief_jaarloon: null,
+    et_exchange_amount: null, et_reimbursement_lines: [], net_lines: [], payout_adjustment_lines: [], reservation_lines: [],
+    printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+    printed_gross_total: null, printed_loon_voor_heffingen: null,
+    reported_total_net: null, reported_net_paid: null,
+    printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+  };
+  globalThis.fetch = mockCompletion(UNREADABLE_HOUR_LINE) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
+  const body = (await res.json()) as { status: string; issues?: Array<{ code: string; field?: string }>; trace?: { gross_total: number; hour_lines: Array<{ label: string; amount: number | null; flagged: boolean }> } };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'unreliable');
+  assert.ok(body.issues?.some((i) => i.code === 'amount_unreadable' && i.field === 'hour_lines[1].amount'), `expected amount_unreadable for hour_lines[1].amount, got ${JSON.stringify(body.issues)}`);
+  assert.equal(body.trace?.gross_total, 699.78, `expected the unreadable line excluded from gross_total over HTTP, got ${body.trace?.gross_total}`);
+  assert.equal(body.trace?.hour_lines[0]?.flagged, false);
+  assert.equal(body.trace?.hour_lines[1]?.flagged, true, 'expected the flagged line marked true in the actual JSON response');
+});
+
+/**
  * Stage 2h (audit v28, §2h.2): "if the guard cannot find half or more of the amounts it checked...
  * treat the layer as unusable: do not block on the guard, fall back to the image-only read." A
  * correct Olympia read has several printed amounts to check (gross lines, StiPP, printed subtotals,

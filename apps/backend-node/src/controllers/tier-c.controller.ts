@@ -318,10 +318,16 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     }
     if (periodType === null || extractionGapIssues.length > 0) {
       console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(extractionGapIssues)));
+      // Stage 2l (§2l.2): the exact field paths already named by `amount_unreadable` above - passed
+      // through so the trace can exclude a flagged guess from gross_total/pre_tax_deductions_sum
+      // instead of silently summing it as if it were trustworthy. Only this call site ever has any -
+      // the 'ok' path and the gate-blocked-but-extraction-clean path below both require
+      // extractionGapIssues to already be empty to be reached at all.
+      const flaggedFieldPaths = extractionGapIssues.filter((i) => i.code === 'amount_unreadable').map((i) => i.field);
       return res.json({
         status: 'unreliable',
         issues: extractionGapIssues,
-        trace: buildExtractionTrace(period, null, textLayerTrace, traceMeta),
+        trace: buildExtractionTrace(period, null, textLayerTrace, { ...traceMeta, flaggedFieldPaths }),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,

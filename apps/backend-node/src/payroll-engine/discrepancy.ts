@@ -127,14 +127,28 @@ const MINIMUM_WAGE_CONFIRMATION_UPPER = 0.1;
  * what passed and why - the same "one place decides, everyone reads from it" shape as
  * `resolveSubtotalRole` and the text-layer guard elsewhere in this codebase.
  */
-export type NetReconciliationBasis = 'wage_net' | 'period_net' | 'both' | 'neither' | 'not_applicable';
+// Stage 2n (audit v35, §2n.2): NEW - 'taxable_base_net' names OTTO's own "Podsuma wynagrodzenia"/
+// "Totaal netto" position (725.38 − 77.52 − 40.08 = 607.78, confirmed against FIXTURES-paski-
+// referencyjne.md's own Krok 4 AND the owner's live panel, OWNER-RETEST-2n-otto.md): taxable base
+// minus BOTH taxes, nothing else - printed BEFORE post-tax social deductions are ever subtracted,
+// a position `wage_net`/`period_net` (both always post-tax) can never represent. Without this, a
+// gate that now correctly accepts this position (checkNetStage, §2n.2) would still have the
+// DISCREPANCY layer immediately re-block it as a false net_mismatch - the exact bug moved one layer
+// down, not fixed.
+export type NetReconciliationBasis = 'taxable_base_net' | 'wage_net' | 'period_net' | 'both' | 'neither' | 'not_applicable';
 
 export function resolveNetReconciliationBasis(outcome: PayslipComputationOutcome, printedNet: number | null, tolerance: number): NetReconciliationBasis {
   if (printedNet === null || outcome.status !== 'complete') return 'not_applicable';
-  const { wage_net: wageNet, period_net: periodNet } = outcome.result;
+  const { wage_net: wageNet, period_net: periodNet, taxable_base: taxableBase, total_tax: totalTax } = outcome.result;
+  // taxableBase - totalTax algebraically equals wageNet + post_tax_social_total (wageNet is already
+  // taxableBase - totalTax - postTaxSocialTotal) - derived from existing engine outputs, no new field.
+  const taxableBaseNet = Math.round((taxableBase - totalTax) * 100) / 100;
+  const taxableBaseMatches = Math.abs(taxableBaseNet - printedNet) <= tolerance;
   const wageMatches = Math.abs(wageNet - printedNet) <= tolerance;
   const periodMatches = Math.abs(periodNet - printedNet) <= tolerance;
-  if (wageMatches && periodMatches) return 'both';
+  const matchCount = [taxableBaseMatches, wageMatches, periodMatches].filter(Boolean).length;
+  if (matchCount > 1) return 'both';
+  if (taxableBaseMatches) return 'taxable_base_net';
   if (wageMatches) return 'wage_net';
   if (periodMatches) return 'period_net';
   return 'neither';
@@ -221,12 +235,17 @@ export function comparePeriodToDocument(period: PayslipPeriod, outcome: PayslipC
     {
       const netBasis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTolerance);
       if (netBasis === 'neither' && period.printed_net !== null) {
-        // Neither figure matches - report against whichever is numerically closer, so the shown
-        // residual is the true nearest gap, not an arbitrary pick between two comparably-wrong figures.
-        const wageResidual = Math.abs(result.wage_net - period.printed_net);
-        const periodResidual = Math.abs(result.period_net - period.printed_net);
-        const useWage = wageResidual <= periodResidual;
-        push(pushable('net_mismatch', useWage ? result.wage_net : result.period_net, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
+        // Stage 2n (§2n.2): none of the three positions matches - report against whichever is
+        // numerically closest, so the shown residual is the true nearest gap, not an arbitrary pick
+        // among three comparably-wrong figures.
+        const taxableBaseNet = Math.round((result.taxable_base - result.total_tax) * 100) / 100;
+        const candidates: Array<{ value: number; residual: number }> = [
+          { value: taxableBaseNet, residual: Math.abs(taxableBaseNet - period.printed_net) },
+          { value: result.wage_net, residual: Math.abs(result.wage_net - period.printed_net) },
+          { value: result.period_net, residual: Math.abs(result.period_net - period.printed_net) },
+        ];
+        const closest = candidates.reduce((best, c) => (c.residual < best.residual ? c : best));
+        push(pushable('net_mismatch', closest.value, period.printed_net, tableTolerance, tableConfirmationUpper, period.printed_net_label));
       }
     }
     push(pushable('payout_mismatch', result.payout_amount, period.printed_payout, tableTolerance, tableConfirmationUpper, period.printed_payout_label));

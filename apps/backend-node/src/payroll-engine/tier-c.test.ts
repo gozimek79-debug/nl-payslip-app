@@ -243,12 +243,20 @@ test('Stage 2e regression: the live buggy Olympia read must not reproduce 864.07
   assert.notEqual(trace.implied_net, 718.16);
   // What it produces instead, asserted exactly (per 2e.1: "report what it produces instead") - this
   // is the assignment's own stated "correct chain with these very lines, subtracting magnitudes":
-  // 827.16 (gross, still short by 58.31) - 36.91 (pre-tax, now positive) = 790.25;
-  // 790.25 - 152.37 (tax) - 6.46 (WHK) = 631.42.
+  // 827.16 (gross, still short by 58.31) - 36.91 (pre-tax, now positive) = 790.25.
   assert.equal(trace.gross_total, 827.16);
   assert.equal(trace.pre_tax_deductions_sum, 36.91);
   assert.equal(trace.loon_voor_heffingen, 790.25);
-  assert.equal(trace.implied_net, 631.42);
+  // Stage 2n (§2n.2): implied_net now shows whichever of THREE chain positions (taxable-base-net,
+  // before-net-lines, after-net-lines) is closest to printed_net, not a single fixed formula - this
+  // fixture's printed_net (686.09) matches NONE of them (it is a deliberately buggy read, missing a
+  // gross line and one deduction amount), so "closest of three" is what shows, not the pre-2n single
+  // "before" position (631.42, = 790.25 − 152.37 tax − 6.46 WHK). 790.25 − 152.37 = 637.88 (the
+  // taxable-base-net position, no post-tax subtracted) is 48.21 away from 686.09; the before-position
+  // 631.42 is 54.67 away - taxable-base-net is closer, so 637.88 is what the panel shows. Still
+  // correctly SUBTRACTED (the sign fix this test exists for), just a different one of three legitimate
+  // candidates than the single-formula era picked.
+  assert.equal(trace.implied_net, 637.88);
 });
 
 test('Tier C integration: Fixture 3 PKF maps, computes and reports NO discrepancy', () => {
@@ -473,10 +481,14 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
     bijzonder_tarief_printed_percent: 38.45,
     printed_table_tax: 77.52,
     printed_bt_tax: 40.08,
-    // Stage 2h (§2h.3): OTTO's "KWOTA DO WYPŁATY" (598.59) is the document's only net-shaped figure,
-    // and per the reviewer's own T2 table it IS the final payout, not a distinct pre-net-lines net -
-    // this document prints no separate "Totaal netto" at all. Set in reported_net_paid (-> printed_
-    // payout), never in reported_total_net (-> printed_net, which stays null - nothing to read there).
+    // Stage 2n (audit v35, §2n.1/§2n.2): CORRECTED - the stage 2h comment this replaced claimed "this
+    // document prints no separate Totaal netto at all", based on the owner's OTTO retest available at
+    // the time (which showed only reported_net_paid). OWNER-RETEST-2n-otto.md's live panel, confirmed
+    // against FIXTURES-paski-referencyjne.md's own "Podsuma wynagrodzenia" line (Krok 4, 725.38 minus
+    // both taxes = 607.78), shows the document DOES print a separate net-shaped figure at this
+    // position - BEFORE post-tax deductions, not after. See tier-c.test.ts's own new "2n" tests for the
+    // full chain this fixture is now part of.
+    reported_total_net: 607.78,
     reported_net_paid: 598.59,
     printed_gross_total: 924.03, // sum of the eight hour_lines above
     printed_loon_voor_heffingen: 902.38, // 924.03 - 21.65 (STIPP; Rekompensata/Opłata net to 0) - matches payslip-model.ts's own documented anchor
@@ -538,14 +550,168 @@ test('Tier C integration: Fixture 2 OTTO (two employers, ET) maps and computes; 
   // withholds LESS table tax than printed, so our computed payout comes out HIGHER than the printed
   // 598.59 by the same 12.28 EUR (matches the pre-existing [2f.6] console log for period_net above).
   assert.ok(Math.abs((payoutDiscrepancy?.residual ?? 0) - 12.28) < 0.5, `expected a residual near +12.28, got ${payoutDiscrepancy?.residual}`);
-  assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch - OTTO's document prints no separate net figure to compare, got ${JSON.stringify(discrepancies)}`);
-  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'not_applicable');
+  // Stage 2n (§2n.1/§2n.2): CORRECTED - OTTO's document DOES print a separate net figure
+  // ("Podsuma wynagrodzenia"/"Totaal netto", 607.78, confirmed against FIXTURES-paski-referencyjne.md
+  // and OWNER-RETEST-2n-otto.md; the stage 2h comment this replaced was wrong). With printed_net now
+  // set, net_mismatch DOES fire - not a new defect, the SAME already-documented 12.28 table-tax gap
+  // seen from a third angle: none of the three ENGINE-computed positions (taxable_base_net, wage_net,
+  // period_net - all built from the engine's own 65.24 computed table tax, not the printed 77.52) land
+  // within tolerance of 607.78, which was measured against the PRINTED tax. Closest is period_net
+  // (610.87), residual +3.09 - a real, correctly-detected finding, distinct in magnitude from the
+  // table/payout residuals only because it is the ENGINE's period_net (already net of the ET
+  // reimbursement) being compared to a PRE-post-tax printed figure, not a clean 1:1 mirror - so it is
+  // NOT linked via related_to (the linking check requires an exact arithmetic cancellation, correctly
+  // absent here).
+  const netDiscrepancy = discrepancies.find((d) => d.code === 'net_mismatch');
+  assert.ok(netDiscrepancy, `expected net_mismatch now that printed_net is set, got ${JSON.stringify(discrepancies)}`);
+  assert.equal(netDiscrepancy?.computed, outcome.result.period_net);
+  assert.ok(Math.abs((netDiscrepancy?.residual ?? 0) - 3.09) < 0.01, `expected residual +3.09 (period_net closest of the three), got ${netDiscrepancy?.residual}`);
+  assert.equal(netDiscrepancy?.related_to, null, 'not linked - the residual does not exactly mirror table_tax_mismatch\'s own -12.28');
+  assert.equal(resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type)), 'neither');
   // Stage 2i (§2i.0e): "group payout_mismatch under table_tax_mismatch when they have the same cause
   // (structured related_to, one row on the panel; the OTTO 12.28 case)." The two residuals mirror
   // exactly (-12.28 vs +12.28), so the arithmetic itself - not merely both codes firing together -
   // links them.
   assert.equal(payoutDiscrepancy?.related_to, 'table_tax_mismatch', `expected payout_mismatch linked to table_tax_mismatch as the same root cause, got ${JSON.stringify(payoutDiscrepancy)}`);
   assert.equal(tableTaxDiscrepancy?.related_to, null, 'the root cause itself carries no related_to - it is not related to itself');
+});
+
+/**
+ * Stage 2n (audit v35, §2n.2): "give the trace chain its missing stage... fix checkNetStage and
+ * buildExtractionTrace together, tested against real, fully-mapped OTTO data." The regression the
+ * reviewer's own T1a quote (RAPORT-cursor-2l.md) predicted: `implied_net = resolveTaxableBasePosition
+ * − printed_table_tax − printed_bt_tax − post_tax_sum` has no term for reimbursement lines - proved
+ * failing before the fix (captured below, not just asserted) and passing after.
+ */
+test("2n.2 REGRESSION: OTTO's real payout chain (Totaal netto 607.78 -> Totaal 598.59, the ET reimbursement in between) - failed before the fix, must pass the gate cleanly after", () => {
+  const extraction = baseExtraction({
+    period_label: '33/2025',
+    period_end_date: '2025-08-17',
+    employer_names: ['DHL Supply Chain (NL) B.V.', 'KF Service & Beheer B.V.'],
+    minimum_wage_printed: 14.4,
+    hour_lines: [
+      { employer_index: 0, description: 'Godziny przepracowane (DHL)', hours: 24.0, rate: 14.45, percent: null, amount: 346.8, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 30%', hours: 21.25, rate: 4.34, percent: 30, amount: 92.23, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Dodatek za nieregul. godz. 100%', hours: 2.75, rate: 14.45, percent: 100, amount: 39.74, category: 'irregular_surcharge', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 1, description: 'Godziny przepracowane (KF)', hours: 19.0, rate: 14.4, percent: null, amount: 273.6, category: 'regular', tax_treatment: 'table', adds_hours: true },
+      { employer_index: 0, description: 'Dodatek wakacyjny', hours: null, rate: null, percent: null, amount: 56.31, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Wymiana pw. urlopu ustawowego', hours: 0.77, rate: 14.43, percent: null, amount: 11.11, category: 'other', tax_treatment: 'table', adds_hours: false },
+      { employer_index: 0, description: 'Jednorazowa zapłata', hours: null, rate: null, percent: null, amount: 98.24, category: 'other', tax_treatment: 'bt', adds_hours: false },
+      { employer_index: 0, description: 'Wynagrodzenie kierowcy brutto', hours: null, rate: null, percent: null, amount: 6.0, category: 'other', tax_treatment: 'bt', adds_hours: false },
+    ],
+    pre_tax_deduction_lines: [
+      { description: 'Emerytura STIPP', amount: 21.65, category: 'pension', placement: 'pre_tax', base: null, percent: null },
+      { description: 'PAWW Rekompensata', amount: 0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+      { description: 'PAWW Opłata', amount: -0.51, category: 'paww', placement: 'pre_tax', base: null, percent: null },
+    ],
+    et_exchange_amount: 177.0,
+    et_reimbursement_lines: [
+      { description: 'Zwrot kosztów utrzymania ET', amount: 33.0, category: 'reimbursement' },
+      { description: 'Zwrot za zakwaterowanie ET', amount: 144.0, category: 'reimbursement' },
+    ],
+    net_lines: [
+      { description: 'Potrącenie własnego wkładu WHK', amount: 1.55, category: 'other' },
+      { description: 'Nominalna składka ubezpieczenia zdrowotnego', amount: 38.01, category: 'health_insurance' },
+      { description: 'Potrącenie kosztów przewozu', amount: 2.63, category: 'transport' },
+      { description: 'Potrącenie za zakwaterowanie', amount: 144.0, category: 'housing' },
+    ],
+    bijzonder_tarief_printed_percent: 38.45,
+    printed_table_tax: 77.52,
+    printed_bt_tax: 40.08,
+    // The REAL printed figures, per FIXTURES-paski-referencyjne.md's own Krok 4/5 and
+    // OWNER-RETEST-2n-otto.md's live panel - "Podsuma wynagrodzenia"/"Totaal netto" IS printed
+    // separately (607.78 = 725.38 - 77.52 - 40.08), correcting stage 2h's own "prints no separate
+    // Totaal netto at all" claim.
+    reported_total_net: 607.78,
+    reported_net_paid: 598.59,
+    printed_gross_total: 725.38, // the REAL, mislabelled anchor (reassigned by 2i.1/2j.1's own fix)
+    printed_loon_voor_heffingen: 621.14,
+    printed_taxable_base_normal: 621.14,
+    printed_taxable_base_special: 104.24,
+  });
+
+  const period = mapExtractionToPeriod(extraction, 14.4);
+  const outcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+
+  const trace = buildExtractionTrace(period, outcome);
+  // Sanity: the chain the panel now shows, matching FIXTURES exactly.
+  assert.equal(trace.loon_voor_heffingen, 902.38);
+  assert.equal(trace.et_reduction, 177);
+  assert.equal(trace.taxable_base_position, 725.38);
+  // Stage 2n (§2n.2): implied_net/implied_payout now follow the visible chain exactly.
+  assert.equal(trace.implied_net, 607.78, 'expected implied_net to match printed_net at its real position (taxable-base-net, before post-tax)');
+  assert.equal(trace.implied_payout, 598.59, 'expected implied_payout to follow from the full chain including the ET reimbursements');
+  // net_position (resolveNetPosition/resolveNetReconciliationBasis) is the SEPARATE, ENGINE-based
+  // check - it compares printed_net against ENGINE-computed positions, which inherit the SAME
+  // already-documented 12.28 EUR table-tax gap (the engine's own taxable_base_net is 620.06, not
+  // 607.78) and so correctly shows 'none' here, same as net_mismatch firing below. 'before_post_tax'
+  // is confirmed separately, directly against resolveNetReconciliationBasis with a gap-free outcome.
+  assert.equal(trace.net_position, 'none', "expected 'none' - the ENGINE-based check inherits OTTO's own documented 12.28 table-tax gap, unlike the PRINTED-based gate/implied_net above");
+  // Stage 2n (§2n.1): the reimbursement lines are now visible on the trace at all - previously nothing
+  // showed whether they were read, an empty list and a genuinely-unread one looked identical.
+  assert.deepEqual(trace.et_reimbursements.map((l) => l.amount), [33, 144]);
+
+  const issues = checkExtractionConsistency(extraction.payment_date, period, outcome);
+  assert.deepEqual(
+    issues,
+    [],
+    `expected the gate to pass on OTTO's real payout chain (607.78 -> 598.59 via the ET reimbursement) - got ${JSON.stringify(issues)}`,
+  );
+});
+
+test('2n.2 REGRESSION: the pre-fix formula (RAPORT-cursor-2l.md\'s own T1a quote) applied by hand to OTTO\'s real figures reproduces exactly the -177.00 EUR failure this stage exists to close', () => {
+  // Captured BEFORE this round's fix was applied (`npm test` run against the corrected OTTO fixture,
+  // pre-2n.2 code): checkExtractionConsistency returned exactly
+  // [{"code":"totals_do_not_reconcile_payout","implied_payout":421.59,"printed_payout":598.59,"residual":-177}]
+  // - not asserted from theory, an actual failing test run this report's own DONE section quotes.
+  // Reproduced here by hand from the pre-fix formula itself (RAPORT-cursor-2l.md T1a):
+  // implied_net = resolveTaxableBasePosition - printed_table_tax - printed_bt_tax - post_tax_sum
+  //             = 725.38 - 77.52 - 40.08 - 186.19 = 421.59 (had no reimbursement term at all)
+  const preFixImpliedNet = 725.38 - 77.52 - 40.08 - 186.19;
+  assert.equal(preFixImpliedNet, 421.59, 'sanity: reproduces the pre-fix implied_net exactly');
+  const preFixImpliedPayout = preFixImpliedNet; // the pre-2h.3-era payout formula, once printed_net was null, fell through to the chain-implied net directly
+  const residual = Math.round((preFixImpliedPayout - 598.59) * 100) / 100;
+  assert.equal(residual, -177, 'expected the pre-fix formula to be off by exactly the ET reimbursement amount - the load-bearing proof this fix addresses');
+});
+
+/**
+ * Stage 2n (§2n.2): resolveNetReconciliationBasis/resolveNetPosition's OWN new 'taxable_base_net' /
+ * 'before_post_tax' value, confirmed directly on a gap-free synthetic period (OTTO's own real fixture
+ * cannot show this - its 12.28 EUR documented table-tax gap means the ENGINE's own computed position
+ * never lands close enough to the printed one, exactly as asserted above).
+ */
+test("2n.2: resolveNetReconciliationBasis/resolveNetPosition return the NEW 'taxable_base_net'/'before_post_tax' value when printed_net matches ENGINE-computed taxable_base minus total_tax, with no table-tax gap in the way", () => {
+  const extraction = baseExtraction({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: 40, rate: 25, percent: null, amount: 1000, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+    et_exchange_amount: 100,
+    et_reimbursement_lines: [{ description: 'Zwrot', amount: 100, category: 'reimbursement' }],
+    // A non-zero post-tax deduction so taxable_base_net (P0) and wage_net (P1, already post-tax)
+    // genuinely differ - with none at all the two positions coincide numerically and 'both' would
+    // match instead, telling us nothing about whether the NEW position specifically is recognised.
+    post_tax_deduction_lines: [{ description: 'WHK', amount: 10, category: 'whk', placement: 'post_tax', base: null, percent: null }],
+  });
+  const period = mapExtractionToPeriod(extraction, null);
+  const preliminaryOutcome = computePayslipPeriod(period, RATES_2025, true);
+  assert.equal(preliminaryOutcome.status, 'complete');
+  if (preliminaryOutcome.status !== 'complete') return;
+  // Feed the ENGINE's own computed tax back in as "printed" - no gap to speak of, isolating the
+  // position-matching logic itself from the unrelated table-tax-residual class of bug.
+  const gapFreeExtraction = { ...extraction, printed_table_tax: preliminaryOutcome.result.table_tax_after_korting, printed_bt_tax: null };
+  const gapFreePeriod = mapExtractionToPeriod(gapFreeExtraction, null);
+  const outcome = computePayslipPeriod(gapFreePeriod, RATES_2025, true);
+  assert.equal(outcome.status, 'complete');
+  if (outcome.status !== 'complete') return;
+  const taxableBaseNet = Math.round((outcome.result.taxable_base - outcome.result.total_tax) * 100) / 100;
+  const periodWithPrintedNet = { ...gapFreePeriod, printed_net: taxableBaseNet };
+  assert.equal(
+    resolveNetReconciliationBasis(outcome, periodWithPrintedNet.printed_net, tableTaxToleranceFor(periodWithPrintedNet.period_type)),
+    'taxable_base_net',
+    `expected the new position to be recognised when the engine's own tax matches the printed one exactly`,
+  );
+  const trace = buildExtractionTrace(periodWithPrintedNet, outcome);
+  assert.equal(trace.net_position, 'before_post_tax');
 });
 
 /**

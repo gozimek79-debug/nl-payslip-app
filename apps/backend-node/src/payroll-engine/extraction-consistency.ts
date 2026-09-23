@@ -376,6 +376,74 @@ function etReductionAddsUncertainty(period: PayslipPeriod): boolean {
   return period.et?.et_applicable === true && period.et.et_exchange_amount !== 0;
 }
 
+/**
+ * Stage 2n (audit v35, §2n.1/§2n.2): "give the trace chain its missing stage: 'Totaal netto' = taxable
+ * base minus both taxes, nothing else; 'Totaal' = that minus post-tax deductions plus reimbursements.
+ * Two implied positions, not one compared against both." OWNER-RETEST-2n-otto.md, confirmed against
+ * FIXTURES-paski-referencyjne.md's own "Podsuma wynagrodzenia" line (Krok 4: 725.38 − 77.52 − 40.08 =
+ * 607.78, the document's own "Totaal netto"): OTTO's printed net sits at a THIRD, EARLIER position
+ * than either `wage_net` or `period_net` can represent - before post-tax social deductions are ever
+ * subtracted at all, not merely before net-lines (the ONLY axis the pre-2n code tested). The formula
+ * RAPORT-cursor-2l.md's own T1a quoted verbatim (`resolveTaxableBasePosition − table_tax − bt_tax −
+ * post_tax_sum`) had no term for this position, and no term for reimbursement lines anywhere either.
+ *
+ * Three candidate positions, all built from PRINTED/extracted figures (never engine-computed ones -
+ * `discrepancy.ts`'s `resolveNetReconciliationBasis` is the parallel, engine-based version of this
+ * same three-position idea, used for the discrepancy layer once the gate has already passed):
+ * - `taxableBaseNet`: taxable base minus both taxes - nothing else subtracted or added yet.
+ * - `beforeNetLines`: that minus post-tax social deductions (the pre-2n code's ONLY position).
+ * - `afterNetLines`: that plus net additions, minus net deductions, plus ET reimbursement lines (the
+ *   pre-2n code's "after" position never added ET reimbursements at all - the SAME missing term, since
+ *   `payslip-model.ts`'s own engine already folds `et_reimbursements` into `net_additions_total`, the
+ *   printed-figure identity here must match that same inclusion to stay consistent with the engine).
+ *
+ * One function, two callers (`checkNetStage` for the gate, `buildExtractionTrace` for the panel's own
+ * `implied_net` display) - so the two can never show or block on a different position than the other.
+ */
+interface NetChainPositions {
+  taxableBaseNet: number;
+  beforeNetLines: number;
+  afterNetLines: number;
+}
+
+function resolveNetChainPositions(taxableBasePos: number, tableTax: number, btTax: number, postTaxSum: number, period: PayslipPeriod): NetChainPositions {
+  const taxableBaseNet = Math.round((taxableBasePos - tableTax - btTax) * 100) / 100;
+  const beforeNetLines = Math.round((taxableBaseNet - postTaxSum) * 100) / 100;
+  const netAdditionsSum = period.net_additions.reduce((sum, l) => sum + l.amount, 0);
+  const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
+  const etReimbursementsSum = period.et?.et_applicable ? period.et.et_reimbursements.reduce((sum, r) => sum + r.amount, 0) : 0;
+  const afterNetLines = Math.round((beforeNetLines + netAdditionsSum - netDeductionsSum + etReimbursementsSum) * 100) / 100;
+  return { taxableBaseNet, beforeNetLines, afterNetLines };
+}
+
+type NetStageMatch = 'taxable_base_net' | 'before' | 'after';
+
+interface NetStageResolution {
+  /** null when printed_net matched none of the three positions to tolerance. */
+  matchedPosition: NetStageMatch | null;
+  /** The position to SHOW as `implied_net` - the matched one, or (when none matched) whichever is
+   * numerically closest, so a genuine gap is reported against the true nearest figure. */
+  displayValue: number;
+  residual: number;
+}
+
+function resolveNetStageMatch(positions: NetChainPositions, printedNet: number, period: PayslipPeriod): NetStageResolution {
+  // n: taxableBasePos + tableTax + btTax + printedNet, each a printed/extracted figure in its own right.
+  const nTaxableBaseNet = 4;
+  const nBeforeNetLines = nTaxableBaseNet + period.post_tax_social.length;
+  const nAfterNetLines = nBeforeNetLines + period.net_additions.length + period.net_deductions.length + (period.et?.et_applicable ? period.et.et_reimbursements.length : 0);
+  const candidates: Array<{ pos: NetStageMatch; value: number; n: number }> = [
+    { pos: 'taxable_base_net', value: positions.taxableBaseNet, n: nTaxableBaseNet },
+    { pos: 'before', value: positions.beforeNetLines, n: nBeforeNetLines },
+    { pos: 'after', value: positions.afterNetLines, n: nAfterNetLines },
+  ];
+  const withResiduals = candidates.map((c) => ({ ...c, residual: Math.round((c.value - printedNet) * 100) / 100 }));
+  const matched = withResiduals.find((c) => Math.abs(c.residual) <= reconciliationTolerance(c.n));
+  if (matched) return { matchedPosition: matched.pos, displayValue: matched.value, residual: matched.residual };
+  const closest = withResiduals.reduce((best, c) => (Math.abs(c.residual) < Math.abs(best.residual) ? c : best));
+  return { matchedPosition: null, displayValue: closest.value, residual: closest.residual };
+}
+
 // Stage 2j (§2j.1): n for the taxable-base position - the printed subtotal itself, plus every printed
 // figure summed to reach it (each hour line, each pre-tax line), plus one more for the ET reduction
 // itself when it participates (one more extracted figure in the chain, same reasoning as every other
@@ -515,6 +583,13 @@ export interface ExtractionTrace {
   printed_net: number | null;
   net_additions: ExtractionTraceLine[];
   net_deductions: ExtractionTraceLine[];
+  /** Stage 2n (audit v35, §2n.1): "find out whether the reimbursement lines were read at all this
+   * round." Before this, `period.et.et_reimbursements` was used internally (the 2i.3 arithmetic
+   * confirmation, the 2n.2 payout formula) but never shown anywhere on the panel - an empty list and a
+   * genuinely-unread one were visually identical (both silence), so a real gap in what the model read
+   * could not be told apart from "this document has no ET reimbursements" just by looking. Always an
+   * array (never null) - empty when et is not applicable, or when the extraction genuinely found none. */
+  et_reimbursements: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
   /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
@@ -548,8 +623,11 @@ export interface ExtractionTrace {
    * Randstad print theirs before net additions/deductions, PKF's is after); `'both'` when the two
    * positions coincide (no net lines, or they cancel out); `'none'` when nothing was printed there,
    * the computation never ran, or the printed figure matches neither position (a genuine gap, still
-   * reported separately as `net_does_not_reconcile`/`net_mismatch` - this field never hides that). */
-  net_position: 'before' | 'after' | 'both' | 'none';
+   * reported separately as `net_does_not_reconcile`/`net_mismatch` - this field never hides that).
+   * Stage 2n (§2n.2): NEW - `'before_post_tax'` names OTTO's own "Totaal netto" position (taxable base
+   * minus both taxes, nothing else) - a THIRD, earlier position `'before'`/`'after'` (both always
+   * post-tax) can never represent. */
+  net_position: 'before_post_tax' | 'before' | 'after' | 'both' | 'none';
   /** Stage 2i (audit v29, §2i.1): "record anchor_reassigned in the trace." True only when a printed
    * figure that sat in one anchor field (e.g. `printed_gross_total`) was resolved by arithmetic to
    * actually be the OTHER role (OTTO: 725.38 sits in `printed_gross_total` but reproduces the
@@ -615,6 +693,7 @@ function flaggedIndices(paths: string[], pattern: RegExp): Set<number> {
 export function resolveNetPosition(period: PayslipPeriod, outcome: PayslipComputationOutcome | null): ExtractionTrace['net_position'] {
   if (outcome === null) return 'none';
   const basis = resolveNetReconciliationBasis(outcome, period.printed_net, tableTaxToleranceFor(period.period_type));
+  if (basis === 'taxable_base_net') return 'before_post_tax';
   if (basis === 'wage_net') return 'before';
   if (basis === 'period_net') return 'after';
   if (basis === 'both') return 'both';
@@ -651,14 +730,35 @@ export function buildExtractionTrace(
   // applicable to this document, exactly the same "absent vs. genuinely zero" distinction every other
   // printed/extracted figure in this trace already makes.
   const etReduction = period.et?.et_applicable ? period.et.et_exchange_amount : null;
-  const impliedNet =
+  // Stage 2n (§2n.2): "give the trace chain its missing stage... two implied positions, not one
+  // compared against both." The SAME resolveNetChainPositions/resolveNetStageMatch checkNetStage uses -
+  // so the panel's own implied_net can never show a different figure than what the gate actually
+  // validated (or blocked on). When printed_net matches one of the three positions, that position is
+  // shown; when it matches none (or is absent), the pre-tax-social position ('before', the historical
+  // default) is shown, unchanged from pre-2n behaviour for that case.
+  const netChainPositions =
     taxableBasePosition !== null && postTaxSum !== null && tableTax !== null && btTax !== null
-      ? Math.round((taxableBasePosition - tableTax - btTax - postTaxSum) * 100) / 100
+      ? resolveNetChainPositions(taxableBasePosition, tableTax, btTax, postTaxSum, period)
       : null;
+  const netStageMatch = netChainPositions !== null && period.printed_net !== null ? resolveNetStageMatch(netChainPositions, period.printed_net, period) : null;
+  const impliedNet = netChainPositions === null ? null : (netStageMatch?.displayValue ?? netChainPositions.beforeNetLines);
+  // Stage 2n (§2n.2): the SAME position-aware, printed_net-derived formula section 4b's own gate check
+  // uses (see that section's own comment) - never a chain-derived formula independent of printed_net,
+  // which would need tax figures this panel display should not require just to show a number.
   const netAdditionsSum = period.net_additions.reduce((sum, l) => sum + l.amount, 0);
   const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
+  const etReimbursementsSum = period.et?.et_applicable ? period.et.et_reimbursements.reduce((sum, r) => sum + r.amount, 0) : 0;
   const payoutAdjustmentsSum = period.payout_adjustments.reduce((sum, l) => sum + l.amount, 0);
-  const impliedPayout = period.printed_net !== null ? Math.round((period.printed_net + netAdditionsSum - netDeductionsSum + payoutAdjustmentsSum) * 100) / 100 : null;
+  const impliedPayout =
+    period.printed_net === null
+      ? null
+      : Math.round(
+          (netStageMatch?.matchedPosition === 'after'
+            ? period.printed_net + payoutAdjustmentsSum
+            : netStageMatch?.matchedPosition === 'taxable_base_net' && postTaxSum !== null
+              ? period.printed_net - postTaxSum + netAdditionsSum - netDeductionsSum + etReimbursementsSum + payoutAdjustmentsSum
+              : period.printed_net + netAdditionsSum - netDeductionsSum + etReimbursementsSum + payoutAdjustmentsSum) * 100,
+        ) / 100;
   const taxFields = outcome === null ? null : outcome.status === 'complete' ? outcome.result : outcome;
   // Stage 2i (§2i.1): the SAME resolver the gate uses, so the trace's own printed_subtotal_role,
   // anchor_reassigned and other_printed_figures can never disagree with what actually blocked (or
@@ -687,6 +787,7 @@ export function buildExtractionTrace(
     printed_net: period.printed_net,
     net_additions: period.net_additions.map((l) => traceLine(l.description, l.category, l.amount)),
     net_deductions: period.net_deductions.map((l) => traceLine(l.description, l.category, l.amount)),
+    et_reimbursements: period.et?.et_applicable ? period.et.et_reimbursements.map((r) => traceLine(r.description, 'et_reimbursement', r.amount)) : [],
     implied_payout: impliedPayout,
     printed_payout: period.printed_payout,
     reading_basis: textItems.length > 0 ? 'text_layer_verified' : 'image_only',
@@ -717,15 +818,6 @@ export function checkExtractionConsistency(
   outcome: PayslipComputationOutcome,
 ): ConsistencyIssue[] {
   const issues: ConsistencyIssue[] = [];
-  // Stage 2h (audit v28, §2h.3 principle applied here too): PKF prints exactly ONE net-shaped figure,
-  // already positioned AFTER its own net lines (a real 91.25 reimbursement and a real 1104.00 of
-  // deductions) - found by actually filling in PKF's real printed net (FIXTURES-paski-referencyjne.md
-  // fixture 3: "TOTAAL NETTO 1754,12" is both period_net AND payout_amount on this document, there is
-  // no separate earlier figure to read). `checkNetStage` below sets this when the document's OWN
-  // arithmetic confirms `printed_net` at the AFTER position rather than the usual BEFORE one, so
-  // section 4b's payout check (which otherwise assumes printed_net is always the BEFORE figure) does
-  // not double-apply the same net lines a second time.
-  let printedNetIsPostNetLines = false;
 
   // 1. Zero tax on a non-zero taxable base (§Stage 2a: 844.92 taxable, printed 152.37, engine
   // computed 0.00 - the root symptom of the period misread, a check that needs no comparison to
@@ -821,7 +913,16 @@ export function checkExtractionConsistency(
     issues.push({ code: 'printed_tax_unknown' });
   }
 
-  function checkNetStage(loonVoorHeffingen: number): void {
+  // Stage 2n (§2n.2): "give the trace chain its missing stage... two implied positions, not one
+  // compared against both." Which of the three chain-stage/checkNetStage below actually matched
+  // `printed_net` - section 4b's own payout formula reads this (never re-deriving it independently)
+  // so the two stay consistent about which position printed_net occupies. `null` means either
+  // checkNetStage never ran (tax unknown, or no printed_net at all) or ran and matched nothing -
+  // section 4b falls back to the historical 'before' assumption in both cases, exactly like the
+  // pre-2n code always did regardless of whether the net stage itself had anything to say.
+  let netStageMatchedPosition: NetStageMatch | null = null;
+
+  function checkNetStage(taxableBasePos: number): void {
     if (period.printed_net === null || postTaxSumForReconciliation === null) return;
     const tableTax = period.printed_table_tax;
     const btTax = resolveBtTaxComponent(period);
@@ -829,27 +930,16 @@ export function checkExtractionConsistency(
       issues.push({ code: 'printed_tax_unknown' });
       return;
     }
-    const impliedNetBefore = loonVoorHeffingen - tableTax - btTax - postTaxSumForReconciliation;
-    // Stage 2h (§2h.3 principle): the document's printed net can legitimately sit at either chain
-    // position - BEFORE net additions/deductions (Olympia, Randstad) or AFTER them (PKF, whose one
-    // printed figure already has its own reimbursement/loan lines baked in). Check both; a genuine
-    // gap is one that matches NEITHER, not merely a mismatch against whichever position was assumed.
-    const netAdditionsSum = period.net_additions.reduce((sum, l) => sum + l.amount, 0);
-    const netDeductionsSum = period.net_deductions.reduce((sum, l) => sum + l.amount, 0);
-    const impliedNetAfter = impliedNetBefore + netAdditionsSum - netDeductionsSum;
-    // n (before): loon voor heffingen, table tax, BT tax, each post-tax line, printed net.
-    const nBefore = 4 + period.post_tax_social.length;
-    const nAfter = nBefore + period.net_additions.length + period.net_deductions.length;
-    const residualBefore = Math.round((impliedNetBefore - period.printed_net) * 100) / 100;
-    const residualAfter = Math.round((impliedNetAfter - period.printed_net) * 100) / 100;
-    const matchesBefore = Math.abs(residualBefore) <= reconciliationTolerance(nBefore);
-    const matchesAfter = Math.abs(residualAfter) <= reconciliationTolerance(nAfter);
-    if (matchesAfter) printedNetIsPostNetLines = true;
-    if (matchesBefore || matchesAfter) return;
-    const useBefore = Math.abs(residualBefore) <= Math.abs(residualAfter);
-    const implied = useBefore ? impliedNetBefore : impliedNetAfter;
-    const residual = useBefore ? residualBefore : residualAfter;
-    issues.push({ code: 'net_does_not_reconcile', implied_net: Math.round(implied * 100) / 100, printed_net: period.printed_net, residual });
+    // Stage 2n (§2n.2): three positions, not two - see resolveNetChainPositions/resolveNetStageMatch's
+    // own doc comment for OTTO's "Totaal netto" shape this now catches (taxable base minus both taxes,
+    // nothing else - the position the pre-2n code never tested at all).
+    const positions = resolveNetChainPositions(taxableBasePos, tableTax, btTax, postTaxSumForReconciliation, period);
+    const match = resolveNetStageMatch(positions, period.printed_net, period);
+    if (match.matchedPosition !== null) {
+      netStageMatchedPosition = match.matchedPosition;
+      return;
+    }
+    issues.push({ code: 'net_does_not_reconcile', implied_net: match.displayValue, printed_net: period.printed_net, residual: match.residual });
   }
 
   // Stage 2i (§2i.1): resolves BOTH anchors by arithmetic (not just the single-anchor case) - see
@@ -979,27 +1069,45 @@ export function checkExtractionConsistency(
     }
   }
 
-  // 4b. Totaal netto -> Totaal: printed net plus net additions minus net deductions plus payout
-  // adjustments should equal the final printed payout - exactly the distinction §Stage 2a's run
-  // collapsed (both the net and payout figures came back identical, with the 90.00 travel
-  // reimbursement that separates them missing from the extraction entirely).
-  //
-  // Stage 2h (§2h.3 principle): this formula assumes `printed_net` sits BEFORE net additions/
-  // deductions - true for Olympia/Randstad, false for PKF, whose single printed figure is already
-  // AFTER them (`printedNetIsPostNetLines`, resolved once by `checkNetStage` above from the
-  // document's own arithmetic). Applying the before-formula to an already-after figure would
-  // double-apply the same net lines a second time - skip straight to payout adjustments instead.
+  // 4b. Totaal netto -> Totaal (§2n.2): "'Totaal' = [taxable base minus both taxes] minus post-tax
+  // deductions plus reimbursements." Built FROM `printed_net`, adjusted by whatever comes AFTER
+  // whichever position it actually occupies (`netStageMatchedPosition`, resolved once by checkNetStage
+  // above - the two can never disagree about which position printed_net is at). Falls back to the
+  // historical 'before' assumption (post-tax already applied, pre-net-lines) whenever that position is
+  // unknown - tax unread, no printed_net at all, or printed_net matched none of the three positions -
+  // exactly the pre-2n code's own unconditional assumption, so a document where tax was never read
+  // (this check's only real precondition before 2n) is UNCHANGED, not newly blocked. The ONE thing
+  // that changes even in the fallback case: et_reimbursement lines are now always added - the term
+  // RAPORT-cursor-2l.md's T1a found missing entirely, independent of which position printed_net sits
+  // at (post-tax and net-lines are the only axes affected by that ambiguity; ET reimbursements are not).
   if (period.printed_net !== null && period.printed_payout !== null) {
     const additions = period.net_additions.reduce((sum, line) => sum + line.amount, 0);
     const deductions = period.net_deductions.reduce((sum, line) => sum + line.amount, 0);
+    const etReimbursementsForPayout = period.et?.et_applicable ? period.et.et_reimbursements.reduce((sum, r) => sum + r.amount, 0) : 0;
     const payoutAdjustments = period.payout_adjustments.reduce((sum, line) => sum + line.amount, 0);
-    const impliedPayout = printedNetIsPostNetLines ? period.printed_net + payoutAdjustments : period.printed_net + additions - deductions + payoutAdjustments;
+    const etReimbursementCount = period.et?.et_applicable ? period.et.et_reimbursements.length : 0;
+    let impliedPayout: number;
+    let n: number;
+    if (netStageMatchedPosition === 'after') {
+      // Already fully applied (post-tax, net-lines, and ET reimbursements all folded in) - adding any
+      // of them again would double-apply.
+      impliedPayout = period.printed_net + payoutAdjustments;
+      n = 2 + period.payout_adjustments.length;
+    } else if (netStageMatchedPosition === 'taxable_base_net' && postTaxSumForReconciliation !== null) {
+      // OTTO's shape: printed_net is BEFORE post-tax deductions too - apply them, then net-lines, then
+      // ET reimbursements.
+      impliedPayout = period.printed_net - postTaxSumForReconciliation + additions - deductions + etReimbursementsForPayout + payoutAdjustments;
+      n = 2 + period.post_tax_social.length + period.net_additions.length + period.net_deductions.length + etReimbursementCount + period.payout_adjustments.length;
+    } else {
+      // Fallback (matched 'before', or unknown/unmatched): historical assumption - post-tax already
+      // applied, apply net-lines and ET reimbursements.
+      impliedPayout = period.printed_net + additions - deductions + etReimbursementsForPayout + payoutAdjustments;
+      n = 2 + period.net_additions.length + period.net_deductions.length + etReimbursementCount + period.payout_adjustments.length;
+    }
+    impliedPayout = Math.round(impliedPayout * 100) / 100;
     const residual = Math.round((impliedPayout - period.printed_payout) * 100) / 100;
-    // n: printed net, payout-adjustment lines, printed payout - plus each net addition/deduction line
-    // ONLY when this document's printed net is at the before-position and the formula actually uses them.
-    const n = 2 + period.payout_adjustments.length + (printedNetIsPostNetLines ? 0 : period.net_additions.length + period.net_deductions.length);
     if (Math.abs(residual) > reconciliationTolerance(n)) {
-      issues.push({ code: 'totals_do_not_reconcile_payout', implied_payout: Math.round(impliedPayout * 100) / 100, printed_payout: period.printed_payout, residual });
+      issues.push({ code: 'totals_do_not_reconcile_payout', implied_payout: impliedPayout, printed_payout: period.printed_payout, residual });
     }
   }
 

@@ -289,6 +289,7 @@ const pl = {
     textLayerStatusMismatch: 'Warstwa tekstowa dokumentu: była obecna, ale odrzucona jako niepasująca do odczytanych kwot (zbyt wiele niepotwierdzonych) - ta weryfikacja została pominięta, odczyt oparty tylko na obrazie.',
     textLayerStatusTooLarge: 'Warstwa tekstowa dokumentu: zbyt duża i pominięta - odczyt oparty tylko na obrazie.',
     textLayerStatusNone: 'Warstwa tekstowa dokumentu: brak (skan, zdjęcie lub zwykły obraz).',
+    netPositionBeforePostTax: 'Wydrukowane netto potwierdzone PRZED potrąceniami po opodatkowaniu (nie tylko przed dodatkami/potrąceniami netto - ta pozycja jest wcześniejsza).',
     netPositionBefore: 'Wydrukowane netto potwierdzone przed dodatkami/potrąceniami netto.',
     netPositionAfter: 'Wydrukowane netto potwierdzone po dodatkach/potrąceniach netto (ta pozycja już je uwzględnia).',
     netPositionBoth: 'Wydrukowane netto zgadza się z obiema pozycjami (brak dodatków/potrąceń netto albo się znoszą).',
@@ -322,6 +323,7 @@ const pl = {
     // heffingen" and the podstawa opodatkowania it becomes after the reduction.
     traceEtReduction: 'Redukcja podstawy z tytułu regulacji ET',
     traceTaxableBasePosition: 'Podstawa opodatkowania (po redukcji ET)',
+    traceEtReimbursements: 'Zwroty netto w ramach regulacji ET',
     // Stage 2l (§2l.2): shown next to a flagged line's own row, and as a summary next to the sum it
     // was excluded from.
     traceLineFlagged: '⚠ nieodczytana wiarygodnie - wykluczona z sumy powyżej',
@@ -604,6 +606,7 @@ const en: typeof pl = {
     textLayerStatusMismatch: 'Document text layer: present, but rejected as a mismatch against the read amounts (too many unconfirmed) - this verification was skipped, the read is based on the image only.',
     textLayerStatusTooLarge: 'Document text layer: too large and skipped - the read is based on the image only.',
     textLayerStatusNone: 'Document text layer: none (a scan, a photo, or a plain image).',
+    netPositionBeforePostTax: 'The printed net is confirmed BEFORE post-tax deductions (an earlier position than just before net additions/deductions).',
     netPositionBefore: 'The printed net is confirmed BEFORE net additions/deductions.',
     netPositionAfter: 'The printed net is confirmed AFTER net additions/deductions (this figure already includes them).',
     netPositionBoth: 'The printed net matches both positions (no net additions/deductions, or they cancel out).',
@@ -635,6 +638,7 @@ const en: typeof pl = {
     traceOtherPrintedFigures: (sample: string) => `Other printed figures that match no known chain position (not an error, just unclassified): ${sample}.`,
     traceEtReduction: 'ET arrangement base reduction',
     traceTaxableBasePosition: 'Taxable base (after the ET reduction)',
+    traceEtReimbursements: 'ET arrangement net reimbursements',
     traceLineFlagged: '⚠ not reliably read - excluded from the sum above',
     traceSumExcludesFlagged: (n: number) => `The sum above does NOT include ${n} unreadable value${n === 1 ? '' : 's'} marked above as "not reliably read" - the figure is still shown, it just does not count toward this sum.`,
     startOver: 'Try again with a different file',

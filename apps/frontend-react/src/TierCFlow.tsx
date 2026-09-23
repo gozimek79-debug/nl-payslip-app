@@ -96,7 +96,9 @@ interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed:
 
 /** Stage 2i (§2i.0b): "the dual net position is visible... say it on the panel in one plain line."
  * Mirrors extraction-consistency.ts's own `ExtractionTrace['net_position']` vocabulary exactly. */
-type NetPosition = 'before' | 'after' | 'both' | 'none';
+// Stage 2n (§2n.2): 'before_post_tax' - a THIRD, earlier position (taxable base minus both taxes,
+// nothing else) 'before'/'after' (both always post-tax) can never represent.
+type NetPosition = 'before_post_tax' | 'before' | 'after' | 'both' | 'none';
 type TextLayerStatus = 'ok' | 'mismatch' | 'too_large' | 'none';
 /** Stage 2h (§2h.4): "numbers that let a real upload speak (no content)" - counts and a status code
  * only, never a text item, label or amount from the document. */
@@ -193,6 +195,9 @@ interface ExtractionTrace {
   printed_net: number | null;
   net_additions: ExtractionTraceLine[];
   net_deductions: ExtractionTraceLine[];
+  /** Stage 2n (§2n.1): ET reimbursement lines, shown for the first time - previously an empty list and
+   * a genuinely-unread one looked identical (both silence). */
+  et_reimbursements: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
   /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
@@ -388,6 +393,7 @@ function renderQualityStuckNote(t: TierCCopy, renderStep: string, textLayerStatu
  * printed net actually confirmed, never asserting a position the arithmetic didn't confirm. */
 function netPositionNote(t: TierCCopy, position: NetPosition): string {
   switch (position) {
+    case 'before_post_tax': return t.netPositionBeforePostTax;
     case 'before': return t.netPositionBefore;
     case 'after': return t.netPositionAfter;
     case 'both': return t.netPositionBoth;
@@ -716,6 +722,15 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                     {renderLines(trace.net_additions)}
                     <p><strong>{t.traceNetDeductions}</strong></p>
                     {renderLines(trace.net_deductions)}
+                  </>
+                )}
+                {/* Stage 2n (§2n.1): "find out whether the reimbursement lines were read at all" -
+                    shown whenever ET applies, even when empty, so an empty list (genuinely none
+                    printed) and a genuinely-unread one are no longer visually identical. */}
+                {trace.et_reduction !== null && (
+                  <>
+                    <p><strong>{t.traceEtReimbursements}</strong></p>
+                    {renderLines(trace.et_reimbursements)}
                   </>
                 )}
 

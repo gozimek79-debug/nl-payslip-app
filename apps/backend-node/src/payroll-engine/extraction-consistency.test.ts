@@ -602,6 +602,58 @@ test('2j.1: a SINGLE printed anchor (not both) that matches only the taxable-bas
 });
 
 /**
+ * Stage 2k (audit v31, §2k.1): "treat et_exchange_amount === 0 (or absent) the same as no ET for the
+ * purpose of widening the tolerance." The reviewer's own boundary (RAPORT-cursor-2j.md, T2(a)): with
+ * `et_applicable: true` and `et_exchange_amount: 0`, the taxable-base position is numerically IDENTICAL
+ * to the loon-voor-heffingen position (nothing was actually subtracted) - widening the tolerance for it
+ * anyway let a printed figure 0.018 EUR off reassign to `confirmed_taxable_base` in memory, purely from
+ * the extra slack, not because it reproduces a genuinely distinct third position.
+ */
+test('2k.1: a zero ET exchange amount must NOT widen the taxable-base tolerance - the reviewer\'s own 0.018 EUR boundary must NOT reassign', () => {
+  // gross 1000, pretax 10 -> lvh/taxable-base position both 990 (et amount 0 subtracts nothing).
+  // printed_gross_total 990.018 misses the (unwidened) lvh tolerance (0.015 for 1 hour line + 1
+  // pre-tax line) by 0.003 - with the bug, the extra ET term widened taxable-base tolerance to 0.02,
+  // just enough to swallow the 0.018 gap and falsely reassign.
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 0, et_reimbursements: [], adres_fiskalny: null },
+    printed_gross_total: 990.018,
+    printed_loon_voor_heffingen: null,
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'unresolved', `expected NO reassignment - the figure matches neither the true gross nor lvh position, and a zero-amount ET must not manufacture a third one, got ${JSON.stringify(resolution)}`);
+  assert.equal(resolution.anchorReassigned, false);
+});
+
+test('2k.1: an ABSENT et field (never applicable at all) is unaffected - same boundary, no reassignment either', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: null,
+    printed_gross_total: 990.018,
+    printed_loon_voor_heffingen: null,
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'unresolved');
+  assert.equal(resolution.anchorReassigned, false);
+});
+
+test('2k.1: a REAL, nonzero ET reduction still gets the wider tolerance - the fix narrows the edge case, it does not remove the term entirely', () => {
+  // Same shape, but et_exchange_amount is now 5 (a genuine reduction) - the taxable-base position
+  // moves to 985, distinct from lvh's 990, and the wider tolerance is legitimately earned this time.
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'other', description: 'pretax', amount: known(10, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 5, et_reimbursements: [{ description: 'Zwrot', amount: 5 }], adres_fiskalny: null },
+    printed_gross_total: 985.018, // 0.018 off the REAL taxable-base position (985), same margin as above
+    printed_loon_voor_heffingen: null,
+  });
+  const resolution = resolveAnchors(period, 1000, 10);
+  assert.equal(resolution.role, 'confirmed_taxable_base', `expected the wider tolerance to still apply to a genuine, nonzero ET reduction, got ${JSON.stringify(resolution)}`);
+});
+
+/**
  * Stage 2j (audit v30, §2j.2): "the reviewer's two concrete FIXTURES strings are the test."
  */
 test("2j.2: the reviewer's two OTTO reimbursement labels no longer match isEtExchangeLabel - only a genuine base-reduction label does", () => {

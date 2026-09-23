@@ -403,6 +403,38 @@ test('2g.0b: /recompute still computes normally when period_type_confirmed is tr
 });
 
 /**
+ * Stage 2k (audit v31, §2k.2): "say the two rate sources out loud." The frontend's new
+ * `discrepanciesRatesSourceNote` (TierCFlow.tsx) reads `response.taxRatesSource` unconditionally on
+ * every 'ok' response - this must actually be present and correctly typed every time, or the note
+ * silently has nothing to key off. `taxRatesSource` itself is unchanged this round (no engine change,
+ * per the assignment) - this closes a real gap: nothing previously asserted it is present at the HTTP
+ * boundary at all.
+ */
+test("2k.2: /recompute's 'ok' response always carries a valid taxRatesSource - the panel's rates-source note depends on it", async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      period: {
+        period_label: null, period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
+        employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+        hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+        pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
+        et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+        wml_printed: null, wml_applicable: null,
+        printed_table_tax: 170.46, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+        printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+        printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+      },
+    }),
+  });
+  const body = (await res.json()) as { status: string; taxRatesSource?: string };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', JSON.stringify(body));
+  assert.ok(body.taxRatesSource === 'database' || body.taxRatesSource === 'static', `expected taxRatesSource to be present and valid, got ${JSON.stringify(body.taxRatesSource)}`);
+});
+
+/**
  * Stage 2h (audit v28, §2h.6): "test with the malformed body the reviewer used." RAPORT-cursor-2g.md
  * T3c's exact reproduction: `buildExtractionTrace({ period_type:'week', period_type_confirmed:false,
  * hour_lines:[] }, null)` crashed with `TypeError: Cannot read properties of undefined (reading

@@ -884,6 +884,11 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
           <div>
             <h3>{t.discrepanciesTitle}</h3>
             <p className="form-note">{t.discrepanciesFindingsCount(findingsCount)}</p>
+            {/* Stage 2k (§2k.2): "say the two rate sources out loud" - every comparison below depends
+                on the same rates database, not only table tax; one shared note rather than a per-row
+                repeat. The static-fallback note is additional, shown only in that degraded case. */}
+            <p className="form-note">{t.discrepanciesRatesSourceNote}</p>
+            {response.taxRatesSource === 'static' && <p className="form-note">{t.discrepanciesRatesSourceStaticNote}</p>}
             {visibleDiscrepancies.map(d => {
               const status = effectiveStatus(d);
               const disposition = dispositions[d.code] ?? { kind: 'unanswered' as const };

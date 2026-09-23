@@ -360,12 +360,28 @@ export interface AnchorResolution {
   otherPrintedFigures: number[];
 }
 
+/**
+ * Stage 2k (audit v31, §2k.1): "treat et_exchange_amount === 0 (or absent) the same as no ET for the
+ * purpose of widening the tolerance - the extra term is for the uncertainty of a real reduction
+ * amount, not a reason to loosen a check that has nothing to reduce." The reviewer's finding
+ * (RAPORT-cursor-2j.md): every site below widened its own tolerance by one term whenever
+ * `et.et_applicable` was true, even when `et_exchange_amount` was exactly 0 - a printed figure could
+ * then reassign to `confirmed_taxable_base` in `resolveAnchors` purely from the extra slack, not
+ * because it actually reproduces a position distinct from loon-voor-heffingen (the two positions are
+ * numerically IDENTICAL when the reduction is 0). One shared predicate, used everywhere a tolerance
+ * widens for "the ET reduction is itself an extracted figure carrying its own uncertainty" - never for
+ * the mere presence of an inapplicable-in-practice or zero-amount `et` field.
+ */
+function etReductionAddsUncertainty(period: PayslipPeriod): boolean {
+  return period.et?.et_applicable === true && period.et.et_exchange_amount !== 0;
+}
+
 // Stage 2j (§2j.1): n for the taxable-base position - the printed subtotal itself, plus every printed
 // figure summed to reach it (each hour line, each pre-tax line), plus one more for the ET reduction
 // itself when it participates (one more extracted figure in the chain, same reasoning as every other
 // term in reconciliationTolerance's own doc comment).
 function taxableBaseTolerance(period: PayslipPeriod, preTaxCount: number): number {
-  return reconciliationTolerance(1 + period.hour_lines.length + preTaxCount + (period.et?.et_applicable ? 1 : 0));
+  return reconciliationTolerance(1 + period.hour_lines.length + preTaxCount + (etReductionAddsUncertainty(period) ? 1 : 0));
 }
 
 export function resolveAnchors(period: PayslipPeriod, grossTotal: number, preTaxSum: number | null): AnchorResolution {
@@ -801,9 +817,9 @@ export function checkExtractionConsistency(
   if (period.printed_taxable_base_normal !== null && period.printed_taxable_base_special !== null && resolvedTaxableBaseForBasesCheck !== null) {
     const impliedTotal = Math.round((period.printed_taxable_base_normal + period.printed_taxable_base_special) * 100) / 100;
     const residual = Math.round((impliedTotal - resolvedTaxableBaseForBasesCheck) * 100) / 100;
-    // n: normal base, special base, the resolved total itself, plus the ET reduction when applicable -
-    // each a printed/extracted figure carrying its own half-cent of independent rounding.
-    if (Math.abs(residual) > reconciliationTolerance(period.et?.et_applicable ? 4 : 3)) {
+    // n: normal base, special base, the resolved total itself, plus the ET reduction when it actually
+    // adds uncertainty (§2k.1: not merely when et_applicable is true with a zero amount).
+    if (Math.abs(residual) > reconciliationTolerance(etReductionAddsUncertainty(period) ? 4 : 3)) {
       issues.push({ code: 'printed_tax_bases_do_not_reconcile', implied_total: impliedTotal, printed_total: resolvedTaxableBaseForBasesCheck, residual });
     }
   }
@@ -900,8 +916,8 @@ export function checkExtractionConsistency(
       const impliedNet = impliedTaxableBase - tableTax - btTax - postTaxSumForReconciliation;
       const residual = Math.round((impliedNet - period.printed_net) * 100) / 100;
       // n: each gross/pre-tax/post-tax line, table tax, BT tax, printed net, plus the ET reduction
-      // itself when applicable.
-      const n = 3 + period.hour_lines.length + period.pre_tax_deductions.length + period.post_tax_social.length + (period.et?.et_applicable ? 1 : 0);
+      // itself when it actually adds uncertainty (§2k.1).
+      const n = 3 + period.hour_lines.length + period.pre_tax_deductions.length + period.post_tax_social.length + (etReductionAddsUncertainty(period) ? 1 : 0);
       if (Math.abs(residual) > reconciliationTolerance(n)) {
         issues.push({ code: 'totals_do_not_reconcile_net', implied_net: Math.round(impliedNet * 100) / 100, printed_net: period.printed_net, residual });
       }

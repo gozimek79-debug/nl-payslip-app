@@ -242,6 +242,13 @@ const pl = {
       if (mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14)) return `${n} stwierdzone rozbieżności wymagają uwagi.`;
       return `${n} stwierdzonych rozbieżności wymaga uwagi.`;
     },
+    // Stage 2k (§2k.2): "confirm [the current-rates wording] is true for every discrepancy type that
+    // depends on the rates database, not only table tax." Every figure "obliczyliśmy" below (table tax,
+    // BT tax, algemene heffingskorting, arbeidskorting, netto, wypłata - all derived from the same tax
+    // brackets/credits) depends equally on the rates database, but only codeTableTax's own label ("wg
+    // tabeli") hinted at that at all. One shared note, not eight duplicated micro-edits.
+    discrepanciesRatesSourceNote: 'Poniższe porównania (podatek wg tabeli, podatek BT, kredyty podatkowe, netto, wypłata) liczone są wg aktualnie obowiązujących stawek z bazy danych - inny raport sporządzony w innym momencie może pokazać nieco inną różnicę, nawet jeśli nic nie jest błędne, jeśli stawki od tamtej pory się zmieniły.',
+    discrepanciesRatesSourceStaticNote: 'Baza aktualnych stawek była w tej chwili niedostępna - powyższe porównania liczone są wg zapasowej, statycznej tabeli, która może nie być aktualna.',
     codeTableTax: 'Podatek wg tabeli', codeBtTax: 'Podatek wg stawki specjalnej (BT)',
     codeAlgemeneHeffingskorting: 'Algemene heffingskorting', codeArbeidskorting: 'Arbeidskorting',
     codeNet: 'Netto (jak wydrukowano na dokumencie)', codePayout: 'Kwota do wypłaty', codeMinimumWage: 'Minimalne wynagrodzenie (wydrukowane)',
@@ -547,6 +554,8 @@ const en: typeof pl = {
     heldForLaterLink: 'Learn more in the Dictionary',
     discrepanciesTitle: 'Discrepancy list',
     discrepanciesFindingsCount: (n: number) => n === 0 ? 'No stated findings yet - only questions to confirm below.' : `${n} stated finding${n === 1 ? '' : 's'} need attention.`,
+    discrepanciesRatesSourceNote: 'The comparisons below (table tax, BT tax, tax credits, net, payout) are computed using the currently applicable rates from the database - a report produced at a different time may show a slightly different figure even when nothing is wrong, if the rates have changed since.',
+    discrepanciesRatesSourceStaticNote: 'The current-rates database was unavailable at this moment - the comparisons above use a fallback, static table that may not be up to date.',
     codeTableTax: 'Tax per the table', codeBtTax: 'Tax at the special rate (BT)',
     codeAlgemeneHeffingskorting: 'Algemene heffingskorting', codeArbeidskorting: 'Arbeidskorting',
     codeNet: 'Net (as printed on the document)', codePayout: 'Amount payable', codeMinimumWage: 'Minimum wage (printed)',

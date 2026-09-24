@@ -155,6 +155,8 @@ type ConsistencyIssue =
   | { code: 'printed_tax_bases_do_not_reconcile'; implied_total: number; printed_total: number; residual: number }
   | { code: 'et_reduction_reimbursement_mismatch'; et_exchange_amount: number; reimbursements_sum: number; residual: number }
   | { code: 'net_position_unconfirmed'; printed_net: number; post_tax_sum: number }
+  | { code: 'pre_tax_unknown' }
+  | { code: 'pre_tax_not_confirmed' }
   | { code: 'period_type_unknown' }
   | { code: 'et_exchange_amount_unknown' }
   | { code: 'amount_unreadable'; field: string };
@@ -354,6 +356,10 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueEtReductionMismatch(money(issue.et_exchange_amount), money(issue.reimbursements_sum), money(issue.residual));
     case 'net_position_unconfirmed':
       return t.issueNetPositionUnconfirmed(money(issue.printed_net), money(issue.post_tax_sum));
+    case 'pre_tax_unknown':
+      return t.issuePreTaxUnknown;
+    case 'pre_tax_not_confirmed':
+      return t.issuePreTaxNotConfirmed;
     case 'period_type_unknown':
       return t.issuePeriodTypeUnknown;
     case 'et_exchange_amount_unknown':
@@ -477,9 +483,13 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
 
   async function recomputeWithCorrection(basePeriod: TierCPeriodResponse, field: keyof TierCPeriodResponse, value: number): Promise<{ period: TierCPeriodResponse } & ({ status: 'ok'; outcome: Outcome; discrepancies: Discrepancy[]; net_position: NetPosition; technicalDetails: TechnicalDetails; taxRatesSource: 'database' | 'static' } | { status: 'unreliable'; issues: ConsistencyIssue[]; trace: ExtractionTrace })> {
     const correctedPeriod = { ...basePeriod, [field]: value };
+    // Stage 2p (§2p.5): flaggedFieldPaths is now a required field on /recompute (never silently
+    // defaulted to empty server-side) - this correction flow only ever runs for
+    // totals_do_not_reconcile_net/payout, never amount_unreadable, so an empty array is always the
+    // correct thing to send here.
     const res = await fetch('/api/tier-c/recompute', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ period: correctedPeriod }),
+      body: JSON.stringify({ period: correctedPeriod, flaggedFieldPaths: [] }),
     });
     const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: Outcome; discrepancies?: Discrepancy[]; net_position?: NetPosition; technicalDetails?: TechnicalDetails; issues?: ConsistencyIssue[]; trace?: ExtractionTrace; taxRatesSource?: 'database' | 'static'; error_code?: string };
     if (!res.ok || !data.status) throw new Error(t.error);

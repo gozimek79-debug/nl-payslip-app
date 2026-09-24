@@ -59,6 +59,18 @@ export type ConsistencyIssue =
   // coincidence - see resolveImpliedPayout's own call site in checkExtractionConsistency (section 4c)
   // for the exact scenario and why the check is scoped to this one position.
   | { code: 'net_position_unconfirmed'; printed_net: number; post_tax_sum: number }
+  // Stage 2p (audit v38, §2p.3): "there is a printed_tax_unknown code for the tax side and no
+  // equivalent for pre-tax." sumKnownAmounts returns null whenever any pre-tax line's amount is
+  // unknown - previously this either silently skipped the net stage entirely (single-anchor role) or
+  // let a null reach a subtraction the runtime coerces into a fabricated residual (both-anchor role,
+  // resolveNetChainPositions). Raised instead, on every path that would otherwise do either.
+  | { code: 'pre_tax_unknown' }
+  // Stage 2p (§2p.4): "a single-anchor document has no check on a missing pre-tax deduction at all."
+  // pre_tax_does_not_reconcile only runs when both anchors are read; a single-anchor role has NOTHING
+  // independently confirming the pre-tax figure, so a missed pre-tax deduction and an ET reduction
+  // over-read by the same amount cancel at the taxable-base level and pass checkNetStage cleanly too -
+  // the same "needs an exact coincidence to stay silent" shape as 2o.1's net_position_unconfirmed.
+  | { code: 'pre_tax_not_confirmed' }
   // Stage 2e (§2e.5): tier-c.ts previously defaulted an unread period_type to 'week' and an unread
   // et_exchange_amount to 0 - both silent, both consequential (a monthly slip taxed as weekly; an ET
   // base reduction silently dropped). Raised by the controller (it alone has the raw TierCExtraction
@@ -100,6 +112,8 @@ export const ALL_CONSISTENCY_ISSUE_CODES = [
   'printed_tax_bases_do_not_reconcile',
   'et_reduction_reimbursement_mismatch',
   'net_position_unconfirmed',
+  'pre_tax_unknown',
+  'pre_tax_not_confirmed',
   'period_type_unknown',
   'et_exchange_amount_unknown',
   'amount_unreadable',
@@ -196,7 +210,19 @@ export function classifyPostTaxDeductionLabel(description: string): PostTaxSocia
  * confirmed so far ("Nieopod.") already matches via `nieopod` alone; nothing currently needs `\bet\b`,
  * and its cost (a confirmed false-positive surface) outweighs a benefit that was never evidenced.
  */
-const ET_EXCHANGE_LABEL_PATTERN = /nieopod|extraterritorial/;
+// Stage 2p (audit v38, §2p, F4 - low priority): Red Team's own finding, confirmed by Cursor's T4: no
+// word boundary at all on either alternative. `\b` before "nieopod" is safe (guards against the
+// pattern matching mid-word in some other term never seen on a real document) without breaking the
+// deliberate prefix match this pattern needs - "nieopod" is intentionally a PARTIAL word (it must match
+// nieopodatkowana/nieopodatkowany/"Nieopod." alike), so a boundary AFTER it would break every one of
+// those. "extraterritorial" is always used as a complete standalone word on the one label seen, so a
+// full `\b...\b` is safe there. This does NOT resolve the deeper collision Cursor's own T4 also
+// confirmed (a genuine REIMBURSEMENT label like "Zwrot nieopodatkowany kosztów dojazdu" shares the same
+// "nieopod" root as the real base-reduction label "Nieopod. część wynagrodzenia") - that is a lexical
+// ambiguity no boundary can fix, already weighed once in §2j.2's own comment above (tightening further
+// costs a confirmed false-positive surface for a benefit never evidenced) - out of this stage's scope,
+// per the assignment's own "hardening item, not a correctness gap; does not block 2p's close."
+const ET_EXCHANGE_LABEL_PATTERN = /\bnieopod|\bextraterritorial\b/;
 
 export function isEtExchangeLabel(description: string): boolean {
   return ET_EXCHANGE_LABEL_PATTERN.test(stripDiacritics(description));
@@ -244,6 +270,24 @@ function parseWeekLabel(label: string | null): { week: number; year: number } | 
   const year = Number(match[2]);
   if (week < 1 || week > 53) return null;
   return { week, year };
+}
+
+// Stage 2p (audit v38, §2p.1): "MM/YYYY is the ordinary Dutch month-label format - this blocks a
+// common, correct document shape, not a rare one." Red Team's F1 (RAPORT-redteam-1.md, confirmed by
+// Cursor's own T1 against the real code): parseWeekLabel's pattern (a bare "small number / four-digit
+// year" shape) matches a MONTHLY document's own "Periode: 08/2025" label exactly as readily as a real
+// week label - nothing before this stage ever asked whether the document is even week-typed before
+// comparing that parsed number against the period's own ISO week. A self-consistent monthly period
+// labelled this way was reported period_week_mismatch (week 8 vs 35) purely from the label's coincidental
+// shape, while the identical period typed and labelled as a real week passed clean. Gates the comparison
+// on period_type === 'week' (the normal case - see OTTO's own real label "33/2025", a bare number with
+// no week-word at all, which stays checked because the document genuinely IS week_type) OR the label
+// itself explicitly naming a week ("week 36/2026" is checked even before period_type is confirmed as
+// 'week', matching this file's own historical Olympia fixture) - never a bare MM/YYYY pair on its own.
+const WEEK_WORD_PATTERN = /\bweek\b|\btydzien\b|\bwk\b/;
+
+function labelNamesWeek(label: string | null): boolean {
+  return label !== null && WEEK_WORD_PATTERN.test(stripDiacritics(label));
 }
 
 const PERIOD_LENGTH_BOUNDS: Record<PayslipPeriod['period_type'], { min: number; max: number }> = {
@@ -892,7 +936,9 @@ export function checkExtractionConsistency(
   // 2c. Stage 2e (§2e.6): a bare week-number label ("week 36/2026") checked against the period's own
   // end date, via ISO week number - the comparison 2b's date-range check could never make since it
   // only fires on an explicit two-date range.
-  const labelWeek = parseWeekLabel(period.period_label);
+  // Stage 2p (§2p.1): only when the document is actually week-typed, or its own label says so - see
+  // labelNamesWeek's own doc comment for the monthly-document false positive this gate closes.
+  const labelWeek = period.period_type === 'week' || labelNamesWeek(period.period_label) ? parseWeekLabel(period.period_label) : null;
   if (labelWeek !== null && period.period_end_date) {
     const endDate = new Date(period.period_end_date);
     if (!Number.isNaN(endDate.getTime())) {
@@ -1029,13 +1075,22 @@ export function checkExtractionConsistency(
         if (Math.abs(preTaxResidual) > reconciliationTolerance(2 + period.pre_tax_deductions.length)) {
           issues.push({ code: 'pre_tax_does_not_reconcile', implied_loon_voor_heffingen: Math.round(impliedLoonVoorHeffingen * 100) / 100, printed_loon_voor_heffingen: period.printed_loon_voor_heffingen as number, residual: preTaxResidual });
         }
-      }
 
-      // Stage 3: the document's actual taxable-base position (gross voor heffingen, minus the ET
-      // reduction when applicable - Stage 2j §2j.1: "every place that currently tests a printed anchor
-      // against 'the loon-voor-heffingen position' must test against the position appropriate to what
-      // ET does to the chain") minus tax minus post-tax vs the document's own printed net.
-      checkNetStage(resolveTaxableBasePosition(period, grossTotal, preTaxSumForReconciliation) as number);
+        // Stage 3: the document's actual taxable-base position (gross voor heffingen, minus the ET
+        // reduction when applicable - Stage 2j §2j.1: "every place that currently tests a printed
+        // anchor against 'the loon-voor-heffingen position' must test against the position appropriate
+        // to what ET does to the chain") minus tax minus post-tax vs the document's own printed net.
+        checkNetStage(resolveTaxableBasePosition(period, grossTotal, preTaxSumForReconciliation) as number);
+      } else {
+        // Stage 2p (§2p.3): "stop letting a null resolver result reach the net stage at all." The
+        // `as number` cast above used to run unconditionally - `resolveTaxableBasePosition` returns
+        // null exactly when preTaxSumForReconciliation is null, and the cast is erased at runtime, so
+        // `null - tableTax` inside resolveNetChainPositions silently produced a fabricated residual
+        // (Cursor's T3(b): printed net 880 -> "net_does_not_reconcile", implied net -100, residual
+        // -980 - a number describing nothing real). Stated as a gap instead, on both stages this
+        // branch's own pre-tax sum would otherwise have fed.
+        issues.push({ code: 'pre_tax_unknown' });
+      }
     }
   } else if (
     subtotalRole === 'confirmed_gross' ||
@@ -1072,24 +1127,61 @@ export function checkExtractionConsistency(
       // runs; only the PANEL'S LABEL stays neutral for `ambiguous_both_match`, never asserting which
       // role the figure plays.
       const etReductionForStage3 = period.et?.et_applicable ? period.et.et_exchange_amount : 0;
-      const resolvedTaxableBase =
-        subtotalRole === 'confirmed_gross'
-          ? preTaxSumForReconciliation !== null
-            ? Math.round((printedSubtotal - preTaxSumForReconciliation - etReductionForStage3) * 100) / 100
-            : null
-          : subtotalRole === 'confirmed_taxable_base'
-            ? printedSubtotal
-            : Math.round((printedSubtotal - etReductionForStage3) * 100) / 100; // confirmed_loon_voor_heffingen / ambiguous_both_match
-      if (resolvedTaxableBase !== null) checkNetStage(resolvedTaxableBase);
+      // Stage 2p (§2p.3): only `confirmed_gross` needs preTaxSumForReconciliation at all (the other
+      // two roles' printed anchor is already post-pre-tax, or already the taxable base) - previously a
+      // null pre-tax sum here made `resolvedTaxableBase` null and the `if (resolvedTaxableBase !== null)`
+      // guard below silently skipped checkNetStage with NOTHING raised (Cursor's T3(a): single-anchor
+      // gate `[]`). Stated as a gap instead - and once guarded here, `resolvedTaxableBase` can never be
+      // null, so checkNetStage always runs unconditionally below.
+      if (subtotalRole === 'confirmed_gross' && preTaxSumForReconciliation === null) {
+        issues.push({ code: 'pre_tax_unknown' });
+      } else {
+        const resolvedTaxableBase =
+          subtotalRole === 'confirmed_gross'
+            ? Math.round((printedSubtotal - (preTaxSumForReconciliation as number) - etReductionForStage3) * 100) / 100
+            : subtotalRole === 'confirmed_taxable_base'
+              ? printedSubtotal
+              : Math.round((printedSubtotal - etReductionForStage3) * 100) / 100; // confirmed_loon_voor_heffingen / ambiguous_both_match
+        checkNetStage(resolvedTaxableBase);
+
+        // Stage 2p (§2p.4): "a single-anchor document has no check on a missing pre-tax deduction at
+        // all." pre_tax_does_not_reconcile only runs inside the 'both' branch above; none of these
+        // three roles has anything independently confirming the pre-tax figure EXCEPT
+        // `confirmed_loon_voor_heffingen` (its own anchor match already required preTaxSumForReconciliation
+        // to be known and to reconcile, by construction - see resolveSubtotalRole/resolveAnchors). For
+        // the other three, a missed pre-tax deduction and an ET reduction over-read by the same amount
+        // cancel at the taxable-base level (`resolvedTaxableBase` above), so checkNetStage - which only
+        // ever sees that ALREADY-COMBINED figure - cannot catch it either (Cursor's T2, corrected:
+        // gross 1000/missing 50 pre-tax/ET over-read to 150 instead of 100 -> gate `[]`, same taxable
+        // base 850 either way). Scoped to the exact shape the coincidence needs, mirroring 2o.1's own
+        // net_position_unconfirmed: an EMPTY pre-tax list (empty and genuinely-none-owed are visually
+        // identical - the same "unread" ambiguity 2n.1/2o.1 already established), a real ET reduction to
+        // coincidentally cancel against (etReductionAddsUncertainty - 2k.1's own shared predicate), and
+        // the net stage having matched cleanly (nothing else already caught it).
+        if (
+          subtotalRole !== 'confirmed_loon_voor_heffingen' &&
+          period.pre_tax_deductions.length === 0 &&
+          etReductionAddsUncertainty(period) &&
+          netStageMatchedPosition !== null
+        ) {
+          issues.push({ code: 'pre_tax_not_confirmed' });
+        }
+      }
     }
-  } else if (period.printed_net !== null && preTaxSumForReconciliation !== null && postTaxSumForReconciliation !== null) {
+  } else if (period.printed_net !== null && postTaxSumForReconciliation !== null) {
     // subtotalRole === 'none': the old combined identity, using the summed (not printed) gross - the
     // only path left with no printed subtotal to anchor a staged check against at all.
-    const tableTax = period.printed_table_tax;
-    const btTax = resolveBtTaxComponent(period);
-    if (tableTax === null || btTax === null) {
-      issues.push({ code: 'printed_tax_unknown' });
+    // Stage 2p (§2p.3): a null pre-tax sum used to be folded into this branch's own outer condition,
+    // so it silently fell through with nothing raised at all (the third of the three silent paths
+    // Cursor's T3 traced) - stated as its own gap instead, same as the other two.
+    if (preTaxSumForReconciliation === null) {
+      issues.push({ code: 'pre_tax_unknown' });
     } else {
+      const tableTax = period.printed_table_tax;
+      const btTax = resolveBtTaxComponent(period);
+      if (tableTax === null || btTax === null) {
+        issues.push({ code: 'printed_tax_unknown' });
+      } else {
       // Stage 2j (§2j.1): the shared resolver, not a fifth re-derivation of "gross minus pre-tax minus
       // ET" - this branch previously omitted the ET reduction entirely (an ET-bearing document with no
       // printed subtotal at all would have had its implied net overstated by exactly the ET amount).
@@ -1109,6 +1201,7 @@ export function checkExtractionConsistency(
         netStageMatchedPosition = match.matchedPosition;
       } else {
         issues.push({ code: 'totals_do_not_reconcile_net', implied_net: match.displayValue, printed_net: period.printed_net, residual: match.residual });
+      }
       }
     }
   }

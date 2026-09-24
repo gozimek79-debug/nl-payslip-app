@@ -521,11 +521,21 @@ router.post('/recompute', async (req, res) => {
   // own extraction-gap return already uses (not a new response shape, not a new frontend switch-case
   // needed - `issueMessage`'s existing case handles it), so a future correction flow sees the identical
   // "still unresolved" signal regardless of which route produced it.
+  //
+  // Stage 2p (audit v38, §2p.5): "close the 2m.1 flaggedFieldPaths residual for good." Until this
+  // stage, an OMITTED `flaggedFieldPaths` was silently treated the same as an explicitly empty one -
+  // Red Team's own F5/T6 confirmed today's shipped frontend never actually exercises this (it only
+  // ever recomputes for totals_do_not_reconcile_net/payout, never amount_unreadable), so this was not a
+  // live bug, only an open gap for any other client hitting the endpoint directly. Closed the same way
+  // 2m.1 closed its own gap - refuse outright rather than silently defaulting: the field is now
+  // REQUIRED (never optional), so a caller must explicitly state "no fields are flagged" (`[]`) rather
+  // than the server assuming it on the caller's behalf. `TierCFlow.tsx`'s own single call site
+  // (`recomputeWithCorrection`) is updated in this same round to always send it.
   const flaggedFieldPathsInput = req.body?.flaggedFieldPaths;
-  if (flaggedFieldPathsInput !== undefined && (!Array.isArray(flaggedFieldPathsInput) || !flaggedFieldPathsInput.every((f) => typeof f === 'string'))) {
+  if (!Array.isArray(flaggedFieldPathsInput) || !flaggedFieldPathsInput.every((f) => typeof f === 'string')) {
     return res.status(400).json({ error_code: 'invalid_period' });
   }
-  const flaggedFieldPaths: string[] = flaggedFieldPathsInput ?? [];
+  const flaggedFieldPaths: string[] = flaggedFieldPathsInput;
   if (flaggedFieldPaths.length > 0) {
     console.error('[consistency-gate] blocked on /recompute - unresolved flagged fields:', JSON.stringify(flaggedFieldPaths));
     return res.json({
@@ -551,38 +561,51 @@ router.post('/recompute', async (req, res) => {
   // trusted as-is.
   const period = normalizePeriodSigns(rawPeriod);
 
-  const fetched = await fetchRates(period.period_type);
-  if (!fetched) {
-    return res.status(503).json({ error_code: 'tax_rates_unavailable' });
+  // Stage 2p (audit v38, §2p.2): "/recompute's own fetchRates / computePayslipPeriod /
+  // checkExtractionConsistency sequence has none [error handling]." Confirmed by Cursor (T7, read
+  // only, deliberately not triggered live on production): /analyze wraps its own vision call and gate
+  // in try/catch and answers a structured 502; this sequence had nothing, so any input that makes it
+  // throw had no defined behaviour at all - the honest worst case is an unhandled rejection with no
+  // response, which is exactly what hangs a request to a platform timeout instead of failing cleanly.
+  // Wrapped the same way, with the same shape - a distinct error_code (`recompute_failed`, not
+  // `extraction_failed`) since nothing here is a vision extraction.
+  try {
+    const fetched = await fetchRates(period.period_type);
+    if (!fetched) {
+      return res.status(503).json({ error_code: 'tax_rates_unavailable' });
+    }
+
+    const outcome = computePayslipPeriod(period, fetched.rates, true);
+
+    // Same gate as /analyze (Stage 2b): a correction to one printed_* field does not itself prove the
+    // rest of the extraction is trustworthy. No payment_date travels with a bare PayslipPeriod (it is
+    // extraction-only, per tier-c.ts), so the year-mismatch check simply does not re-fire here - the
+    // checks that DO still apply (zero-tax, period length from the label, category, both totals
+    // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
+    const consistencyIssues = checkExtractionConsistency(null, period, outcome);
+    if (consistencyIssues.length > 0) {
+      console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
+      return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
+    }
+
+    // Stage 2h (§2h.3) / 2i (§2i.0b): same structured basis /analyze reports - a correction can change
+    // which chain position the printed net now confirms (or stops confirming).
+    const net_position = resolveNetPosition(period, outcome);
+    const discrepancies = comparePeriodToDocument(period, outcome);
+    return res.json({
+      status: 'ok',
+      outcome,
+      discrepancies,
+      net_position,
+      // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
+      // period) - the technical-details line still appears, honestly reporting nothing to check.
+      technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf' },
+      taxRatesSource: fetched.source,
+    });
+  } catch (error) {
+    console.error('Tier C recompute error', error);
+    return res.status(502).json({ error_code: 'recompute_failed' });
   }
-
-  const outcome = computePayslipPeriod(period, fetched.rates, true);
-
-  // Same gate as /analyze (Stage 2b): a correction to one printed_* field does not itself prove the
-  // rest of the extraction is trustworthy. No payment_date travels with a bare PayslipPeriod (it is
-  // extraction-only, per tier-c.ts), so the year-mismatch check simply does not re-fire here - the
-  // checks that DO still apply (zero-tax, period length from the label, category, both totals
-  // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
-  const consistencyIssues = checkExtractionConsistency(null, period, outcome);
-  if (consistencyIssues.length > 0) {
-    console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
-    return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
-  }
-
-  // Stage 2h (§2h.3) / 2i (§2i.0b): same structured basis /analyze reports - a correction can change
-  // which chain position the printed net now confirms (or stops confirming).
-  const net_position = resolveNetPosition(period, outcome);
-  const discrepancies = comparePeriodToDocument(period, outcome);
-  return res.json({
-    status: 'ok',
-    outcome,
-    discrepancies,
-    net_position,
-    // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
-    // period) - the technical-details line still appears, honestly reporting nothing to check.
-    technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf' },
-    taxRatesSource: fetched.source,
-  });
 });
 
 export default router;

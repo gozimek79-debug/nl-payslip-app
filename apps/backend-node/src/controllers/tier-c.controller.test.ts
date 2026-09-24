@@ -299,27 +299,43 @@ test('2m.1: reposting the exact blocked period (from the 2l.2 fixture above) to 
   assert.equal(recomputeBody.trace?.hour_lines[1]?.flagged, true, 'expected the flagged line still marked on the /recompute response');
 });
 
-test('2m.1: /recompute with NO flaggedFieldPaths at all (the ordinary case, untouched by this fix) still computes normally', async () => {
+// Stage 2p (audit v38, §2p.5): "close the 2m.1 flaggedFieldPaths residual for good." Before this
+// stage, an OMITTED flaggedFieldPaths was silently treated the same as an explicit `[]` - this test
+// used to prove that leniency was intentional ("untouched by this fix"). It now proves the opposite:
+// omission is refused, not silently defaulted. The companion test right after proves the ordinary
+// case (explicitly empty) still computes normally.
+const RECOMPUTE_TEST_PERIOD = {
+  period_label: null, period_type: 'week' as const, period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
+  employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
+  hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
+  pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable' as const, tarief_bt: { printed: null, computed: null } },
+  et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
+  wml_printed: null, wml_applicable: null,
+  printed_table_tax: 170.46, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
+  printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
+  printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
+};
+
+test('2p.5: /recompute with NO flaggedFieldPaths at all is now refused (invalid_period), never silently defaulted to empty', async () => {
   const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      period: {
-        period_label: null, period_type: 'week', period_type_confirmed: true, period_end_date: null, is_correction: false, version: 1,
-        employers: [{ name: null, franchise_bearing: true }], hirer: null, contract_hours: null,
-        hour_lines: [{ employer_index: 0, description: 'Loon normaal', hours: 45, rate: 15.55, percent: null, amount: 885.5, category: 'regular', tax_treatment: 'table', adds_hours: true }],
-        pre_tax_deductions: [], bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
-        et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
-        wml_printed: null, wml_applicable: null,
-        printed_table_tax: 170.46, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
-        printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
-        printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
-      },
-    }),
+    body: JSON.stringify({ period: RECOMPUTE_TEST_PERIOD }),
+  });
+  const body = (await res.json()) as { error_code?: string };
+  assert.equal(res.status, 400, `expected an omitted flaggedFieldPaths to be refused, got ${JSON.stringify(body)}`);
+  assert.equal(body.error_code, 'invalid_period');
+});
+
+test('2p.5: /recompute with an explicit empty flaggedFieldPaths (the ordinary case) still computes normally', async () => {
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: RECOMPUTE_TEST_PERIOD, flaggedFieldPaths: [] }),
   });
   const body = (await res.json()) as { status: string };
   assert.equal(res.status, 200);
-  assert.equal(body.status, 'ok', `expected the ordinary, no-flagged-fields case unaffected by 2m.1, got ${JSON.stringify(body)}`);
+  assert.equal(body.status, 'ok', `expected the ordinary, explicitly-empty case to compute normally, got ${JSON.stringify(body)}`);
 });
 
 test('2m.1: /recompute rejects a malformed flaggedFieldPaths (not an array of strings) with invalid_period, never crashes', async () => {
@@ -471,7 +487,7 @@ test('2f.11c: /recompute normalises a signed body before computing - a negative 
     printed_net: 692.55, printed_payout: 692.55, printed_gross_total: null, printed_loon_voor_heffingen: null,
     printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
   };
-  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ period: signedPeriod }) });
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ period: signedPeriod, flaggedFieldPaths: [] }) });
   const body = (await res.json()) as { status: string; outcome?: { status: string; result?: { taxable_base: number } } };
   assert.equal(res.status, 200);
   // If the -40.58 deduction were NOT normalised to a magnitude, gross - (-40.58) = 926.08 (added, not
@@ -498,7 +514,7 @@ test('2g.0b: /recompute refuses a period whose period_type was never confirmed -
     printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
     printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
   };
-  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ period: echoedUnknownTypePeriod }) });
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ period: echoedUnknownTypePeriod, flaggedFieldPaths: [] }) });
   const body = (await res.json()) as { status: string; issues?: Array<{ code: string }>; outcome?: unknown };
   assert.equal(res.status, 200);
   assert.equal(body.status, 'unreliable');
@@ -525,6 +541,7 @@ test('2g.0b: /recompute still computes normally when period_type_confirmed is tr
         printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
         printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
       },
+      flaggedFieldPaths: [],
     }),
   });
   const body = (await res.json()) as { status: string; outcome?: { status: string } };
@@ -556,6 +573,7 @@ test("2k.2: /recompute's 'ok' response always carries a valid taxRatesSource - t
         printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
         printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
       },
+      flaggedFieldPaths: [],
     }),
   });
   const body = (await res.json()) as { status: string; taxRatesSource?: string };
@@ -596,3 +614,9 @@ test('2h.6: /recompute still answers 400 invalid_period on a period missing arra
   const body = (await res.json()) as { error_code?: string };
   assert.equal(body.error_code, 'invalid_period');
 });
+
+// Stage 2p (§2p.2): the deliberate-throw test for /recompute's error handling needs `../rules-
+// repository.js` mocked BEFORE `app.js` is ever imported (the same requirement `ipRateLimit`'s own
+// mock above has) - this file's `app` is already loaded by the time any test here runs, so that test
+// lives in its own file (`tier-c.controller.recompute-error.test.ts`), which gets a fresh module
+// registry the same way this file's own before() does.

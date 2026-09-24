@@ -87,7 +87,15 @@ export const PAYSLIP_PERIOD_SIGN_POLICY = {
  * function exists to make impossible, since `/recompute` may see output this same function already
  * produced.
  */
-const CREDIT_LABEL_PATTERN = /rekompensata/i;
+// Stage 2p (audit v38, §2p, F4 - low priority): Red Team's own finding, confirmed by Cursor's T4: the
+// bare substring pattern has no word boundary at all - a hypothetical compound word merely CONTAINING
+// "rekompensata" (never seen on a real document, but not ruled out either) would match. `\b` on both
+// sides is safe here (unlike isEtExchangeLabel below) because "Rekompensata" is used as a standalone
+// word on both real confirmed labels ("PAWW Rekompensata", "REKOMPENSATA PAWW") - never a shared prefix
+// of some other word the way "nieopod" deliberately is. No behaviour change on Cursor's own confirmed
+// matrix (Rekompensata/REKOMPENSATA PAWW still match; Rekompensaty/rekompensaty PAWW still don't - they
+// differ in the letters themselves, not merely in word boundaries).
+const CREDIT_LABEL_PATTERN = /\brekompensata\b/i;
 
 export function isCreditLabel(description: string): boolean {
   return CREDIT_LABEL_PATTERN.test(description);

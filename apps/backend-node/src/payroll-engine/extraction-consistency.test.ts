@@ -341,6 +341,54 @@ test('2e.6: a year-first label shape ("week 2026-11") is never parsed as week/ye
 });
 
 /**
+ * Stage 2p (audit v38, §2p.1): "a correct monthly payslip labelled MM/YYYY is blocked." Red Team's F1
+ * (RAPORT-redteam-1.md), confirmed against the real code by Cursor's own T1: parseWeekLabel's pattern
+ * (a bare "small number / four-digit year" shape) matched a MONTHLY document's own "Periode: 08/2025"
+ * label exactly as readily as a real week label, with nothing checking period_type first - reported
+ * period_week_mismatch (week 8 vs 35) on a period whose arithmetic is otherwise exact. Cursor's own
+ * exact reproduction numbers, reused here.
+ */
+test("2p.1: a correct MONTHLY period labelled 'Periode: 08/2025' is no longer reported as a week mismatch (Cursor's T1)", () => {
+  const period = minimalPeriod({
+    period_type: 'month',
+    period_label: 'Periode: 08/2025',
+    period_end_date: '2025-08-31',
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 3000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 400,
+    printed_net: 2600,
+    printed_payout: 2600,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.deepEqual(issues, [], `expected a self-consistent monthly period to pass cleanly, got ${JSON.stringify(issues)}`);
+});
+
+test("2p.1 REGRESSION: the identical period, genuinely week-typed and labelled 'Week 35/2025', still passes clean (proves the fix didn't just silence the check)", () => {
+  const period = minimalPeriod({
+    period_type: 'week',
+    period_label: 'Week 35/2025',
+    period_end_date: '2025-08-31',
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 3000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_table_tax: 400,
+    printed_net: 2600,
+    printed_payout: 2600,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.deepEqual(issues, [], `expected the genuine week-typed control to still pass clean, got ${JSON.stringify(issues)}`);
+});
+
+test('2p.1: a genuinely WRONG week label on a week-typed document is still caught (the check still works, just gated correctly)', () => {
+  const period = minimalPeriod({ period_label: 'week 36/2026', period_type: 'week', period_end_date: '2026-09-13' }); // ISO week 37, not 36
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(issues.some((i) => i.code === 'period_week_mismatch'), 'expected a real week mismatch on a genuinely week-typed document to still be caught');
+});
+
+test("2p.1: a month-typed document whose label explicitly says 'week' is still checked (the label wins over period_type when it explicitly names a week)", () => {
+  const period = minimalPeriod({ period_type: 'month', period_label: 'week 36/2026', period_end_date: '2026-09-13' }); // ISO week 37, not 36
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(issues.some((i) => i.code === 'period_week_mismatch'), 'expected an explicit week-word label to still be checked regardless of period_type');
+});
+
+/**
  * Stage 2d (v19, §2d.1): buildExtractionTrace supplies the blocking panel's "what we read" section -
  * the full chain, independent of which specific check fired. Tested separately from
  * checkExtractionConsistency's own tests because the panel needs this even for issues (like
@@ -662,6 +710,20 @@ test("2j.2: the reviewer's two OTTO reimbursement labels no longer match isEtExc
   assert.equal(isEtExchangeLabel('Nieopod. część wyn. 100%'), true, 'the one confirmed real base-reduction label must still match');
   assert.equal(isEtExchangeLabel('Emerytura STIPP'), false);
   assert.equal(isEtExchangeLabel('Bijdrage PAWW werknemer'), false);
+});
+
+/**
+ * Stage 2p (audit v38, §2p, F4 - low priority): word-boundary hardening. Cursor's own T4 confirmed all
+ * five of these labels match the pre-hardening pattern; this proves the `\b` addition changes none of
+ * them (a boundary before "nieopod" - deliberately a partial-word match - never a boundary after it,
+ * which would break every one of these).
+ */
+test('2p F4: word-boundary hardening on isEtExchangeLabel changes none of Cursor\'s five confirmed labels', () => {
+  assert.equal(isEtExchangeLabel('Nieopodatkowana część wyn. 100% (ET)'), true);
+  assert.equal(isEtExchangeLabel('Zwrot nieopodatkowany kosztów dojazdu'), true, 'the acknowledged lexical collision stays as-is - boundary hardening does not (and is not meant to) resolve it');
+  assert.equal(isEtExchangeLabel('Nieopodatkowane składki pracownicze'), true);
+  assert.equal(isEtExchangeLabel('Nieopod. część wynagrodzenia'), true);
+  assert.equal(isEtExchangeLabel('Extraterritorial costs reimbursement'), true);
 });
 
 /**
@@ -1137,4 +1199,111 @@ test('2o.2 REGRESSION: the pre-fix "none"-branch behaviour (position-blind, alwa
   const preFixImpliedPayout = printedNet + additions; // the old, position-blind fallback: 750
   const printedPayout = 650;
   assert.equal(preFixImpliedPayout - printedPayout, 100, 'sanity: the pre-fix fallback would have been off by exactly the post-tax amount it never subtracted');
+});
+
+/**
+ * Stage 2p (audit v38, §2p.3): "there is no printed_tax_unknown-equivalent code for pre-tax." Red
+ * Team's F3, confirmed by Cursor's own T3: `sumKnownAmounts` returns null when any pre-tax line's
+ * amount is unknown - a single-anchor role silently skipped the net stage entirely (gate `[]`,
+ * nothing raised); a both-anchor role let the null reach a subtraction the runtime coerces, producing
+ * a fabricated residual. Three separate silent/fabricated paths, now all three raise `pre_tax_unknown`.
+ */
+test('2p.3(a): a null pre-tax amount on a single-anchor ("confirmed_gross") document now raises pre_tax_unknown instead of a silent clean gate', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 1000,
+    pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: { provenance: 'unknown', value: null }, base: null, percent: null }],
+    printed_table_tax: 100,
+    printed_net: 900,
+    printed_payout: 900,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.deepEqual(issues, [{ code: 'pre_tax_unknown' }], `expected pre_tax_unknown instead of a silent clean gate, got ${JSON.stringify(issues)}`);
+});
+
+test('2p.3(b): a null pre-tax amount on a both-anchor document now raises pre_tax_unknown instead of a fabricated net_does_not_reconcile residual', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 1000,
+    printed_loon_voor_heffingen: 950,
+    pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: { provenance: 'unknown', value: null }, base: null, percent: null }],
+    printed_table_tax: 100,
+    printed_net: 880,
+    printed_payout: 880,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.ok(issues.some((i) => i.code === 'pre_tax_unknown'), `expected pre_tax_unknown, got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'net_does_not_reconcile'), `expected no fabricated net_does_not_reconcile residual (the old bug: null - tableTax coerced to -100, residual -980), got ${JSON.stringify(issues)}`);
+});
+
+test('2p.3(c): a null pre-tax amount on a no-anchor ("none" branch) document now raises pre_tax_unknown instead of silently skipping the whole branch', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: { provenance: 'unknown', value: null }, base: null, percent: null }],
+    printed_table_tax: 100,
+    printed_net: 900,
+    printed_payout: 900,
+  });
+  const issues = checkExtractionConsistency(null, period, completeOutcome({}));
+  assert.deepEqual(issues, [{ code: 'pre_tax_unknown' }], `expected pre_tax_unknown instead of a silent no-op, got ${JSON.stringify(issues)}`);
+});
+
+/**
+ * Stage 2p (§2p.4): "a single-anchor document has no check on a missing pre-tax deduction at all."
+ * Red Team's F2, corrected and reproduced by Cursor's own T2: a single printed gross anchor, an
+ * entirely missed pre-tax deduction, and an ET reduction over-read by the same amount cancel at the
+ * taxable-base level - checkNetStage only ever sees that already-combined figure, so it cannot catch
+ * it either. The structural fix mirrors 2o.1's own net_position_unconfirmed exactly.
+ */
+test('2p.4: a missed pre-tax deduction exactly cancelled by an over-read ET reduction (single gross anchor) now raises pre_tax_not_confirmed instead of a clean gate', () => {
+  // True chain: gross 1000, real pre-tax 50 (never read), real ET 100 (over-read to 150) -> taxable
+  // base 850 either way, since the two errors cancel. printed_table_tax/net/payout all correspond to
+  // the TRUE 850 taxable base - both the adversarial (pre-tax missing, ET=150) and the control
+  // (pre-tax=50, ET=100) reads land on the identical downstream figures.
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 1000,
+    pre_tax_deductions: [], // the missing 50.00 pension line
+    et: { et_applicable: true, et_exchange_amount: 150, et_reimbursements: [], adres_fiskalny: null }, // over-read by exactly the missing 50.00
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(20, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 130,
+    printed_net: 700,
+    printed_payout: 700,
+  });
+  const outcome = completeOutcome({ taxable_base: 850, table_tax_after_korting: 130 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.deepEqual(issues, [{ code: 'pre_tax_not_confirmed' }], `expected pre_tax_not_confirmed instead of a clean gate hiding the coincidence, got ${JSON.stringify(issues)}`);
+});
+
+test('2p.4: the correct control (pre-tax 50 read, ET 100 read correctly) does not raise pre_tax_not_confirmed - a real pre-tax reading is never treated as unconfirmed', () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 1000,
+    pre_tax_deductions: [{ category: 'pension', description: 'StiPP', amount: known(50, 'payslip_extracted'), base: null, percent: null }],
+    et: { et_applicable: true, et_exchange_amount: 100, et_reimbursements: [], adres_fiskalny: null },
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(20, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 130,
+    printed_net: 700,
+    printed_payout: 700,
+  });
+  const outcome = completeOutcome({ taxable_base: 850, table_tax_after_korting: 130 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.deepEqual(issues, [], `expected the genuinely correct control to stay clean, got ${JSON.stringify(issues)}`);
+});
+
+test("2p.4: a missed pre-tax deduction with NO cancelling ET error is still caught by the existing net stage (proves the coincidence really needs both errors, per Cursor's own control)", () => {
+  const period = minimalPeriod({
+    hour_lines: [{ employer_index: 0, description: 'gross', hours: null, rate: null, percent: null, amount: 1000, category: 'other', tax_treatment: 'table', adds_hours: false }],
+    printed_gross_total: 1000,
+    pre_tax_deductions: [], // the missing 50.00 pension line, but ET is read CORRECTLY this time
+    et: { et_applicable: true, et_exchange_amount: 100, et_reimbursements: [], adres_fiskalny: null },
+    post_tax_social: [{ category: 'other', description: 'post-tax', amount: known(20, 'payslip_extracted'), percent: null }],
+    printed_table_tax: 130,
+    printed_net: 700,
+    printed_payout: 700,
+  });
+  const outcome = completeOutcome({ taxable_base: 900, table_tax_after_korting: 130 });
+  const issues = checkExtractionConsistency(null, period, outcome);
+  assert.ok(issues.some((i) => i.code === 'net_does_not_reconcile'), `expected the existing net stage to catch this on its own (no coincidence to hide it), got ${JSON.stringify(issues)}`);
+  assert.ok(!issues.some((i) => i.code === 'pre_tax_not_confirmed'), 'expected no pre_tax_not_confirmed here - the net stage already raised the gap, nothing to add');
 });

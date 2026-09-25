@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, BookOpen, Calculator as CalculatorIcon, Clock, FileText, ShieldCheck } from 'lucide-react';
 import { TierACalculator } from './TierACalculator.tsx';
 import { TierBFlow } from './TierBFlow.tsx';
-import { TierCFlow } from './TierCFlow.tsx';
+import { ProDocuments } from './ProDocuments.tsx';
 import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
 import { translations, type Lang } from './translations.ts';
@@ -17,12 +17,14 @@ import { translations, type Lang } from './translations.ts';
  * upload pre-fills the same TierACalculator component Tier A uses, marked contract_extracted and
  * fully correctable, per §3.1's "nothing more than pre-fill Tier A" scope.
  *
- * 'pro' (Tier C, same round, Stage 2 - "wire the engine, build the panel") now routes to TierCFlow -
- * the OLD payslip-upload-and-analyze bridge (POST /api/payslips/analyze-full, the pre-Tier-C interim
- * path labelled "interim version" since the language-regression round) is RETIRED this round, not
- * kept alongside the new one (spec §2's own warning against two engines/paths diverging). The
- * interim badge and notice are removed in the same commit, per BR4/Stage 2's own instruction: remove
- * them only when the card actually opens Tier C, not before.
+ * 'pro' (Tier C) routed to TierCFlow directly (single-payslip upload) through stage 2. Stage 3.0
+ * ("PRO accepts several documents") replaces that direct mount with ProDocuments - the multi-
+ * document shell that holds a contract, its annexes and payslips together, per §3.0.2's own
+ * "replace the single-file upload with an add/list/remove flow." TierCFlow.tsx itself is untouched
+ * and unimported here - ProDocuments calls its same `/api/tier-c/analyze` endpoint directly for a
+ * payslip entry, showing a compact status line rather than TierCFlow's own full discrepancy panel
+ * (deliberately out of this round's scope - see ProDocuments.tsx's own doc comment). Only PRO's
+ * direct entry point changes; TierCFlow's component and route are untouched.
  */
 type Mode = 'kalkulator' | 'analiza' | 'slownik' | 'account';
 type KalkulatorTier = 'szybki' | 'z_umowy' | 'pro' | null;
@@ -141,7 +143,7 @@ export function App() {
       {mode === 'kalkulator' && kalkulatorTier === 'pro' && (
         <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
-          <TierCFlow lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>
+          <ProDocuments lang={lang}/>
         </>
       )}
       {mode === 'analiza' && analizaModule === null && (

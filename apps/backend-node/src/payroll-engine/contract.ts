@@ -127,6 +127,57 @@ export function checkContractPlausibility(extraction: Pick<ContractExtraction, '
 }
 
 /**
+ * Stage 3.0 (audit v40, §3.0.3): "a sense check on hours-per-period, within a stated range - this
+ * is what would have caught the documented live error (64 hours per 4 weeks read as 64 hours per
+ * week)." `guaranteedHours`/`guaranteedHoursPeriodWeeks` is a PAIR - the same digits (64) are
+ * correct in both the real document and the misread; only the PERIOD unit was wrong. The bound has
+ * to be about what the pair IMPLIES (hours per week = guaranteedHours / guaranteedHoursPeriodWeeks),
+ * not either field alone - `checkContractPlausibility`'s own `hoursPerWeek` bound (168, a physical
+ * ceiling) cannot see this at all, since that field is a different one and 64 alone is far below it
+ * anyway.
+ *
+ * §2.2 applies here as much as anywhere else: checked against the actual statute rather than
+ * reasoned toward - Arbeidstijdenwet art. 5:7 lid 2 (confirmed via Rijksoverheid.nl,
+ * https://www.rijksoverheid.nl/vraag-en-antwoord/werktijden/wettelijke-regels-werktijden-en-rusttijden,
+ * checked 2026-09-25): an employee of 18+ may work "maximaal 60 uur per week" in ANY single week -
+ * an absolute ceiling that no CAO or company regulation may ever exceed ("u mag nooit meer dan 60
+ * uur per week werken"), independent of the averaging period (55/week over 4 weeks, 48/week over 16
+ * weeks are STRICTER long-run averages, not weaker - never usable as a looser bound here, since a
+ * period-length misread could make the implied per-week figure land anywhere). 60, not the 168 used
+ * for `hoursPerWeek` above, because THIS check targets the specific unit/period-confusion failure
+ * mode 2.0b names, not a bare physical impossibility - 64 > 60 is legally impossible for a single
+ * week under any circumstance, which is exactly the signal a genuine "64 per 4 weeks" misread as
+ * "64 per week" produces, while 64 hours spread over 4 weeks (16/week) is ordinary and unflagged.
+ */
+export interface ImplausibleHoursPerPeriod {
+  field: 'guaranteedHours';
+  guaranteedHours: number;
+  guaranteedHoursPeriodWeeks: number;
+  impliedHoursPerWeek: number;
+  code: 'exceeds_legal_hours_per_week';
+  bound: number;
+}
+
+const MAX_LEGAL_HOURS_PER_WEEK = 60; // Arbeidstijdenwet art. 5:7 lid 2 - see doc comment above
+
+export function checkHoursPerPeriodPlausibility(extraction: Pick<ContractExtraction, 'guaranteedHours' | 'guaranteedHoursPeriodWeeks'>): ImplausibleHoursPerPeriod[] {
+  const { guaranteedHours, guaranteedHoursPeriodWeeks } = extraction;
+  if (guaranteedHours === null || guaranteedHoursPeriodWeeks === null || guaranteedHoursPeriodWeeks <= 0) return [];
+  const impliedHoursPerWeek = guaranteedHours / guaranteedHoursPeriodWeeks;
+  if (impliedHoursPerWeek > MAX_LEGAL_HOURS_PER_WEEK) {
+    return [{
+      field: 'guaranteedHours',
+      guaranteedHours,
+      guaranteedHoursPeriodWeeks,
+      impliedHoursPerWeek: Math.round(impliedHoursPerWeek * 100) / 100,
+      code: 'exceeds_legal_hours_per_week',
+      bound: MAX_LEGAL_HOURS_PER_WEEK,
+    }];
+  }
+  return [];
+}
+
+/**
  * Derives an hourly-equivalent wage from whatever the contract actually states. Per audit
  * requirement D1: the check must be `period_wage / period_hours >= hourly WML`, computed from a
  * monthly salary when no hourly rate is stated — a contract with a monthly salary but no stated

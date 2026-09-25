@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeContract, checkContractPlausibility, resolveReferenceDate, type ContractExtraction } from './contract.js';
+import { analyzeContract, checkContractPlausibility, checkHoursPerPeriodPlausibility, resolveReferenceDate, type ContractExtraction } from './contract.js';
 
 function baseExtraction(overrides: Partial<ContractExtraction> = {}): ContractExtraction {
   return {
@@ -149,4 +149,36 @@ test('2.0b: both fields can be flagged at once, independently', () => {
   assert.equal(flags.length, 2);
   assert.ok(flags.some((f) => f.field === 'hoursPerWeek'));
   assert.ok(flags.some((f) => f.field === 'hourlyRate'));
+});
+
+/**
+ * Stage 3.0 (audit v40, §3.0.3): "a sense check on hours-per-period, within a stated range - this
+ * is what would have caught the documented live error (64 hours per 4 weeks read as 64 hours per
+ * week)." Reproduces the exact real shape: same digits (64), wrong period unit.
+ */
+test('3.0.3: the documented real error shape - 64 hours misread as per ONE week instead of per FOUR - is now caught', () => {
+  const flags = checkHoursPerPeriodPlausibility({ guaranteedHours: 64, guaranteedHoursPeriodWeeks: 1 });
+  assert.deepEqual(flags, [{ field: 'guaranteedHours', guaranteedHours: 64, guaranteedHoursPeriodWeeks: 1, impliedHoursPerWeek: 64, code: 'exceeds_legal_hours_per_week', bound: 60 }]);
+});
+
+test('3.0.3: the real, correctly-read Olympia figure (64 hours per 4 weeks, 16/week implied) is NOT flagged', () => {
+  const flags = checkHoursPerPeriodPlausibility({ guaranteedHours: 64, guaranteedHoursPeriodWeeks: 4 });
+  assert.deepEqual(flags, []);
+});
+
+test('3.0.3: exactly at the legal ceiling (60/week) is not flagged - only strictly past it is', () => {
+  const flags = checkHoursPerPeriodPlausibility({ guaranteedHours: 60, guaranteedHoursPeriodWeeks: 1 });
+  assert.deepEqual(flags, []);
+});
+
+test('3.0.3: one hour past the ceiling is flagged', () => {
+  const flags = checkHoursPerPeriodPlausibility({ guaranteedHours: 61, guaranteedHoursPeriodWeeks: 1 });
+  assert.equal(flags.length, 1);
+  assert.equal(flags[0]?.impliedHoursPerWeek, 61);
+});
+
+test('3.0.3: either field null, or a zero/negative period length, never gets flagged - absence and nonsensical periods are not implausibility claims', () => {
+  assert.deepEqual(checkHoursPerPeriodPlausibility({ guaranteedHours: null, guaranteedHoursPeriodWeeks: 1 }), []);
+  assert.deepEqual(checkHoursPerPeriodPlausibility({ guaranteedHours: 64, guaranteedHoursPeriodWeeks: null }), []);
+  assert.deepEqual(checkHoursPerPeriodPlausibility({ guaranteedHours: 64, guaranteedHoursPeriodWeeks: 0 }), []);
 });

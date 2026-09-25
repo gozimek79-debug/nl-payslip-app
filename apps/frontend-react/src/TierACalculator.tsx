@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Calculator as CalculatorIcon, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { translations, type Lang } from './translations.ts';
+import { buildScenarioWeekGrid, SCENARIO_TOTAL_HOURS } from './pro-parameter-sourcing.ts';
 
 /**
  * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3, §5b). Replaces the old Calculator.tsx
@@ -193,6 +194,15 @@ interface BlockedResponse {
 
 type TierAResponse = ComputedResponse | BlockedResponse;
 
+/** Stage 3.0a.3: one scenario's own outcome - 'blocked' covers both an explicit `status: 'blocked'`
+ * response and an `outcome.status === 'incomplete'` one (deductions skipped/estimated in a way that
+ * withholds a net figure) - either way, no payout to show for that scenario, never a fabricated one. */
+interface ScenarioResult {
+  hours: number;
+  status: 'loading' | 'computed' | 'blocked' | 'error';
+  payout: number | null;
+}
+
 type TierACopy = (typeof translations)['pl']['tierA'];
 
 function money(value: number): string {
@@ -299,20 +309,40 @@ function gridFromWeeklyHours(hoursPerWeek: number): WeekGridForm {
 }
 
 /** Tier B: which Tier A fields a contract extraction can pre-fill, and nothing more (§3.1 - "Tier A
- * ships when" isn't reopened; Tier B only feeds it). */
+ * ships when" isn't reopened; Tier B only feeds it).
+ *
+ * Stage 3.0a (audit v42): the five percent fields below are PRO's own addition - Tier B never
+ * prefills them (a contract states no percentages at all, confirmed in `contract.ts`'s own doc
+ * comment), so they stay `undefined` for every existing Tier B caller, unchanged behaviour. PRO
+ * sources them from a reproduced payslip instead (see `pro-parameter-sourcing.ts`), which is also
+ * why `sourceLabels` exists: Tier B's own badge is always the generic "(from contract)" wording,
+ * but PRO can source ANY of the eight fields from either a contract document or a payslip, so the
+ * badge must say which, and which document specifically. */
 export interface TierAContractPrefill {
   hourly_rate?: number;
   hours_per_week?: number;
   overtime_tier_threshold_hours?: number;
+  overtime_tier_1_percent?: number;
+  overtime_tier_2_percent?: number;
+  saturday_percent?: number;
+  sunday_percent?: number;
+  holiday_percent?: number;
+  /** Ready-to-render badge text per field - e.g. "z umowy" or "z paska: tydzień 12/2026" - shown
+   * instead of the generic `t.fromContract` wording whenever supplied. Undefined for a field that
+   * has a prefill value falls back to the generic wording, matching Tier B's own unchanged badge. */
+  sourceLabels?: Partial<Record<'hourlyRate' | 'hoursPerWeek' | 'threshold' | 'tier1Percent' | 'tier2Percent' | 'saturdayPercent' | 'sundayPercent' | 'holidayPercent', string>>;
 }
 
 export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', contractPrefill }: {
   lang: Lang;
   onNavigateToDictionary: () => void;
   /** 'B' when this render is Tier B (contract-prefilled) rather than plain Tier A - changes only
-   * the reliability wording (§3.4) and whether contract-provenance badges render; the calculator
-   * itself, per spec §2, is the same component and engine either way. */
-  tierMode?: 'A' | 'B';
+   * the reliability wording (§3.4) and whether contract-provenance badges render. 'PRO' (stage 3.0a)
+   * is PRO's own projection surface - same calculator, same engine (spec §5b: "the model does not
+   * change"), with parameter prefill from EITHER a contract or a reproduced payslip and the scenario-
+   * comparison section (40/50/60 hours) shown in addition. The calculator itself, per spec §2, is
+   * the same component and engine in all three modes. */
+  tierMode?: 'A' | 'B' | 'PRO';
   contractPrefill?: TierAContractPrefill;
 }) {
   const t = translations[lang].tierA;
@@ -322,16 +352,27 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
   const [weekGrids, setWeekGrids] = useState<WeekGridForm[]>(() => [contractPrefill?.hours_per_week !== undefined ? gridFromWeeklyHours(contractPrefill.hours_per_week) : emptyWeekGrid()]);
   const [activeWeek, setActiveWeek] = useState(0);
   const [overtimeThreshold, setOvertimeThreshold] = useState(() => (contractPrefill?.overtime_tier_threshold_hours !== undefined ? String(contractPrefill.overtime_tier_threshold_hours) : ''));
-  const [contractProvenance, setContractProvenance] = useState({
-    hourlyRate: contractPrefill?.hourly_rate !== undefined,
-    grid: contractPrefill?.hours_per_week !== undefined,
-    threshold: contractPrefill?.overtime_tier_threshold_hours !== undefined,
+  // Stage 3.0a: string badge text per field, not a bare boolean - `null` means no badge at all
+  // (never prefilled, or cleared by the user's own correction, per spec §5's own "Corrections" rule
+  // - editing a field always flips it back to plain `user_entered`, no badge). A non-null string IS
+  // the exact text to render: `contractPrefill.sourceLabels`'s own specific wording when PRO supplied
+  // one, else the generic `t.fromContract` Tier B has always used - so a plain truthiness check
+  // (`contractProvenance.X &&`) still works everywhere it already did, unchanged.
+  const [contractProvenance, setContractProvenance] = useState<Record<'hourlyRate' | 'grid' | 'threshold' | 'tier1Percent' | 'tier2Percent' | 'saturdayPercent' | 'sundayPercent' | 'holidayPercent', string | null>>({
+    hourlyRate: contractPrefill?.hourly_rate !== undefined ? (contractPrefill.sourceLabels?.hourlyRate ?? t.fromContract) : null,
+    grid: contractPrefill?.hours_per_week !== undefined ? (contractPrefill.sourceLabels?.hoursPerWeek ?? t.fromContract) : null,
+    threshold: contractPrefill?.overtime_tier_threshold_hours !== undefined ? (contractPrefill.sourceLabels?.threshold ?? t.fromContract) : null,
+    tier1Percent: contractPrefill?.overtime_tier_1_percent !== undefined ? (contractPrefill.sourceLabels?.tier1Percent ?? t.fromContract) : null,
+    tier2Percent: contractPrefill?.overtime_tier_2_percent !== undefined ? (contractPrefill.sourceLabels?.tier2Percent ?? t.fromContract) : null,
+    saturdayPercent: contractPrefill?.saturday_percent !== undefined ? (contractPrefill.sourceLabels?.saturdayPercent ?? t.fromContract) : null,
+    sundayPercent: contractPrefill?.sunday_percent !== undefined ? (contractPrefill.sourceLabels?.sundayPercent ?? t.fromContract) : null,
+    holidayPercent: contractPrefill?.holiday_percent !== undefined ? (contractPrefill.sourceLabels?.holidayPercent ?? t.fromContract) : null,
   });
-  const [overtimeTier1Percent, setOvertimeTier1Percent] = useState('');
-  const [overtimeTier2Percent, setOvertimeTier2Percent] = useState('');
-  const [saturdayPercent, setSaturdayPercent] = useState('');
-  const [sundayPercent, setSundayPercent] = useState('');
-  const [holidayPercent, setHolidayPercent] = useState('');
+  const [overtimeTier1Percent, setOvertimeTier1Percent] = useState(() => (contractPrefill?.overtime_tier_1_percent !== undefined ? String(contractPrefill.overtime_tier_1_percent) : ''));
+  const [overtimeTier2Percent, setOvertimeTier2Percent] = useState(() => (contractPrefill?.overtime_tier_2_percent !== undefined ? String(contractPrefill.overtime_tier_2_percent) : ''));
+  const [saturdayPercent, setSaturdayPercent] = useState(() => (contractPrefill?.saturday_percent !== undefined ? String(contractPrefill.saturday_percent) : ''));
+  const [sundayPercent, setSundayPercent] = useState(() => (contractPrefill?.sunday_percent !== undefined ? String(contractPrefill.sunday_percent) : ''));
+  const [holidayPercent, setHolidayPercent] = useState(() => (contractPrefill?.holiday_percent !== undefined ? String(contractPrefill.holiday_percent) : ''));
   const [surchargeLines, setSurchargeLines] = useState<SurchargeLineForm[]>([]);
   const [applyLoonheffingskorting, setApplyLoonheffingskorting] = useState(true);
   const [travelForm, setTravelForm] = useState<TravelForm>({ mode: 'none', ratePerKm: '', distance: '', distanceType: 'one_way', amountPerDay: '', days: '' });
@@ -345,6 +386,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
   const [response, setResponse] = useState<TierAResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [scenarioResults, setScenarioResults] = useState<ScenarioResult[] | null>(null);
 
   function changePeriodType(next: PeriodType) {
     setPeriodType(next);
@@ -354,7 +396,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
 
   function updateDay(weekIndex: number, day: DayKey, patch: Partial<DayHoursForm>) {
     setWeekGrids(current => current.map((grid, i) => (i === weekIndex ? { ...grid, [day]: { ...grid[day], ...patch } } : grid)));
-    setContractProvenance(current => (current.grid ? { ...current, grid: false } : current));
+    setContractProvenance(current => (current.grid ? { ...current, grid: null } : current));
   }
 
   function addWeek() {
@@ -375,14 +417,16 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
     setSurchargeLines(current => current.filter((_, i) => i !== index));
   }
 
-  async function calculate(event: React.FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setError('');
-    const body = {
+  /** Stage 3.0a: pulled out of `calculate()` unchanged so scenario comparison (below) can reuse the
+   * SAME request-building logic with only `week_grids` overridden - one function, every caller, so
+   * the scenario figures can never quietly diverge from what a real submit would compute for the
+   * same parameters (the exact "one function, two callers" discipline this codebase already applies
+   * everywhere else, e.g. `resolveTaxableBasePosition` on the backend). */
+  function buildBody(weekGridsOverride?: Array<ReturnType<typeof weekGridToApi>>) {
+    return {
       period_type: periodType,
       hourly_rate: parseDecimal(hourlyRate),
-      week_grids: weekGrids.map(weekGridToApi),
+      week_grids: weekGridsOverride ?? weekGrids.map(weekGridToApi),
       overtime_tier_threshold_hours: parseNullableDecimal(overtimeThreshold),
       overtime_tier_1_percent: parseNullableDecimal(overtimeTier1Percent),
       overtime_tier_2_percent: parseNullableDecimal(overtimeTier2Percent),
@@ -408,11 +452,17 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
           : {}),
       },
     };
+  }
+
+  async function calculate(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    setError('');
     try {
       const res = await fetch('/api/tier-a/calculate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(buildBody()),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -430,6 +480,33 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
     } finally {
       setLoading(false);
     }
+  }
+
+  /** Stage 3.0a.3: "scenario comparison - at minimum 40 vs. 50 vs. 60 hours, side by side, from one
+   * parameter set." Reuses every currently-entered parameter (rate, percents, threshold, deductions,
+   * travel, vakantiegeld) via `buildBody()` above - only `week_grids` changes, to
+   * `buildScenarioWeekGrid`'s own stated, even Mon-Fri distribution (see that function's own doc
+   * comment for the reasoning). Never a second computation path: the exact same
+   * `/api/tier-a/calculate` a plain submit calls. */
+  async function runScenarios() {
+    setScenarioResults(SCENARIO_TOTAL_HOURS.map(hours => ({ hours, status: 'loading', payout: null })));
+    const results = await Promise.all(SCENARIO_TOTAL_HOURS.map(async (hours): Promise<ScenarioResult> => {
+      try {
+        const res = await fetch('/api/tier-a/calculate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildBody([buildScenarioWeekGrid(hours)])),
+        });
+        const data = await res.json() as TierAResponse & { error_code?: string };
+        if (!res.ok) return { hours, status: 'error', payout: null };
+        if (data.status === 'blocked') return { hours, status: 'blocked', payout: null };
+        if (data.outcome.status !== 'complete') return { hours, status: 'blocked', payout: null };
+        return { hours, status: 'computed', payout: data.outcome.result.payout_amount };
+      } catch {
+        return { hours, status: 'error', payout: null };
+      }
+    }));
+    setScenarioResults(results);
   }
 
   const currentWeek = weekGrids[activeWeek] ?? emptyWeekGrid();
@@ -453,11 +530,11 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
             </select>
           </label>
 
-          <label>{t.hourlyRate} {contractProvenance.hourlyRate && <span className="form-note contract-badge">({t.fromContract})</span>}
-            <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => { setHourlyRate(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, hourlyRate: false })); }}/></div>
+          <label>{t.hourlyRate} {contractProvenance.hourlyRate && <span className="form-note contract-badge">({contractProvenance.hourlyRate})</span>}
+            <div className="money-input"><span>€</span><input required inputMode="decimal" value={hourlyRate} onChange={event => { setHourlyRate(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, hourlyRate: null })); }}/></div>
           </label>
 
-          <h3 className="calc-subheading">{t.gridTitle} {contractProvenance.grid && <span className="form-note contract-badge">({t.fromContract})</span>}</h3>
+          <h3 className="calc-subheading">{t.gridTitle} {contractProvenance.grid && <span className="form-note contract-badge">({contractProvenance.grid})</span>}</h3>
           <p className="form-note">{t.gridHint}</p>
 
           {weekGrids.length > 1 && (
@@ -516,26 +593,26 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
             </table>
           </div>
 
-          <h3 className="calc-subheading">{t.overtimeThresholdTitle} {contractProvenance.threshold && <span className="form-note contract-badge">({t.fromContract})</span>}</h3>
+          <h3 className="calc-subheading">{t.overtimeThresholdTitle} {contractProvenance.threshold && <span className="form-note contract-badge">({contractProvenance.threshold})</span>}</h3>
           <label>{t.overtimeThresholdLabel}
-            <div className="money-input"><span>h</span><input inputMode="decimal" value={overtimeThreshold} onChange={event => { setOvertimeThreshold(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, threshold: false })); }}/></div>
+            <div className="money-input"><span>h</span><input inputMode="decimal" value={overtimeThreshold} onChange={event => { setOvertimeThreshold(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, threshold: null })); }}/></div>
           </label>
           <p className="form-note">{t.overtimeThresholdHint}</p>
           <div className="fields-grid">
-            <label>{t.overtimeTier1Percent}
-              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier1Percent} onChange={event => setOvertimeTier1Percent(sanitizeDecimal(event.target.value))}/></div>
+            <label>{t.overtimeTier1Percent} {contractProvenance.tier1Percent && <span className="form-note contract-badge">({contractProvenance.tier1Percent})</span>}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier1Percent} onChange={event => { setOvertimeTier1Percent(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, tier1Percent: null })); }}/></div>
             </label>
-            <label>{t.overtimeTier2Percent}
-              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier2Percent} onChange={event => setOvertimeTier2Percent(sanitizeDecimal(event.target.value))}/></div>
+            <label>{t.overtimeTier2Percent} {contractProvenance.tier2Percent && <span className="form-note contract-badge">({contractProvenance.tier2Percent})</span>}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={overtimeTier2Percent} onChange={event => { setOvertimeTier2Percent(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, tier2Percent: null })); }}/></div>
             </label>
-            <label>{t.saturdayPercent}
-              <div className="money-input"><span>%</span><input inputMode="decimal" value={saturdayPercent} onChange={event => setSaturdayPercent(sanitizeDecimal(event.target.value))}/></div>
+            <label>{t.saturdayPercent} {contractProvenance.saturdayPercent && <span className="form-note contract-badge">({contractProvenance.saturdayPercent})</span>}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={saturdayPercent} onChange={event => { setSaturdayPercent(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, saturdayPercent: null })); }}/></div>
             </label>
-            <label>{t.sundayPercent}
-              <div className="money-input"><span>%</span><input inputMode="decimal" value={sundayPercent} onChange={event => setSundayPercent(sanitizeDecimal(event.target.value))}/></div>
+            <label>{t.sundayPercent} {contractProvenance.sundayPercent && <span className="form-note contract-badge">({contractProvenance.sundayPercent})</span>}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={sundayPercent} onChange={event => { setSundayPercent(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, sundayPercent: null })); }}/></div>
             </label>
-            <label>{t.holidayPercentLabel}
-              <div className="money-input"><span>%</span><input inputMode="decimal" value={holidayPercent} onChange={event => setHolidayPercent(sanitizeDecimal(event.target.value))}/></div>
+            <label>{t.holidayPercentLabel} {contractProvenance.holidayPercent && <span className="form-note contract-badge">({contractProvenance.holidayPercent})</span>}
+              <div className="money-input"><span>%</span><input inputMode="decimal" value={holidayPercent} onChange={event => { setHolidayPercent(sanitizeDecimal(event.target.value)); setContractProvenance(c => ({ ...c, holidayPercent: null })); }}/></div>
             </label>
           </div>
           <p className="form-note">{t.percentHint}</p>
@@ -654,6 +731,27 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
           </div>
         </aside>
       </div>
+
+      {tierMode === 'PRO' && (
+        <div className="calc-scenario-section">
+          <h2>{t.scenarioTitle}</h2>
+          <p className="form-note">{t.scenarioLead}</p>
+          <button type="button" className="secondary" onClick={() => void runScenarios()}>{t.scenarioRun}</button>
+          {scenarioResults && (
+            <div className="calc-scenario-results">
+              {scenarioResults.map(scenario => (
+                <article key={scenario.hours} className="calc-scenario-card">
+                  <h3>{t.scenarioHoursLabel(scenario.hours)}</h3>
+                  {scenario.status === 'loading' && <p>{t.calculating}</p>}
+                  {scenario.status === 'computed' && <p className="calc-scenario-figure">{money(scenario.payout as number)}</p>}
+                  {scenario.status === 'blocked' && <p className="form-note">{t.scenarioBlocked}</p>}
+                  {scenario.status === 'error' && <p className="status error">{t.error}</p>}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {response && response.status === 'blocked' && (
         <div className="calc-result" id="tier-a-result">

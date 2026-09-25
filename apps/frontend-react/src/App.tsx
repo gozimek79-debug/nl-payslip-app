@@ -143,7 +143,7 @@ export function App() {
       {mode === 'kalkulator' && kalkulatorTier === 'pro' && (
         <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
-          <ProDocuments lang={lang}/>
+          <ProDocuments lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>
         </>
       )}
       {mode === 'analiza' && analizaModule === null && (

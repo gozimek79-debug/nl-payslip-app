@@ -3,18 +3,30 @@ import { Trash2, Upload } from 'lucide-react';
 import { renderPageImages, extractTextItems } from './local-ocr.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
+import { derivePayslipOvertimePercents, selectMostRecentReproducedPayslip, type ReproducedPayslipCandidate } from './pro-parameter-sourcing.ts';
+import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 
 /**
  * Stage 3.0 (audit v40, "PRO accepts several documents"): the shell that replaces PRO's old
- * single-file upload. Not the projection itself (3.0a, later) - this round adds, lists, routes and
- * extracts several documents together, and shows the contract TIMELINE (base + annexes) resolved as
- * of a given date. A payslip goes through the existing, unchanged Tier C `/analyze` (its own full
- * discrepancy panel is deliberately NOT reproduced here - that is TierCFlow.tsx's own job, and
- * pulling it apart to embed here would be a bigger, riskier change than this round's own scope; a
- * payslip entry shows a compact status line only). A contract/annex goes through the existing,
- * unchanged `/api/contracts/analyze`; once every contract/annex entry has an extraction, they are
- * sent together to the new `/api/contracts/resolve-timeline`, whose response is what "the values in
- * force on that date" (§2.12) actually looks like on screen.
+ * single-file upload - adds, lists, routes and extracts several documents together, and shows the
+ * contract TIMELINE (base + annexes) resolved as of a given date. A payslip goes through the
+ * existing, unchanged Tier C `/analyze` (its own full discrepancy panel is deliberately NOT
+ * reproduced here - that is TierCFlow.tsx's own job; a payslip entry shows a compact status line
+ * only). A contract/annex goes through the existing, unchanged `/api/contracts/analyze`; once every
+ * contract/annex entry has an extraction, they are sent together to `/api/contracts/resolve-timeline`,
+ * whose response is what "the values in force on that date" (§2.12) actually looks like on screen.
+ *
+ * Stage 3.0a (audit v42): the actual point of PRO (spec §5) - the projection. Rate, hours per week,
+ * the overtime threshold, and guaranteed hours come from the resolved timeline above (no new
+ * resolver, reused as-is). Overtime tier percentages come from the most recent payslip the Tier C
+ * gate could FULLY reproduce (`pro-parameter-sourcing.ts`'s own `selectMostRecentReproducedPayslip`
+ * - "a payslip that failed verification is never used as a parameter source, however recent", spec
+ * §5's own exact rule). Saturday/Sunday/holiday percentages are never sourced this round - no
+ * reference document labels a line by weekday (checked directly against FIXTURES-paski-referencyjne.md,
+ * not assumed), so there is no evidence to source them from; they stay unknown, same as a genuinely
+ * absent value anywhere else in this codebase. `TierACalculator` itself is reused unchanged as the
+ * projection surface (spec §5b: "the model does not change"), mounted with `tierMode="PRO"` once at
+ * least one document has been analyzed.
  */
 
 interface ContractExtraction {
@@ -44,6 +56,23 @@ const EFFECTIVE_CONTRACT_FIELDS = [
 
 type DocStatus = 'pending' | 'processing' | 'done' | 'error';
 
+interface PayslipHourLineForSummary { category: string; percent: number | null }
+
+/** Stage 3.0a: everything the parameter-sourcing layer needs from a processed payslip, beyond the
+ * compact status line 3.0 already showed. `fullyReproduced` is this file's own operational reading of
+ * spec §5's "a payslip the engine could fully reproduce": the Tier C consistency gate passed
+ * (`status: 'ok'`) AND the discrepancy list is genuinely empty - not merely every entry being an
+ * unconfirmed 'confirm'-band question, since a question is not yet a verified fact (stage 1's own
+ * three-band model). */
+interface PayslipSummary {
+  ok: boolean;
+  net: number | null;
+  periodLabel: string | null;
+  periodEndDate: string | null;
+  fullyReproduced: boolean;
+  hourLines: PayslipHourLineForSummary[];
+}
+
 interface DocEntry {
   id: string;
   file: File;
@@ -54,7 +83,7 @@ interface DocEntry {
   errorMessage?: string;
   // Populated once status === 'done'.
   contractExtraction?: ContractExtraction;
-  payslipSummary?: { ok: true; net: number | null } | { ok: false };
+  payslipSummary?: PayslipSummary;
 }
 
 function todayIso(): string {
@@ -65,13 +94,20 @@ function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function ProDocuments({ lang }: { lang: Lang }) {
+export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
   const t = translations[lang].proDocuments;
   const inputRef = useRef<HTMLInputElement>(null);
   const [docs, setDocs] = useState<DocEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+  // Stage 3.0a: `TierACalculator`'s own prefill only reads `contractPrefill` at MOUNT (a lazy
+  // `useState` initializer, matching Tier B's own existing, unchanged behaviour) - bumped on every
+  // completed submission so a second submit (a new payslip added, a later as-of-date) remounts the
+  // calculator with fresh values instead of silently keeping the first submission's stale prefill.
+  const [submitCount, setSubmitCount] = useState(0);
   const [asOfDate, setAsOfDate] = useState(todayIso());
   const [effectiveContract, setEffectiveContract] = useState<EffectiveContract | null>(null);
+  const [reproducedPayslip, setReproducedPayslip] = useState<ReproducedPayslipCandidate | null>(null);
   const [globalError, setGlobalError] = useState('');
 
   function handleFilesAdded(files: FileList | null) {
@@ -103,11 +139,23 @@ export function ProDocuments({ lang }: { lang: Lang }) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ images, documentText, renderStep }),
     });
-    const data = await res.json() as { status?: 'ok' | 'unreliable'; outcome?: { status: string; result?: { payout_amount: number } }; error_code?: string };
+    const data = await res.json() as {
+      status?: 'ok' | 'unreliable';
+      outcome?: { status: string; result?: { payout_amount: number } };
+      discrepancies?: unknown[];
+      period?: { period_label: string | null; period_end_date: string | null; hour_lines?: PayslipHourLineForSummary[] };
+      error_code?: string;
+    };
     if (!res.ok || !data.status) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
-    if (data.status === 'unreliable') return { status: 'done', payslipSummary: { ok: false } };
+    const periodLabel = data.period?.period_label ?? null;
+    const periodEndDate = data.period?.period_end_date ?? null;
+    const hourLines = data.period?.hour_lines ?? [];
+    if (data.status === 'unreliable') {
+      return { status: 'done', payslipSummary: { ok: false, net: null, periodLabel, periodEndDate, fullyReproduced: false, hourLines } };
+    }
     const net = data.outcome?.status === 'complete' ? data.outcome.result?.payout_amount ?? null : null;
-    return { status: 'done', payslipSummary: { ok: true, net } };
+    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0;
+    return { status: 'done', payslipSummary: { ok: true, net, periodLabel, periodEndDate, fullyReproduced, hourLines } };
   }
 
   async function processContract(entry: DocEntry): Promise<Partial<DocEntry>> {
@@ -162,7 +210,22 @@ export function ProDocuments({ lang }: { lang: Lang }) {
         setGlobalError(t.error);
       }
     }
+
+    // Stage 3.0a.2: "from the most recent payslip the engine could fully reproduce" - spec's own
+    // rule, applied via the shared, tested selector (never re-decided inline here).
+    const payslipEntries = processed.filter((e) => routeForDocument(e.documentType) === 'tier_c' && e.payslipSummary);
+    const candidates: ReproducedPayslipCandidate[] = payslipEntries.map((e) => ({
+      label: e.label,
+      periodLabel: e.payslipSummary?.periodLabel ?? null,
+      periodEndDate: e.payslipSummary?.periodEndDate ?? null,
+      fullyReproduced: e.payslipSummary?.fullyReproduced ?? false,
+      hourLines: e.payslipSummary?.hourLines ?? [],
+    }));
+    setReproducedPayslip(selectMostRecentReproducedPayslip(candidates));
+
     setSubmitting(false);
+    setHasSubmitted(true);
+    setSubmitCount((n) => n + 1);
   }
 
   function fieldLabel(field: keyof EffectiveContract): string {
@@ -182,6 +245,38 @@ export function ProDocuments({ lang }: { lang: Lang }) {
     if (reason.code === 'disagreement') return t.reasonDisagreement(reason.documentLabels.join(' / '));
     return t.reasonUndated(reason.documentLabel);
   }
+
+  // Stage 3.0a.2/3.0a.3: the projection's own prefill - rate/hours/threshold from the resolved
+  // timeline (reused as-is, no new resolver), the two overtime tier percentages from the most
+  // recent fully-reproduced payslip (derived via the shared, tested function - never re-decided
+  // inline). Undefined fields stay genuinely blank in the calculator, never defaulted - exactly the
+  // same "unknown, never guessed" discipline every other resolver in this codebase already follows.
+  const derivedPercents = reproducedPayslip ? derivePayslipOvertimePercents(reproducedPayslip.hourLines) : { tier1: null, tier2: null };
+  function contractField(field: keyof EffectiveContract): number | undefined {
+    const value = effectiveContract?.[field]?.value;
+    return typeof value === 'number' ? value : undefined;
+  }
+  function contractSourceLabel(field: keyof EffectiveContract): string | undefined {
+    const source = effectiveContract?.[field]?.source;
+    return source ? t.sourceLabel(source.label) : undefined;
+  }
+  const payslipSourceLabel = reproducedPayslip ? t.payslipSourceLabel(reproducedPayslip.label, reproducedPayslip.periodLabel ?? '—') : undefined;
+  const contractPrefill: TierAContractPrefill | undefined = hasSubmitted
+    ? {
+        hourly_rate: contractField('hourlyRate'),
+        hours_per_week: contractField('hoursPerWeek'),
+        overtime_tier_threshold_hours: contractField('overtimeTierThresholdHours'),
+        overtime_tier_1_percent: derivedPercents.tier1 ?? undefined,
+        overtime_tier_2_percent: derivedPercents.tier2 ?? undefined,
+        sourceLabels: {
+          hourlyRate: contractSourceLabel('hourlyRate'),
+          hoursPerWeek: contractSourceLabel('hoursPerWeek'),
+          threshold: contractSourceLabel('overtimeTierThresholdHours'),
+          tier1Percent: derivedPercents.tier1 !== null ? payslipSourceLabel : undefined,
+          tier2Percent: derivedPercents.tier2 !== null ? payslipSourceLabel : undefined,
+        },
+      }
+    : undefined;
 
   return (
     <section className="flow-page">
@@ -268,6 +363,19 @@ export function ProDocuments({ lang }: { lang: Lang }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {hasSubmitted && (
+        <div className="pro-projection">
+          <h2>{t.projectionTitle}</h2>
+          {/* Spec §5's own "Parameter source when several payslips exist" - silent selection is not
+              acceptable, so which payslip supplied the overtime percentages (if any did) is stated
+              plainly here, not left implicit in the calculator's own badges alone. */}
+          {reproducedPayslip
+            ? <p className="form-note">{t.projectionPayslipUsed(reproducedPayslip.label, reproducedPayslip.periodLabel ?? '—')}</p>
+            : <p className="form-note">{t.projectionNoPayslip}</p>}
+          <TierACalculator key={submitCount} lang={lang} tierMode="PRO" contractPrefill={contractPrefill} onNavigateToDictionary={onNavigateToDictionary}/>
         </div>
       )}
     </section>

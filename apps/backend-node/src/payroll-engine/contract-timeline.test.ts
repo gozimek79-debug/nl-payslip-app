@@ -95,3 +95,29 @@ test('3.0.4: a document with no value for a field never displaces one that does,
   const effective = resolveEffectiveContract([base, annex], '2026-06-01');
   assert.equal(effective.hourlyRate.value, 15.55, 'a null in the annex must not be treated as an override to null');
 });
+
+/**
+ * Stage 3.0.5 (audit v41): "the blank annex date gap." RAPORT-cursor-3.0.md's own live
+ * reproduction: `effectiveDate === null` was the only check for "undated" - a blank string ('')
+ * satisfied neither the undated branch nor a real date's ordering, so it slipped through as if it
+ * were a real, very-early date, tying with (and discarding) a known base value via a false
+ * "disagreement". Fixed via `hasUsableEffectiveDate`, shared by both the applicability and the
+ * undated checks - these two tests mirror the existing null-date tests exactly, with '' in place
+ * of null, to prove the two cases are now handled identically.
+ */
+test("3.0.5: an annex with effectiveDate: '' (a cleared date field, not a genuinely unread one) setting a field the base ALSO sets - the base value must survive, never a false disagreement", () => {
+  const base = doc('base', null, 'base contract', { hourlyRate: 15.55 });
+  const blankAnnex = doc('annex', '', 'blank date', { hourlyRate: 99 });
+  const effective = resolveEffectiveContract([base, blankAnnex], '2026-06-01');
+  assert.equal(effective.hourlyRate.value, 15.55, `expected the known base value to survive, got ${JSON.stringify(effective.hourlyRate)}`);
+  assert.equal(effective.hourlyRate.source?.label, 'base contract');
+  assert.equal(effective.hourlyRate.reason, null, 'must not be reported as a disagreement between base and a blank-dated annex');
+});
+
+test("3.0.5: an annex with effectiveDate: '' setting a field NOTHING ELSE sets - undated_document, exactly like the existing null-date case", () => {
+  const base = doc('base', null, 'base contract', {});
+  const blankAnnex = doc('annex', '', 'blank date', { caoName: 'ABU-CAO' });
+  const effective = resolveEffectiveContract([base, blankAnnex], '2026-06-01');
+  assert.equal(effective.caoName.value, null);
+  assert.deepEqual(effective.caoName.reason, { code: 'undated_document', documentLabel: 'blank date' });
+});

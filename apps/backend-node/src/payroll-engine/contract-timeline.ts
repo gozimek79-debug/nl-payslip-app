@@ -67,17 +67,31 @@ export type EffectiveContract = { [K in ContractFieldKey]: EffectiveField<Contra
 // a precisely-typed EffectiveContract slot can't both be generic AND satisfy the compiler per
 // iteration (a well-known mapped-type-loop limitation, not a laxity here) - `resolveEffectiveContract`
 // below is what keeps the PUBLIC shape fully typed per field; this helper stays internal.
+// Stage 3.0.5 (audit v41): "an annex whose effectiveDate is '' is not null, so it is not caught by
+// the undated branch." Confirmed live by Cursor (RAPORT-cursor-3.0.md): base 15.55, a blank-dated
+// annex at 99, asked as of 2026-06-01 -> hourlyRate came back `disagreement` between the base and
+// the blank annex - a known real value discarded for "unknown," worse than either candidate alone.
+// A blank string reaches here because the date `<input>` (ProDocuments.tsx) writes
+// `event.target.value`, which is `''` (not `null`) once a filled date is cleared - `''` also happens
+// to satisfy `'' <= asOfDate` (the lexicographic minimum), so the old `!== null` check waved it
+// straight through as if it were a real, very-early date. One predicate, used everywhere an
+// annex's own date is tested, so "does this document have a usable date" can never again be
+// answered two different ways in two different branches.
+function hasUsableEffectiveDate(doc: ContractDocumentEntry): boolean {
+  return doc.effectiveDate !== null && doc.effectiveDate !== '';
+}
+
 function resolveFieldUntyped(field: ContractFieldKey, documents: ContractDocumentEntry[], asOfDate: string): EffectiveField<unknown> {
   const withValue = documents
     .map((doc, documentIndex) => ({ doc, documentIndex, value: doc.extraction[field] as unknown }))
     .filter((c) => c.value !== null);
 
   // A candidate is "in force as of asOfDate" when it is the base contract (always available - see
-  // the module doc comment) or a dated annex whose effective date has arrived.
-  const applicable = withValue.filter((c) => c.doc.role === 'base' || (c.doc.effectiveDate !== null && c.doc.effectiveDate <= asOfDate));
-  // An annex that DOES set this field but whose own effective date is unread - never silently
-  // dropped without a trace, never silently trusted either.
-  const undated = withValue.filter((c) => c.doc.role === 'annex' && c.doc.effectiveDate === null);
+  // the module doc comment) or an annex with a USABLE effective date that has arrived.
+  const applicable = withValue.filter((c) => c.doc.role === 'base' || (hasUsableEffectiveDate(c.doc) && (c.doc.effectiveDate as string) <= asOfDate));
+  // An annex that DOES set this field but whose own effective date is unread (null) OR unusable
+  // (blank) - never silently dropped without a trace, never silently trusted either.
+  const undated = withValue.filter((c) => c.doc.role === 'annex' && !hasUsableEffectiveDate(c.doc));
 
   if (applicable.length === 0) {
     const firstUndated = undated[0];
@@ -88,9 +102,15 @@ function resolveFieldUntyped(field: ContractFieldKey, documents: ContractDocumen
   }
 
   // Base sorts before every annex (it is the layer everything else overrides); among annexes, the
-  // one with the latest effective date on or before asOfDate wins.
-  const sortKey = (c: (typeof applicable)[number]) => (c.doc.role === 'base' ? '' : (c.doc.effectiveDate as string));
-  const maxKey = applicable.reduce((max, c) => (sortKey(c) > max ? sortKey(c) : max), '');
+  // one with the latest effective date on or before asOfDate wins. `BASE_SORT_KEY` is the
+  // lexicographic minimum of every possible ISO date string, so it sorts below any real annex date
+  // by construction - and, since `hasUsableEffectiveDate` above has already excluded every
+  // blank/null annex from `applicable` entirely, no annex reaching this comparison can ever equal
+  // it either. The only tie this can ever produce from here on is two real annexes sharing the
+  // same real, on-or-before date - never base-vs-annex.
+  const BASE_SORT_KEY = '';
+  const sortKey = (c: (typeof applicable)[number]) => (c.doc.role === 'base' ? BASE_SORT_KEY : (c.doc.effectiveDate as string));
+  const maxKey = applicable.reduce((max, c) => (sortKey(c) > max ? sortKey(c) : max), BASE_SORT_KEY);
   const atMax = applicable.filter((c) => sortKey(c) === maxKey);
 
   if (atMax.length > 1) {

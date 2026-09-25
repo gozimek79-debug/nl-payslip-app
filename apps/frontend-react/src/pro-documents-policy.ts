@@ -54,7 +54,15 @@ export function routeForDocument(documentType: ProDocumentType): ProDocumentRout
 /** Stage 3.0 (§3.0.4): "the multi-add/remove UI" exit criterion includes not letting a submission
  * go out half-specified - an annex with no effective date at all cannot be placed in
  * contract-timeline.ts's own resolver (it would just report `undated_document` for everything it
- * sets), so the UI refuses to submit rather than send something the backend can only partially use. */
+ * sets), so the UI refuses to submit rather than send something the backend can only partially use.
+ *
+ * Stage 3.0.5 (audit v41): "a cleared date should put the entry back into 'not ready'." The date
+ * `<input>`'s own `onChange` writes `event.target.value`, which is `''` (not `null`) once a filled
+ * date is cleared - a bare `!== null` check here let that blank-but-present string through as
+ * "ready," reaching the resolver as if it were a real date (RAPORT-cursor-3.0.md's own finding, the
+ * exact live reproduction: a known base value silently replaced by "disagreement"). Checked the
+ * same way `contract-timeline.ts`'s own `hasUsableEffectiveDate` does, so the two layers can never
+ * disagree about what counts as "no date." */
 export function isReadyToSubmit(list: ProDocumentMeta[]): boolean {
-  return list.length > 0 && list.every((e) => e.documentType !== 'contract_annex' || e.effectiveDate !== null);
+  return list.length > 0 && list.every((e) => e.documentType !== 'contract_annex' || (e.effectiveDate !== null && e.effectiveDate !== ''));
 }

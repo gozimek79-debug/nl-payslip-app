@@ -69,3 +69,19 @@ test('3.0.4: isReadyToSubmit is true once every annex has a date - base/payslip 
   ];
   assert.equal(isReadyToSubmit(list), true);
 });
+
+/**
+ * Stage 3.0.5 (audit v41): "an annex entry whose date is filled then cleared - confirm
+ * isReadyToSubmit returns not-ready." The date `<input>`'s own onChange writes
+ * `event.target.value`, which is `''` (not `null`) once a filled date is cleared -
+ * `setEffectiveDate` faithfully stores whatever the input sends, so this reproduces exactly what
+ * the real component does on a clear, without needing a DOM runner: fill, then clear, same as a
+ * user would.
+ */
+test("3.0.5: isReadyToSubmit is false once a filled annex date is CLEARED (becomes '', not null) - the same 'not ready' state as never having filled it", () => {
+  const filled = setEffectiveDate([{ id: 'a', documentType: 'contract_annex', effectiveDate: null }], 'a', '2026-03-01');
+  assert.equal(isReadyToSubmit(filled), true, 'sanity: filled is ready');
+  const cleared = setEffectiveDate(filled, 'a', '');
+  assert.equal(cleared[0]?.effectiveDate, '', 'sanity: the cleared value really is the empty string, not null');
+  assert.equal(isReadyToSubmit(cleared), false, 'a cleared date must put the entry back into not-ready, exactly like never having filled it');
+});

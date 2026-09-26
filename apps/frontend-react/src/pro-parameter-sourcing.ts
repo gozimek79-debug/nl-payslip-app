@@ -32,36 +32,66 @@ export interface ParameterSource {
 }
 
 /** A minimal, DOM-free mirror of a payslip's own hour line - only what this file's own derivation
- * needs (category and the per-line percent), never the full `TierCPeriodResponse` shape. */
+ * needs (category, the per-line percent, and `adds_hours` - see `derivePayslipOvertimePercents`'s
+ * own doc comment for why the last one is load-bearing, not incidental), never the full
+ * `TierCPeriodResponse` shape. */
 export interface PayslipHourLineLike {
   category: string;
   percent: number | null;
+  adds_hours: boolean;
 }
 
 export interface DerivedOvertimePercents {
   tier1: number | null;
   tier2: number | null;
+  /** Stage 3.0a.5 (§Fix 3): any further distinct eligible percentage beyond the two the grid's own
+   * two tiers can hold - the grid has no third slot, so one has to go, but it must be visible, not
+   * silently dropped (§2.1/§2.3). Raw, as printed on the payslip (before the tier1/tier2 -100
+   * conversion below), so a reader can check it directly against the document. Empty when at most
+   * two distinct eligible percentages were found. */
+  excludedPercents: number[];
 }
 
 /**
  * Turns a reproduced payslip's own hour lines into "this employer's own overtime tier 1 %, tier 2
- * %". The ordering (the LOWER of two distinct percentages is tier 1, the higher is tier 2) is a
- * genuine arithmetic fact - tier 2 pays MORE than tier 1 by construction, that is what "tier 2"
- * means - never a guessed mapping from percentage to tier number. A single distinct percentage means
- * the document shows no evidence the worker ever crossed into a second tier that period - tier 1 is
- * known, tier 2 stays unknown (never assumed equal, never assumed absent).
+ * %" - the PREMIUM-above-base percentages `TierACalculator`'s own grid formula
+ * (`hours * rate * (1 + percent / 100)`, `tier-a.ts`) expects.
+ *
+ * Stage 3.0a.5 (§Fix 1, a MAJOR pricing bug in 3.0a's own first version): only an `adds_hours: true`
+ * line (`category: 'overtime'`) belongs here at all, and its own printed percent is the FULL paid
+ * multiplier (e.g. "125%" means paid at 125% of the base rate) - it needs `percent - 100` to become
+ * the premium the grid's formula wants (25). Confirmed against PKF's own real fixture
+ * (`tier-c.test.ts`): "Overwerk uren 125%" (4.0h) and "Overwerk uren 150%" (18.25h) at a 17.09 base
+ * rate reproduce the fixture's own printed amounts (85.45 and 467.84) to the cent ONLY with this
+ * conversion - feeding 125/150 straight into the grid (3.0a's own original bug) prices the same
+ * hours at 225%/250% instead, exactly the live-confirmed defect (a reproduced 150 priced 10 hours
+ * at 405.00 instead of the correct 243.00).
+ *
+ * An `adds_hours: false` line (`category: 'irregular_surcharge'`, Olympia's own "onregelm."
+ * surcharges) is a DIFFERENT concept entirely - a bonus on hours ALREADY counted elsewhere (a
+ * REGULAR line), never additional hours worked - and it already has its own, correctly-working home
+ * in Tier A's existing free-form surcharge lines (`tier-a.ts`'s `surcharge_lines`, untouched by this
+ * round: `amount = hours * rate * percent / 100`, no conversion, matching Olympia's own real numbers
+ * exactly as printed already). Routing such a line into the day-grid's overtime tiers instead would
+ * be wrong twice over - the wrong formula, applied to hours that were never actually additional -
+ * so it is excluded here entirely, not converted and not counted as a "dropped" third value (§Fix 3
+ * is about a genuine THIRD eligible overtime tier, not an ineligible surcharge line).
  */
 export function derivePayslipOvertimePercents(hourLines: PayslipHourLineLike[]): DerivedOvertimePercents {
-  const distinctPercents = Array.from(
+  const rawPercents = Array.from(
     new Set(
       hourLines
-        .filter((line) => (line.category === 'overtime' || line.category === 'irregular_surcharge') && line.percent !== null)
+        .filter((line) => line.category === 'overtime' && line.adds_hours && line.percent !== null)
         .map((line) => line.percent as number),
     ),
   ).sort((a, b) => a - b);
+  const tier1Raw = rawPercents[0] ?? null;
+  const tier2Raw = rawPercents.length > 1 ? (rawPercents[rawPercents.length - 1] ?? null) : null;
+  const excludedPercents = rawPercents.length > 2 ? rawPercents.slice(1, -1) : [];
   return {
-    tier1: distinctPercents[0] ?? null,
-    tier2: distinctPercents.length > 1 ? distinctPercents[distinctPercents.length - 1] ?? null : null,
+    tier1: tier1Raw !== null ? tier1Raw - 100 : null,
+    tier2: tier2Raw !== null ? tier2Raw - 100 : null,
+    excludedPercents,
   };
 }
 
@@ -116,14 +146,22 @@ export interface OvertimeTierThreshold {
  * A frontend mirror of `hour-grid.ts`'s own `resolveOvertimeTierThreshold` - there is no
  * shared-types package between the two projects (the same reason `TierCFlow.tsx` mirrors
  * `extraction-consistency.ts`'s own types instead of importing them), so this is copied logic, not
- * shared logic. Kept identical on purpose: `contract_stated` wins over `payslip_reproduced_evidence`
- * when both are known (CH1's own established rule - "a contract's own stated term is not inference
- * and wins over it" - deliberately NOT the "payslip wins" rule this stage's own parameter-sourcing
- * uses for the tier PERCENTAGES, which have no contract-side counterpart at all and so never reach
- * this disagreement question in the first place). `payslip_reproduced_evidence` is always `null` in
- * this round's own real call site (`ProDocuments.tsx`) - see this file's own top doc comment for why
- * reproducing it from a payslip is not attempted this round; this function is reused UNCHANGED so
- * that the moment reproduction is ever built, both layers already agree on how to resolve it.
+ * shared logic. Kept identical on purpose, including its own established rule: `contract_stated`
+ * wins over `payslip_reproduced_evidence` when both are known (CH1 - "a contract's own stated term
+ * is not inference and wins over it", predates this stage and stands unchanged; 3.0a's own report
+ * wording about "the payslip's" figures winning was imprecise and was about the tier PERCENTAGES,
+ * which have no contract-side field to ever disagree with at all - never about this threshold).
+ *
+ * Stage 3.0a.5 (Clarification, audit v43): honestly, as of this round, THIS FUNCTION IS NOT CALLED
+ * BY ANY REAL (non-test) CODE. `ProDocuments.tsx` reads the threshold directly off
+ * `effectiveContract.overtimeTierThresholdHours` (contract-timeline.ts's own resolver, which already
+ * IS "contract wins" by simply being the only source ever considered) - `/api/tier-a/calculate`
+ * itself receives whatever the calculator's own form field holds as a plain value, with no
+ * provenance distinction at that boundary at all. This mirror was written for the payslip-side
+ * reproduction case 3.0a.1 found nothing already builds and did not build either (see the top of
+ * this file) - kept, tested, and correct, but genuinely unused until that reproduction exists to
+ * feed it a real `payslip_reproduced_evidence` value. Stated here plainly rather than left implying
+ * a live capability that isn't.
  */
 export function resolveOvertimeTierThreshold(inputs: {
   contract_stated: number | null;
@@ -175,3 +213,20 @@ export function buildScenarioWeekGrid(totalHours: number): ScenarioWeekGrid {
 
 /** The three fixed reference points spec §5's own "Scenario comparison" section names verbatim. */
 export const SCENARIO_TOTAL_HOURS = [40, 50, 60] as const;
+
+/**
+ * Stage 3.0a.5 (§Fix 4, a product-judgment finding): "an unsupplied rate must render as empty/
+ * unknown, never a silently reused free-calculator default." Pulled out of `TierACalculator.tsx`'s
+ * own `useState` initializer into its own pure function - the same reason every other decision in
+ * this file already is one - specifically because this project has no DOM-testing setup to verify a
+ * component's internal state directly, and this exact decision is one of 3.0a.5's own required exit
+ * tests. Tier A's own '15.58' placeholder is a reasonable starting point for a FREE calculator the
+ * user fills in themselves (spec §3); in PRO mode, since a rate CAN be genuinely sourced, an
+ * unsourced one must stay visibly blank rather than silently reusing that placeholder - otherwise a
+ * real, sourced 15.58 and an absent one are indistinguishable on screen, which is exactly the
+ * failure this whole engagement exists to prevent.
+ */
+export function resolveInitialHourlyRateInput(prefillRate: number | undefined, tierMode: 'A' | 'B' | 'PRO'): string {
+  if (prefillRate !== undefined) return String(prefillRate);
+  return tierMode === 'PRO' ? '' : '15.58';
+}

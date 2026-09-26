@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Calculator as CalculatorIcon, Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { translations, type Lang } from './translations.ts';
-import { buildScenarioWeekGrid, SCENARIO_TOTAL_HOURS } from './pro-parameter-sourcing.ts';
+import { buildScenarioWeekGrid, SCENARIO_TOTAL_HOURS, resolveInitialHourlyRateInput } from './pro-parameter-sourcing.ts';
 
 /**
  * Tier A - "Quick calculator" (SPEC-loonto-architecture.md §3, §5b). Replaces the old Calculator.tsx
@@ -196,11 +196,21 @@ type TierAResponse = ComputedResponse | BlockedResponse;
 
 /** Stage 3.0a.3: one scenario's own outcome - 'blocked' covers both an explicit `status: 'blocked'`
  * response and an `outcome.status === 'incomplete'` one (deductions skipped/estimated in a way that
- * withholds a net figure) - either way, no payout to show for that scenario, never a fabricated one. */
+ * withholds a net figure) - either way, no payout to show for that scenario, never a fabricated one.
+ *
+ * Stage 3.0a.5 (§Fix 2, MAJOR): "the scenario cards show a number outside the range the same
+ * response computed." The main result panel already shows `payout_range` instead of the bare point
+ * figure whenever "estimate" deduction mode makes `payout_amount` merely one end of an honest range
+ * (spec §5a's own reliability discipline) - the scenario cards skipped this and always showed the
+ * point figure, which can sit ABOVE the very range the same response computed (live-confirmed:
+ * 894.93 against a computed 885.79-892.58). `payoutRange` is carried alongside `payout` so the
+ * card can apply the EXACT SAME "range when present, else the point" rule the main panel already
+ * uses - never a second, more-confident-looking number for the same inputs. */
 interface ScenarioResult {
   hours: number;
   status: 'loading' | 'computed' | 'blocked' | 'error';
   payout: number | null;
+  payoutRange: { low: number; high: number } | null;
 }
 
 type TierACopy = (typeof translations)['pl']['tierA'];
@@ -348,7 +358,8 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
   const t = translations[lang].tierA;
 
   const [periodType, setPeriodType] = useState<PeriodType>('week');
-  const [hourlyRate, setHourlyRate] = useState(() => (contractPrefill?.hourly_rate !== undefined ? String(contractPrefill.hourly_rate) : '15.58'));
+  // Stage 3.0a.5 (§Fix 4): see resolveInitialHourlyRateInput's own doc comment (pro-parameter-sourcing.ts).
+  const [hourlyRate, setHourlyRate] = useState(() => resolveInitialHourlyRateInput(contractPrefill?.hourly_rate, tierMode));
   const [weekGrids, setWeekGrids] = useState<WeekGridForm[]>(() => [contractPrefill?.hours_per_week !== undefined ? gridFromWeeklyHours(contractPrefill.hours_per_week) : emptyWeekGrid()]);
   const [activeWeek, setActiveWeek] = useState(0);
   const [overtimeThreshold, setOvertimeThreshold] = useState(() => (contractPrefill?.overtime_tier_threshold_hours !== undefined ? String(contractPrefill.overtime_tier_threshold_hours) : ''));
@@ -489,7 +500,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
    * comment for the reasoning). Never a second computation path: the exact same
    * `/api/tier-a/calculate` a plain submit calls. */
   async function runScenarios() {
-    setScenarioResults(SCENARIO_TOTAL_HOURS.map(hours => ({ hours, status: 'loading', payout: null })));
+    setScenarioResults(SCENARIO_TOTAL_HOURS.map(hours => ({ hours, status: 'loading', payout: null, payoutRange: null })));
     const results = await Promise.all(SCENARIO_TOTAL_HOURS.map(async (hours): Promise<ScenarioResult> => {
       try {
         const res = await fetch('/api/tier-a/calculate', {
@@ -498,12 +509,15 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
           body: JSON.stringify(buildBody([buildScenarioWeekGrid(hours)])),
         });
         const data = await res.json() as TierAResponse & { error_code?: string };
-        if (!res.ok) return { hours, status: 'error', payout: null };
-        if (data.status === 'blocked') return { hours, status: 'blocked', payout: null };
-        if (data.outcome.status !== 'complete') return { hours, status: 'blocked', payout: null };
-        return { hours, status: 'computed', payout: data.outcome.result.payout_amount };
+        if (!res.ok) return { hours, status: 'error', payout: null, payoutRange: null };
+        if (data.status === 'blocked') return { hours, status: 'blocked', payout: null, payoutRange: null };
+        if (data.outcome.status !== 'complete') return { hours, status: 'blocked', payout: null, payoutRange: null };
+        // §Fix 2: carry payout_range through unchanged - the render decides range-vs-point using the
+        // exact same rule the main result panel already uses (see the JSX below), never re-deciding
+        // it differently here.
+        return { hours, status: 'computed', payout: data.outcome.result.payout_amount, payoutRange: data.payout_range };
       } catch {
-        return { hours, status: 'error', payout: null };
+        return { hours, status: 'error', payout: null, payoutRange: null };
       }
     }));
     setScenarioResults(results);
@@ -743,7 +757,11 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
                 <article key={scenario.hours} className="calc-scenario-card">
                   <h3>{t.scenarioHoursLabel(scenario.hours)}</h3>
                   {scenario.status === 'loading' && <p>{t.calculating}</p>}
-                  {scenario.status === 'computed' && <p className="calc-scenario-figure">{money(scenario.payout as number)}</p>}
+                  {scenario.status === 'computed' && (
+                    <p className="calc-scenario-figure">
+                      {scenario.payoutRange ? `${money(scenario.payoutRange.low)} – ${money(scenario.payoutRange.high)}` : money(scenario.payout as number)}
+                    </p>
+                  )}
                   {scenario.status === 'blocked' && <p className="form-note">{t.scenarioBlocked}</p>}
                   {scenario.status === 'error' && <p className="status error">{t.error}</p>}
                 </article>

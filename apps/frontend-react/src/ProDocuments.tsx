@@ -56,7 +56,7 @@ const EFFECTIVE_CONTRACT_FIELDS = [
 
 type DocStatus = 'pending' | 'processing' | 'done' | 'error';
 
-interface PayslipHourLineForSummary { category: string; percent: number | null }
+interface PayslipHourLineForSummary { category: string; percent: number | null; adds_hours: boolean }
 
 /** Stage 3.0a: everything the parameter-sourcing layer needs from a processed payslip, beyond the
  * compact status line 3.0 already showed. `fullyReproduced` is this file's own operational reading of
@@ -251,7 +251,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   // recent fully-reproduced payslip (derived via the shared, tested function - never re-decided
   // inline). Undefined fields stay genuinely blank in the calculator, never defaulted - exactly the
   // same "unknown, never guessed" discipline every other resolver in this codebase already follows.
-  const derivedPercents = reproducedPayslip ? derivePayslipOvertimePercents(reproducedPayslip.hourLines) : { tier1: null, tier2: null };
+  const derivedPercents = reproducedPayslip ? derivePayslipOvertimePercents(reproducedPayslip.hourLines) : { tier1: null, tier2: null, excludedPercents: [] as number[] };
   function contractField(field: keyof EffectiveContract): number | undefined {
     const value = effectiveContract?.[field]?.value;
     return typeof value === 'number' ? value : undefined;
@@ -375,6 +375,11 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
           {reproducedPayslip
             ? <p className="form-note">{t.projectionPayslipUsed(reproducedPayslip.label, reproducedPayslip.periodLabel ?? '—')}</p>
             : <p className="form-note">{t.projectionNoPayslip}</p>}
+          {/* Stage 3.0a.5 (§Fix 3): a genuine third overtime tier the grid has no slot for - named,
+              never silently dropped (§2.1/§2.3). */}
+          {derivedPercents.excludedPercents.length > 0 && (
+            <p className="form-note">{t.projectionExcludedPercent(derivedPercents.excludedPercents.join(', '))}</p>
+          )}
           <TierACalculator key={submitCount} lang={lang} tierMode="PRO" contractPrefill={contractPrefill} onNavigateToDictionary={onNavigateToDictionary}/>
         </div>
       )}

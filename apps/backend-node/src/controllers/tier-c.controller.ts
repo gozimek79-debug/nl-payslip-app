@@ -6,8 +6,9 @@ import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, resolveNetPosition, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
 import { verifyAmountsAgainstText, textLayerVerificationCounts, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCPeriodType } from '../payroll-engine/tier-c.js';
-import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
+import { isDocumentVisionConfigured, isOcrEnabled } from '../ai-service/document-vision-provider.js';
 import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
+import { buildOcrTextLayer } from '../ocr-service/ocr-text-layer.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
@@ -243,7 +244,24 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // Stage 2g (§2g.1): optional - a plain image upload, or a PDF with no usable text layer, sends none.
   // Stage 2h (§2h.2): the sanitizer's own status ('ok'/'too_large') is carried forward - a too-large
   // list is never partially trusted, it is treated exactly like no text layer at all.
-  const { items: documentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
+  const { items: clientDocumentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
+  // Stage 2q (§2q.2): "when a request carries no usable text layer, run OCR on the same page images
+  // and build a text layer... where a real PDF text layer exists, keep it (exact embedded text beats
+  // OCR of a rasterized copy)." Only attempted when the client sent nothing usable (never a
+  // 'too_large' list, which is a real text layer that was merely too big to trust wholesale - that
+  // case stays exactly as before this stage, not silently replaced by a weaker OCR read of the same
+  // pages). Never throws and never blocks /analyze: buildOcrTextLayer fails closed on its own
+  // (isOcrConfigured) and swallows any per-page OCR failure internally - this can only ever ADD a text
+  // layer where none existed.
+  let documentText = clientDocumentText;
+  let textLayerSource: 'client' | 'ocr' | 'none' = clientDocumentText.length > 0 ? 'client' : 'none';
+  if (clientDocumentText.length === 0 && sanitizedStatus === 'ok' && isOcrEnabled()) {
+    const ocrDocumentText = await buildOcrTextLayer(images as string[]);
+    if (ocrDocumentText.length > 0) {
+      documentText = ocrDocumentText;
+      textLayerSource = 'ocr';
+    }
+  }
   // Stage 2h (§2h.4): "the total request size in kilobytes" - the header the client itself sent, not
   // a re-serialisation of req.body (which can differ from the wire size by whitespace/encoding).
   // Falls back to a re-encode only when a client/proxy omits the header.
@@ -284,6 +302,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       textItemsSent: documentText.length,
       amountsChecked: textLayerAssessment.checked,
       amountsNotFound: textLayerAssessment.unverified,
+      textLayerSource,
     };
 
     // Stage 2f (§2f.4): "unknown stays unknown after the flag" - stage 2e raised these two issues but
@@ -395,6 +414,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
         request_size_kb: requestSizeKb,
         request_size_source: requestSizeSource,
         render_step: renderStep,
+        text_layer_source: textLayerSource,
       },
       truncated: extraction.truncated,
       redactedFields: extraction.redacted_fields,
@@ -599,7 +619,7 @@ router.post('/recompute', async (req, res) => {
       net_position,
       // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
       // period) - the technical-details line still appears, honestly reporting nothing to check.
-      technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf' },
+      technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf', text_layer_source: 'none' as const },
       taxRatesSource: fetched.source,
     });
   } catch (error) {

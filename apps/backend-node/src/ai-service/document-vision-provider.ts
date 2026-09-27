@@ -117,3 +117,32 @@ export function documentVisionClient(): OpenAI {
   if (!apiKey) throw new Error(`${config.apiKeyEnvVar} is not configured for provider "${config.name}".`);
   return new OpenAI({ apiKey, baseURL: config.baseURL });
 }
+
+/**
+ * Stage 2q (audit v45, §2q.1a/§2q.4): "the OCR call must obey the same EU-only fail-closed rule as
+ * the reading call." OCR (Mistral's dedicated `mistral-ocr-*` models, confirmed live against this
+ * account's own `/v1/models` - see this round's report) is a Mistral-only endpoint, unlike the
+ * general vision-reading call which is pluggable across providers - so this refuses not just a
+ * non-EU-hosted provider (the same check `isDocumentVisionConfigured` already makes) but specifically
+ * any provider other than Mistral, since Groq/OpenAI have no `/ocr` endpoint to call at all. Both
+ * checks fail the same way: "cannot be used", regardless of whether an API key happens to be present.
+ */
+export function isOcrConfigured(): boolean {
+  const config = activeDocumentVisionConfig();
+  if (!config.euHosted || config.name !== 'mistral') return false;
+  return Boolean(process.env[config.apiKeyEnvVar]);
+}
+
+/** Stage 2q (§2q.4): "on by default... one env var to disable." `TIER_C_OCR_DISABLED=true` is the
+ * one switch; unset or any other value leaves OCR on whenever it is otherwise configured. */
+export function isOcrEnabled(): boolean {
+  return isOcrConfigured() && process.env.TIER_C_OCR_DISABLED !== 'true';
+}
+
+/** Stage 2q (§2q.1a): confirmed live against this account's own `/v1/models` - `mistral-ocr-latest`
+ * exists, is not deprecated, and aliases the current `mistral-ocr-4`/`mistral-ocr-4-1` models. Same
+ * override pattern as `documentVisionModel()`, its own dedicated env var so changing the OCR model
+ * never requires also changing the (separately configurable) reading model. */
+export function ocrModel(): string {
+  return process.env.MISTRAL_OCR_MODEL || 'mistral-ocr-latest';
+}

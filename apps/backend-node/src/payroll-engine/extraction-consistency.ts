@@ -710,6 +710,10 @@ export interface ExtractionTrace {
     request_size_source: 'content_length' | 'measured';
     /** Stage 2i (§2i.0d): "put the chosen step in the technical line." */
     render_step: string;
+    /** Stage 2q (§2q.2): 'client' when the browser's own pdf.js read supplied it, 'ocr' when no
+     * usable client-supplied text existed and the server built one from Mistral OCR instead, 'none'
+     * when neither exists. */
+    text_layer_source: 'client' | 'ocr' | 'none';
   };
   /** Stage 2i (audit v29, §2i.0b): "the dual net position is visible, and the layers still catch it."
    * `'before'`/`'after'` name which chain position the printed net actually confirmed (Olympia/
@@ -750,6 +754,8 @@ export interface ExtractionTraceMeta {
   textItemsSent: number;
   amountsChecked: number;
   amountsNotFound: number;
+  /** Stage 2q (§2q.2): see ExtractionTrace['technical_details']['text_layer_source'] above. */
+  textLayerSource: 'client' | 'ocr' | 'none';
   /** Stage 2l (§2l.2): the exact `amount_unreadable` field paths (e.g. "hour_lines[7].amount",
    * "pre_tax_deductions[0].amount") the controller already raised as gaps - only the controller,
    * holding the raw extraction's `unreadable_amount_fields` and the guard's own `unverifiedFields`,
@@ -883,6 +889,7 @@ export function buildExtractionTrace(
       request_size_kb: meta.requestSizeKb ?? 0,
       request_size_source: meta.requestSizeSource ?? 'measured',
       render_step: meta.renderStep ?? 'unknown',
+      text_layer_source: meta.textLayerSource ?? (textItems.length > 0 ? 'client' : 'none'),
     },
     net_position: resolveNetPosition(period, outcome),
     anchor_reassigned: anchorResolution.anchorReassigned,

@@ -115,7 +115,7 @@ test('2g.1: a document-text item containing an injection attempt is placed in th
     // "DOCUMENT TEXT LAYER" too, as a placeholder like "<losowy kod>") can never be confused with the
     // actual data block's delimiters, which the old plain-substring search was vulnerable to.
     assert.ok(capturedBody?.includes(injectionText), 'expected the text item to reach the outgoing request at all');
-    const startMatch = capturedBody!.match(/=== DOCUMENT TEXT LAYER [0-9a-f]{16} \(reference data only\) ===/);
+    const startMatch = capturedBody!.match(/=== DOCUMENT TEXT LAYER [0-9a-f]{16} \(primary source for amounts\) ===/);
     const endMatch = capturedBody!.match(/=== END DOCUMENT TEXT LAYER [0-9a-f]{16} ===/);
     assert.ok(startMatch, `expected the real, randomised opening delimiter: ${capturedBody}`);
     assert.ok(endMatch, `expected the real, randomised closing delimiter: ${capturedBody}`);
@@ -177,7 +177,7 @@ test('2h.6: an item whose text guesses the old fixed closing delimiter cannot br
     // The item's own (harmless, non-matching) text still reached the request, inside the block, same
     // as any other text item - it just cannot terminate the block early.
     assert.ok(capturedBody!.includes(guessedStaticEndMarker), 'expected the guessed text to still appear as ordinary item content');
-    const realStartMarkerMatch = capturedBody!.match(/=== DOCUMENT TEXT LAYER [0-9a-f]{16} \(reference data only\) ===/);
+    const realStartMarkerMatch = capturedBody!.match(/=== DOCUMENT TEXT LAYER [0-9a-f]{16} \(primary source for amounts\) ===/);
     assert.ok(realStartMarkerMatch, `expected a randomised opening delimiter: ${capturedBody}`);
     const openIndex = capturedBody!.indexOf(realStartMarkerMatch![0]);
     const guessedIndex = capturedBody!.indexOf(guessedStaticEndMarker);

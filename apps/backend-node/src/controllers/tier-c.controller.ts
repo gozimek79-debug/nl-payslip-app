@@ -281,8 +281,21 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   const renderStepRaw = req.body?.renderStep;
   const renderStep = typeof renderStepRaw === 'string' && KNOWN_RENDER_STEPS.includes(renderStepRaw) ? renderStepRaw : 'unknown';
 
+  // Stage 2r (audit v46, §2r.1): "keep OCR text out of the extraction prompt." 2q.3 made the text
+  // layer the model's PRIMARY SOURCE for amounts - correct for a client-supplied, exact embedded PDF
+  // text layer, but circular for OCR-built text: OCR read the same pixels the vision model is about to
+  // read, so telling the model to copy OCR's own reading just means the model parrots a second,
+  // possibly-also-wrong reading of the same image, and the guard then "confirms" it against the exact
+  // same reading it was told to copy - no independent check ever happens. Only CLIENT-supplied text
+  // goes into the extraction prompt; OCR-built text is withheld from the model entirely (it reads the
+  // image on its own, exactly as it did before this stage existed) and is used ONLY by the guard below,
+  // as a genuinely independent second reading of the same page to check the model's own answer against
+  // - never to supply or correct that answer (§2.3: never move an extracted amount to a nearby text
+  // value; a disagreement is flagged, not resolved).
+  const extractionTextItems = textLayerSource === 'client' ? documentText : [];
+
   try {
-    const extraction = await extractTierCPayslip(images as string[], documentText);
+    const extraction = await extractTierCPayslip(images as string[], extractionTextItems);
     const referenceDate = resolveReferenceDate(extraction.period_end_date);
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);

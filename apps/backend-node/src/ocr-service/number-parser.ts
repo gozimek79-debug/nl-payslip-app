@@ -115,8 +115,12 @@ function stripCurrencyMarkers(s: string): string {
 
 // Punctuation that can sit against a number in running text without ever being PART of the number's
 // own syntax (unlike '.', ',' and '-', which parsePrintedNumber must see intact to parse correctly).
+// Stage 2r (audit v46, §2r.4a): '|' added - Mistral OCR's own markdown table syntax glues a cell's
+// content directly to its column delimiters with no space ("|699,59|"), which none of the existing
+// edge characters covered; a token in that shape previously failed parsePrintedNumber's
+// digits/comma/period/space-only check and was silently treated as not a number at all.
 function stripEdgePunctuation(s: string): string {
-  return s.replace(/^[:;()]+/, '').replace(/[:;()]+$/, '');
+  return s.replace(/^[:;()|]+/, '').replace(/[:;()|]+$/, '');
 }
 
 /**

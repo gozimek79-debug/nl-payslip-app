@@ -107,6 +107,10 @@ interface TechnicalDetails {
   amounts_checked: number;
   amounts_not_found: number;
   text_layer_status: TextLayerStatus;
+  /** Stage 2r (§2r.2): which text supplied the check - 'client' (the browser's own PDF text layer),
+   * 'ocr' (the server's own OCR reading, no client text existed), or 'none'. Drives which sentence
+   * `readingBasisNote` shows - never "the PDF's text layer" when the text was actually OCR's own. */
+  text_layer_source: 'client' | 'ocr' | 'none';
   request_size_kb: number;
   /** Stage 2i (§2i.0e): which of the two numbers request_size_kb actually is - the client-sent
    * Content-Length header (when it roughly agreed with an independent re-encode) or the measured
@@ -384,6 +388,14 @@ function textLayerStatusNote(t: TierCCopy, status: TextLayerStatus): string {
     case 'too_large': return t.textLayerStatusTooLarge;
     case 'none': return t.textLayerStatusNone;
   }
+}
+
+/** Stage 2r (§2r.2): "every panel sentence that describes the check must depend on
+ * text_layer_source... the words 'the PDF's text layer' never appear" for OCR-sourced text - it is an
+ * independent second reading of the same pages, not the document's own embedded text. */
+function readingBasisNote(t: TierCCopy, readingBasis: ExtractionTrace['reading_basis'], textLayerSource: TechnicalDetails['text_layer_source']): string {
+  if (readingBasis === 'image_only') return t.readingBasisImageOnly;
+  return textLayerSource === 'ocr' ? t.readingBasisOcrVerified : t.readingBasisTextVerified;
 }
 
 /** Stage 2j (§2j.3): "an upload that falls back to image-only mid-request is stuck with the lower,
@@ -753,7 +765,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
 
                 {/* Stage 2g (§2g.5): "the panel says in one plain sentence that the digits were not
                     checked against the document's text" for an image-only read. */}
-                <p className="form-note">{trace.reading_basis === 'text_layer_verified' ? t.readingBasisTextVerified : t.readingBasisImageOnly}</p>
+                <p className="form-note">{readingBasisNote(t, trace.reading_basis, trace.technical_details.text_layer_source)}</p>
                 {/* Stage 2g (§2g.4): a stated gap, never a finding - "printed amounts that were not
                     used" (this is what catches a whole missing line, like Olympia's 58.31). */}
                 {trace.unused_printed_amounts.count > 0 && (

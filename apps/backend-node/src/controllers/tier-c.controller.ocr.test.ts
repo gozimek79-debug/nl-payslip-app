@@ -114,14 +114,56 @@ test('2q.3/2q.5: a deliberately wrong amount is flagged on the image-only (OCR) 
   );
 });
 
-test('2q.4: OCR text never appears in a log line or the response body', async () => {
+test('2r.1: OCR text is withheld from the extraction prompt - the model never sees it, only the guard does', async () => {
+  let capturedChatBody: string | undefined;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('mistral.ai') && url.includes('/ocr')) {
+      return new Response(JSON.stringify({ pages: [{ markdown: CORRECT_OCR_TEXT }] }), { status: 200 });
+    }
+    if (url.includes('mistral.ai') && url.includes('chat/completions')) {
+      capturedChatBody = typeof init?.body === 'string' ? init.body : undefined;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(BASE_EXTRACTION) }, finish_reason: 'stop' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`unexpected fetch in test: ${url}`);
+  }) as typeof fetch;
+  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+  });
+  const body = (await res.json()) as { technicalDetails?: { text_layer_source?: string } };
+  assert.equal(body.technicalDetails?.text_layer_source, 'ocr', 'expected this request to actually take the OCR branch');
+  assert.ok(capturedChatBody, 'expected a captured outgoing extraction request');
+  // Not a check for the literal words "DOCUMENT TEXT LAYER" - the system prompt's OWN instructional
+  // text describing the mechanism contains that phrase unconditionally, on every call, whether or not
+  // a block is actually attached. The real per-request block carries a random 16-hex-digit boundary
+  // token (documentTextBlock, ocr-client.ts) - its ABSENCE, plus the OCR content's own absence, is
+  // what actually proves no block was attached this time.
+  assert.ok(!/=== DOCUMENT TEXT LAYER [0-9a-f]{16}/.test(capturedChatBody!), 'the extraction prompt must carry no actual text-layer data block when the source is OCR');
+  assert.ok(!capturedChatBody!.includes(PII_MARKER), 'OCR text must never reach the extraction model');
+});
+
+test('2q.4/2r.4b: OCR text never appears in a log line (error, log or warn) or the response body, not even as a fragment', async () => {
   const originalConsoleError = console.error;
+  const originalConsoleLog = console.log;
+  const originalConsoleWarn = console.warn;
   const logged: string[] = [];
-  console.error = ((...args: unknown[]) => {
+  const capture = (...args: unknown[]) => {
     logged.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' '));
-  }) as typeof console.error;
+  };
+  console.error = capture as typeof console.error;
+  console.log = capture as typeof console.log;
+  console.warn = capture as typeof console.warn;
   const wrongAmountExtraction = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.75 }] };
   globalThis.fetch = mockFetchWithOcr(wrongAmountExtraction, CORRECT_OCR_TEXT) as typeof fetch;
+  // Stage 2r (§2r.4b): a fragment of the marker (the IBAN alone), not only the exact full string -
+  // the original 2q leak test would have missed a log line that echoed part of the OCR text (e.g. a
+  // stray field) without reproducing the whole marker verbatim.
+  const PII_FRAGMENT = 'NL00BANK0123456789';
   try {
     const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
       method: 'POST',
@@ -129,9 +171,9 @@ test('2q.4: OCR text never appears in a log line or the response body', async ()
       body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
     });
     const rawBody = await res.text();
-    assert.ok(!rawBody.includes(PII_MARKER), 'OCR text must never reach the response body');
+    assert.ok(!rawBody.includes(PII_MARKER) && !rawBody.includes(PII_FRAGMENT), 'OCR text (or a fragment of it) must never reach the response body');
     for (const line of logged) {
-      assert.ok(!line.includes(PII_MARKER), `OCR text leaked into a log line: ${line}`);
+      assert.ok(!line.includes(PII_MARKER) && !line.includes(PII_FRAGMENT), `OCR text (or a fragment) leaked into a log line: ${line}`);
     }
     assert.ok(
       logged.some((l) => l.includes('consistency-gate')),
@@ -139,6 +181,8 @@ test('2q.4: OCR text never appears in a log line or the response body', async ()
     );
   } finally {
     console.error = originalConsoleError;
+    console.log = originalConsoleLog;
+    console.warn = originalConsoleWarn;
   }
 });
 

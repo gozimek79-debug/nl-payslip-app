@@ -86,7 +86,7 @@ test('2q.4: fail-closed - refuses when Mistral is active but no API key is confi
   }
 });
 
-test('2q.2: a single page whose OCR call throws contributes nothing - the other pages are unaffected', async () => {
+test('2r.3: if ANY page\'s OCR call throws, the WHOLE result is empty - never a partial layer covering only the pages that succeeded', async () => {
   const originalFetch = globalThis.fetch;
   let callIndex = -1;
   globalThis.fetch = (async () => {
@@ -98,18 +98,41 @@ test('2q.2: a single page whose OCR call throws contributes nothing - the other 
     const items = await withEnv({ MISTRAL_API_KEY: 'test-key', TIER_C_VISION_PROVIDER: undefined }, () =>
       buildOcrTextLayer(['data:image/jpeg;base64,AAA', 'data:image/jpeg;base64,BBB']),
     );
-    assert.deepEqual(items, [{ page: 2, text: 'STIPP-pensioen werknemer 34,79', x: 0, y: 0 }]);
+    assert.deepEqual(items, [], 'expected the whole layer discarded, not just page 1 dropped');
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('2q.2: a non-200 upstream response contributes nothing for that page, not a thrown error', async () => {
+test('2r.3: a non-200 upstream response on one page discards the whole layer, not just that page', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'bad request' }), { status: 400 })) as typeof fetch;
+  let callIndex = -1;
+  globalThis.fetch = (async () => {
+    callIndex += 1;
+    if (callIndex === 0) return new Response(JSON.stringify({ error: 'bad request' }), { status: 400 });
+    return new Response(JSON.stringify({ pages: [{ markdown: 'STIPP-pensioen werknemer 34,79' }] }), { status: 200 });
+  }) as typeof fetch;
   try {
-    const items = await withEnv({ MISTRAL_API_KEY: 'test-key', TIER_C_VISION_PROVIDER: undefined }, () => buildOcrTextLayer(['data:image/jpeg;base64,AAA']));
+    const items = await withEnv({ MISTRAL_API_KEY: 'test-key', TIER_C_VISION_PROVIDER: undefined }, () =>
+      buildOcrTextLayer(['data:image/jpeg;base64,AAA', 'data:image/jpeg;base64,BBB']),
+    );
     assert.deepEqual(items, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('2q.2: every page succeeding still returns one item per page, unaffected by the all-or-nothing rule', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ pages: [{ markdown: 'Loon normaal 699,78' }] }), { status: 200 })) as typeof fetch;
+  try {
+    const items = await withEnv({ MISTRAL_API_KEY: 'test-key', TIER_C_VISION_PROVIDER: undefined }, () =>
+      buildOcrTextLayer(['data:image/jpeg;base64,AAA', 'data:image/jpeg;base64,BBB']),
+    );
+    assert.deepEqual(items, [
+      { page: 1, text: 'Loon normaal 699,78', x: 0, y: 0 },
+      { page: 2, text: 'Loon normaal 699,78', x: 0, y: 0 },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

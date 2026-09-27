@@ -61,7 +61,7 @@ async function callMistralOcrPage(imageDataUrl: string): Promise<string | null> 
  * granularity OCR does not actually provide anyway.
  */
 export async function buildOcrTextLayer(imageDataUrls: string[]): Promise<DocumentTextItem[]> {
-  if (!isOcrConfigured()) return [];
+  if (!isOcrConfigured() || imageDataUrls.length === 0) return [];
   const pages = await Promise.all(
     imageDataUrls.map(async (url) => {
       try {
@@ -71,9 +71,14 @@ export async function buildOcrTextLayer(imageDataUrls: string[]): Promise<Docume
       }
     }),
   );
-  const items: DocumentTextItem[] = [];
-  pages.forEach((markdown, index) => {
-    if (markdown !== null) items.push({ page: index + 1, text: markdown, x: 0, y: 0 });
-  });
-  return items;
+  // Stage 2r (audit v46, §2r.3): "if OCR fails for any page, do not use a partial layer." A period's
+  // amounts (collectPeriodAmounts, document-text-guard.ts) are not tagged with the page they came
+  // from, so a text layer missing one page's content cannot be told apart from an amount the model
+  // genuinely invented on that page - both would show up identically as "not found in the text",
+  // wrongly blocking a page OCR simply never got to. Chosen over the page-scoped alternative (only
+  // verifying the pages OCR did read) because that would need per-amount page tracking this model
+  // does not have; all-or-nothing needs no new field and never produces a false block from an
+  // incomplete read. If any page failed, the whole result is empty - exactly as if OCR had not run.
+  if (pages.some((markdown) => markdown === null)) return [];
+  return pages.map((markdown, index) => ({ page: index + 1, text: markdown as string, x: 0, y: 0 }));
 }

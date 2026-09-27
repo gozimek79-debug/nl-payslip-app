@@ -183,3 +183,22 @@ test('2i.0c: a genuine EUR amount is still shaped money, even alongside integer-
   assert.deepEqual(found.map((n) => n.value), [45, 15.55, 699.75]);
   assert.ok(found.every((n) => n.shape === 'money'), `expected every value shaped 'money' (all carry two decimals), got ${JSON.stringify(found)}`);
 });
+
+test('2r.4a: an amount glued directly to markdown table pipes, no space, parses correctly ("|699,59|")', () => {
+  const found = extractPrintedNumbers('|699,59|');
+  assert.deepEqual(found.map((n) => n.value), [699.59]);
+  assert.deepEqual(found.map((n) => n.shape), ['money']);
+});
+
+test('2r.4a: a thousands amount glued to a leading pipe with no space ("|1.234,56|")', () => {
+  const found = extractPrintedNumbers('|1.234,56|');
+  assert.deepEqual(found.map((n) => n.value), [1234.56]);
+  assert.deepEqual(found.map((n) => n.shape), ['money']);
+});
+
+test('2r.4a: a whole OCR markdown table row still finds the same amount whether or not padding spaces sit next to the pipes', () => {
+  const withSpaces = extractPrintedNumbers('|  Loon normaal | 699,78  |');
+  const noSpaces = extractPrintedNumbers('| Loon normaal |699,78|');
+  assert.deepEqual(withSpaces.map((n) => n.value), [699.78]);
+  assert.deepEqual(noSpaces.map((n) => n.value), [699.78]);
+});

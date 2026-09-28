@@ -1,7 +1,7 @@
 import express from 'express';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { isGroqConfigured } from '../ai-service/groq.js';
-import { readingProviderStatus } from '../ai-service/document-vision-provider.js';
+import { readingProviderStatus, activeDocumentVisionConfig } from '../ai-service/document-vision-provider.js';
 
 const router = express.Router();
 
@@ -125,12 +125,42 @@ router.post('/gemini-probe-DIAGNOSTIC', express.json({ limit: '5mb' }), async (r
     const batch = await Promise.all([callGemini(), callGemini(), callGemini()]);
     const parallelBatchMs = Date.now() - batchStarted;
 
+    // Stage 2s (§2s.1e): "measure a synthetic three-page document through BOTH readers." Reader A
+    // (Mistral OCR annotation, confirmed live in the round before this one) gets the SAME parallel-
+    // page treatment here, so the two figures are directly comparable - this is what actually answers
+    // whether a 3-page document fits inside one function invocation (each reader's own 3 pages run in
+    // parallel WITHIN that reader, and the two readers run in parallel WITH each other - see 2s.2/3c).
+    let mistralParallelBatchMs: number | null = null;
+    let mistralIndividualMs: number[] | null = null;
+    const mistralConfig = activeDocumentVisionConfig();
+    const mistralApiKey = process.env[mistralConfig.apiKeyEnvVar];
+    if (mistralConfig.euHosted && mistralConfig.name === 'mistral' && mistralApiKey) {
+      const callMistralAnnotation = async (): Promise<number> => {
+        const started2 = Date.now();
+        await fetch(`${mistralConfig.baseURL}/ocr`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${mistralApiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'mistral-ocr-latest',
+            document: { type: 'image_url', image_url: imageDataUrl },
+            document_annotation_format: { type: 'json_schema', json_schema: { name: 'probe', schema: { type: 'object', properties: { period_label: { type: ['string', 'null'] } }, required: ['period_label'] } } },
+          }),
+        });
+        return Date.now() - started2;
+      };
+      const mistralBatchStarted = Date.now();
+      mistralIndividualMs = await Promise.all([callMistralAnnotation(), callMistralAnnotation(), callMistralAnnotation()]);
+      mistralParallelBatchMs = Date.now() - mistralBatchStarted;
+    }
+
     return res.status(200).json({
       modelsAvailable: modelSummary,
       modelUsed: modelId,
       single,
       parallelBatchMs,
       parallelIndividualMs: batch.map((b) => b.latencyMs),
+      mistralParallelBatchMs,
+      mistralIndividualMs,
     });
   } catch (err) {
     return res.status(502).json({ error_code: 'gemini_call_failed', message: err instanceof Error ? err.message : String(err) });

@@ -62,17 +62,33 @@ router.post('/ocr-annotation-DIAGNOSTIC', express.json({ limit: '5mb' }), async 
           type: 'json_schema',
           json_schema: {
             name: 'payslip_probe',
+            // Widened for a second latency measurement (§2s.1a: "latency per page" needed a more
+            // representative schema than the first 3-field probe - closer to TierCExtraction's real
+            // ~20-field shape, though still not the full prompt, which is not needed to answer this
+            // one question honestly).
             schema: {
               type: 'object',
               properties: {
                 period_label: { type: ['string', 'null'] },
+                period_end_date: { type: ['string', 'null'] },
+                period_type: { type: ['string', 'null'] },
                 hour_lines: {
                   type: 'array',
-                  items: { type: 'object', properties: { description: { type: 'string' }, amount: { type: 'number' } }, required: ['description', 'amount'] },
+                  items: {
+                    type: 'object',
+                    properties: { description: { type: 'string' }, hours: { type: ['number', 'null'] }, rate: { type: ['number', 'null'] }, amount: { type: 'number' }, category: { type: 'string' } },
+                    required: ['description', 'amount', 'category'],
+                  },
                 },
-                printed_net: { type: ['number', 'null'] },
+                pre_tax_deduction_lines: {
+                  type: 'array',
+                  items: { type: 'object', properties: { description: { type: 'string' }, amount: { type: 'number' }, category: { type: 'string' } }, required: ['description', 'amount', 'category'] },
+                },
+                printed_table_tax: { type: ['number', 'null'] },
+                reported_total_net: { type: ['number', 'null'] },
+                reported_net_paid: { type: ['number', 'null'] },
               },
-              required: ['period_label', 'hour_lines', 'printed_net'],
+              required: ['period_label', 'period_end_date', 'period_type', 'hour_lines', 'pre_tax_deduction_lines', 'printed_table_tax', 'reported_total_net', 'reported_net_paid'],
             },
           },
         },

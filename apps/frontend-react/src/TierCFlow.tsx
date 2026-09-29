@@ -107,10 +107,12 @@ interface TechnicalDetails {
   amounts_checked: number;
   amounts_not_found: number;
   text_layer_status: TextLayerStatus;
-  /** Stage 2r (§2r.2): which text supplied the check - 'client' (the browser's own PDF text layer),
-   * 'ocr' (the server's own OCR reading, no client text existed), or 'none'. Drives which sentence
-   * `readingBasisNote` shows - never "the PDF's text layer" when the text was actually OCR's own. */
-  text_layer_source: 'client' | 'ocr' | 'none';
+  /** Stage 2r (§2r.2)/2s (§2s.3b): which check actually ran - 'client' (the browser's own embedded
+   * PDF text layer, text-first, unchanged); for the image-only path (no PDF text), the old single-
+   * reader-plus-OCR-text-layer mechanism is retired in favour of 'two_readers' (Mistral OCR
+   * annotation + Gemini both ran and were compared) or 'one_reader' (only one ran/succeeded - never
+   * presented as confirmed). Drives which sentence `readingBasisNote` shows. */
+  text_layer_source: 'client' | 'two_readers' | 'one_reader' | 'none';
   request_size_kb: number;
   /** Stage 2i (§2i.0e): which of the two numbers request_size_kb actually is - the client-sent
    * Content-Length header (when it roughly agreed with an independent re-encode) or the measured
@@ -163,7 +165,14 @@ type ConsistencyIssue =
   | { code: 'pre_tax_not_confirmed' }
   | { code: 'period_type_unknown' }
   | { code: 'et_exchange_amount_unknown' }
-  | { code: 'amount_unreadable'; field: string };
+  | { code: 'amount_unreadable'; field: string }
+  // Stage 2s (§2s.2): two independent readers (Mistral OCR annotation, Gemini) compared field by
+  // field and line by line - mirrors extraction-consistency.ts's ReaderComparisonIssue exactly.
+  | { code: 'reader_field_disagreement'; field: string; value_a: string | number | boolean | null; value_b: string | number | boolean | null }
+  | { code: 'reader_line_disagreement'; list: string; line_key: string; index: number; field: string; value_a: string | number | boolean | null; value_b: string | number | boolean | null }
+  | { code: 'reader_line_only_in_a'; list: string; line_key: string; count: number }
+  | { code: 'reader_line_only_in_b'; list: string; line_key: string; count: number }
+  | { code: 'reader_line_ambiguous_alignment'; list: string; line_key: string; count_a: number; count_b: number };
 
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
@@ -208,8 +217,10 @@ interface ExtractionTrace {
   implied_payout: number | null;
   printed_payout: number | null;
   /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
-   * image_only when there was no text layer." */
-  reading_basis: 'text_layer_verified' | 'image_only';
+   * image_only when there was no text layer." Stage 2s (§2s.3b): two new states for the image-only
+   * path - 'two_readers_verified' (Mistral + Gemini both ran and were compared) and
+   * 'one_reader_only' (never shown as confirmed - see §2s.3a/d). */
+  reading_basis: 'text_layer_verified' | 'two_readers_verified' | 'one_reader_only' | 'image_only';
   /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding. */
   unused_printed_amounts: { count: number; sample: number[] };
   /** Stage 2h (§2h.4): numbers only, never document content - see TechnicalDetails above. */
@@ -326,6 +337,14 @@ function discrepancyLabel(t: TierCCopy, code: DiscrepancyCode): string {
 
 /** Stage 2b: builds each consistency issue's sentence from its code + numeric params, per §2.6 -
  * the backend never sends prose, only the discriminated union extraction-consistency.ts defines. */
+/** Stage 2s (§2s.2): a reader-comparison value is not always monetary (a period label, a boolean, a
+ * plain count) - unlike `money()`, this never assumes a euro amount. */
+function readerValueText(t: TierCCopy, value: string | number | boolean | null): string {
+  if (value === null) return t.traceUnknown;
+  if (typeof value === 'boolean') return value ? t.booleanYes : t.booleanNo;
+  return String(value);
+}
+
 function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
   switch (issue.code) {
     case 'zero_tax_nonzero_base':
@@ -370,6 +389,16 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueEtExchangeUnknown;
     case 'amount_unreadable':
       return t.issueAmountUnreadable(issue.field);
+    case 'reader_field_disagreement':
+      return t.issueReaderFieldDisagreement(issue.field, readerValueText(t, issue.value_a), readerValueText(t, issue.value_b));
+    case 'reader_line_disagreement':
+      return t.issueReaderLineDisagreement(issue.line_key, issue.field, readerValueText(t, issue.value_a), readerValueText(t, issue.value_b));
+    case 'reader_line_only_in_a':
+      return t.issueReaderLineOnlyInA(issue.line_key, issue.count);
+    case 'reader_line_only_in_b':
+      return t.issueReaderLineOnlyInB(issue.line_key, issue.count);
+    case 'reader_line_ambiguous_alignment':
+      return t.issueReaderLineAmbiguous(issue.line_key, issue.count_a, issue.count_b);
   }
 }
 
@@ -393,9 +422,17 @@ function textLayerStatusNote(t: TierCCopy, status: TextLayerStatus): string {
 /** Stage 2r (§2r.2): "every panel sentence that describes the check must depend on
  * text_layer_source... the words 'the PDF's text layer' never appear" for OCR-sourced text - it is an
  * independent second reading of the same pages, not the document's own embedded text. */
-function readingBasisNote(t: TierCCopy, readingBasis: ExtractionTrace['reading_basis'], textLayerSource: TechnicalDetails['text_layer_source']): string {
-  if (readingBasis === 'image_only') return t.readingBasisImageOnly;
-  return textLayerSource === 'ocr' ? t.readingBasisOcrVerified : t.readingBasisTextVerified;
+/** Stage 2s (§2s.3b): "every panel sentence about the check depends on the source... the success
+ * panel too." `text_layer_source` alone already fully identifies which of the four states this read
+ * is in - simpler to key the one displayed sentence off that directly than to keep two dispatch
+ * mechanisms (this one and `reading_basis`) that could silently drift apart. */
+function readingBasisNote(t: TierCCopy, textLayerSource: TechnicalDetails['text_layer_source']): string {
+  switch (textLayerSource) {
+    case 'client': return t.readingBasisTextVerified;
+    case 'two_readers': return t.readingBasisTwoReaders;
+    case 'one_reader': return t.readingBasisOneReader;
+    case 'none': return t.readingBasisImageOnly;
+  }
 }
 
 /** Stage 2j (§2j.3): "an upload that falls back to image-only mid-request is stuck with the lower,
@@ -765,7 +802,7 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
 
                 {/* Stage 2g (§2g.5): "the panel says in one plain sentence that the digits were not
                     checked against the document's text" for an image-only read. */}
-                <p className="form-note">{readingBasisNote(t, trace.reading_basis, trace.technical_details.text_layer_source)}</p>
+                <p className="form-note">{readingBasisNote(t, trace.technical_details.text_layer_source)}</p>
                 {/* Stage 2g (§2g.4): a stated gap, never a finding - "printed amounts that were not
                     used" (this is what catches a whole missing line, like Olympia's 58.31). */}
                 {trace.unused_printed_amounts.count > 0 && (
@@ -1004,7 +1041,10 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
       )}
 
       {/* Stage 2h (§2h.4): shown on a successful read too, not only the unreliable trace panel - "the
-          owner's real-PDF result will be read from" this line either way. */}
+          owner's real-PDF result will be read from" this line either way.
+          Stage 2s (§2s.3b): "the success panel too" - the same reading-basis sentence the blocked
+          trace panel shows. */}
+      <p className="form-note">{readingBasisNote(t, response.technicalDetails.text_layer_source)}</p>
       <p className="form-note">{textLayerStatusNote(t, response.technicalDetails.text_layer_status)}</p>
       <p className="form-note">
         {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.amounts_checked, response.technicalDetails.amounts_not_found, response.technicalDetails.request_size_kb, response.technicalDetails.render_step)}

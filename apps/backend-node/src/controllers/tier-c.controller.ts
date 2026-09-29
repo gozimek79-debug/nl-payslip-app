@@ -6,10 +6,12 @@ import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, resolveNetPosition, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
 import { verifyAmountsAgainstText, textLayerVerificationCounts, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCPeriodType } from '../payroll-engine/tier-c.js';
-import { isDocumentVisionConfigured, isOcrEnabled } from '../ai-service/document-vision-provider.js';
-import { extractTierCPayslip } from '../ocr-service/ocr-client.js';
-import { buildOcrTextLayer } from '../ocr-service/ocr-text-layer.js';
+import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
+import { isGeminiReaderEnabled, extractTierCPayslipViaGemini } from '../ai-service/gemini-client.js';
+import { extractTierCPayslip, extractTierCPayslipViaMistralAnnotation } from '../ocr-service/ocr-client.js';
+import { compareReaderExtractions } from '../payroll-engine/reader-comparison.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
+import type { TierCExtraction } from '../payroll-engine/tier-c.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 /**
@@ -245,23 +247,18 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // Stage 2h (§2h.2): the sanitizer's own status ('ok'/'too_large') is carried forward - a too-large
   // list is never partially trusted, it is treated exactly like no text layer at all.
   const { items: clientDocumentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
-  // Stage 2q (§2q.2): "when a request carries no usable text layer, run OCR on the same page images
-  // and build a text layer... where a real PDF text layer exists, keep it (exact embedded text beats
-  // OCR of a rasterized copy)." Only attempted when the client sent nothing usable (never a
-  // 'too_large' list, which is a real text layer that was merely too big to trust wholesale - that
-  // case stays exactly as before this stage, not silently replaced by a weaker OCR read of the same
-  // pages). Never throws and never blocks /analyze: buildOcrTextLayer fails closed on its own
-  // (isOcrConfigured) and swallows any per-page OCR failure internally - this can only ever ADD a text
-  // layer where none existed.
-  let documentText = clientDocumentText;
-  let textLayerSource: 'client' | 'ocr' | 'none' = clientDocumentText.length > 0 ? 'client' : 'none';
-  if (clientDocumentText.length === 0 && sanitizedStatus === 'ok' && isOcrEnabled()) {
-    const ocrDocumentText = await buildOcrTextLayer(images as string[]);
-    if (ocrDocumentText.length > 0) {
-      documentText = ocrDocumentText;
-      textLayerSource = 'ocr';
-    }
-  }
+  // Stage 2s (audit v51, §2s.2/§2s.3): "the bag-of-numbers guard is no longer what decides a photo or
+  // a scan. It stays on the embedded-PDF path." Embedded PDF text (from the client) is unchanged -
+  // exact, so it stays the extraction's primary source, verified afterward by the pre-existing
+  // document-text-guard.ts mechanism. When no client text exists, TWO INDEPENDENT READERS replace the
+  // old OCR-text-layer-plus-single-vision-call mechanism entirely: Reader A (Mistral OCR annotation,
+  // §2s.1a) and Reader B (Gemini, §2s.1b/§5.2 - off unless GEMINI_READER_ENABLED is set, the one
+  // deliberate non-EU exception). Both run in parallel with each other (§2s.1e/§2s.3c); Reader A's own
+  // per-page calls are themselves parallel (extractTierCPayslipViaMistralAnnotation). Reader B's own
+  // failure never blocks the read - a one-reader-only result is still usable, just never "confirmed"
+  // (§2s.3a/d) - but Reader A failing is a genuine extraction failure (propagates to the outer catch),
+  // exactly like any other extraction failure, since there is no fallback reader for reader A itself.
+  const documentText: DocumentTextItem[] = clientDocumentText;
   // Stage 2h (§2h.4): "the total request size in kilobytes" - the header the client itself sent, not
   // a re-serialisation of req.body (which can differ from the wire size by whitespace/encoding).
   // Falls back to a re-encode only when a client/proxy omits the header.
@@ -281,21 +278,41 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   const renderStepRaw = req.body?.renderStep;
   const renderStep = typeof renderStepRaw === 'string' && KNOWN_RENDER_STEPS.includes(renderStepRaw) ? renderStepRaw : 'unknown';
 
-  // Stage 2r (audit v46, §2r.1): "keep OCR text out of the extraction prompt." 2q.3 made the text
-  // layer the model's PRIMARY SOURCE for amounts - correct for a client-supplied, exact embedded PDF
-  // text layer, but circular for OCR-built text: OCR read the same pixels the vision model is about to
-  // read, so telling the model to copy OCR's own reading just means the model parrots a second,
-  // possibly-also-wrong reading of the same image, and the guard then "confirms" it against the exact
-  // same reading it was told to copy - no independent check ever happens. Only CLIENT-supplied text
-  // goes into the extraction prompt; OCR-built text is withheld from the model entirely (it reads the
-  // image on its own, exactly as it did before this stage existed) and is used ONLY by the guard below,
-  // as a genuinely independent second reading of the same page to check the model's own answer against
-  // - never to supply or correct that answer (§2.3: never move an extracted amount to a nearby text
-  // value; a disagreement is flagged, not resolved).
-  const extractionTextItems = textLayerSource === 'client' ? documentText : [];
-
   try {
-    const extraction = await extractTierCPayslip(images as string[], extractionTextItems);
+    // Stage 2s (audit v51, §2s.2/§2s.3): "the bag-of-numbers guard is no longer what decides a photo
+    // or a scan. It stays on the embedded-PDF path." Embedded PDF text (from the client) is unchanged -
+    // exact, so it stays the extraction's primary source, verified afterward by the pre-existing
+    // document-text-guard.ts mechanism. When no client text exists, TWO INDEPENDENT READERS replace
+    // the old OCR-text-layer-plus-single-vision-call mechanism entirely: Reader A (Mistral OCR
+    // annotation, §2s.1a) and Reader B (Gemini, §2s.1b/§5.2 - off unless GEMINI_READER_ENABLED is set,
+    // the one deliberate non-EU exception). Both run in parallel with each other (§2s.1e/§2s.3c);
+    // Reader A's own per-page calls are themselves parallel
+    // (extractTierCPayslipViaMistralAnnotation). Reader B's own failure never blocks the read - a
+    // one-reader-only result is still usable, just never "confirmed" (§2s.3a/d) - but Reader A failing
+    // IS a genuine extraction failure, caught by this same try/catch and answered as
+    // `extraction_failed` exactly like any other extraction failure, since there is no fallback reader
+    // for reader A itself. Deliberately INSIDE this try block (not resolved earlier) - a thrown Reader
+    // A error must reach this catch, not escape as an unhandled rejection.
+    let textLayerSource: 'client' | 'two_readers' | 'one_reader';
+    let extraction: TierCExtraction;
+    let readerComparisonIssues: ConsistencyIssue[] = [];
+    if (clientDocumentText.length > 0) {
+      textLayerSource = 'client';
+      extraction = await extractTierCPayslip(images as string[], documentText);
+    } else {
+      const readerBEnabled = isGeminiReaderEnabled();
+      const [readerA, readerB] = await Promise.all([
+        extractTierCPayslipViaMistralAnnotation(images as string[]),
+        readerBEnabled ? extractTierCPayslipViaGemini(images as string[]).catch(() => null) : Promise.resolve(null),
+      ]);
+      if (readerB) {
+        textLayerSource = 'two_readers';
+        readerComparisonIssues = compareReaderExtractions(readerA, readerB);
+      } else {
+        textLayerSource = 'one_reader';
+      }
+      extraction = readerA;
+    }
     const referenceDate = resolveReferenceDate(extraction.period_end_date);
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
@@ -326,6 +343,12 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // tax is computed, no net figure is shown, when either of these is true.
     const periodType = extraction.period_type;
     const extractionGapIssues: ConsistencyIssue[] = [];
+    // Stage 2s (§2s.2): "there is no rule that removes the check when many fields disagree - many
+    // disagreements make the read unreliable, they never make a reader disappear." Folded into the
+    // SAME gate every other extraction-gap issue already blocks on, not a second, parallel channel -
+    // any reader disagreement, however small or however many, blocks exactly like an unread period
+    // type or an unreadable amount already does.
+    extractionGapIssues.push(...readerComparisonIssues);
     if (periodType === null) extractionGapIssues.push({ code: 'period_type_unknown' });
     // Stage 2i (§2i.3): reads the SAME resolution mapExtractionToPeriod uses (resolveEtExchangeAmountFromExtraction,
     // which also recognises an ET-labelled line the model left in pre_tax_deduction_lines - see its own

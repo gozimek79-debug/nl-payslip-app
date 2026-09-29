@@ -5,6 +5,7 @@ import type { TierCExtraction, TierCHourLine, TierCDeductionLine, TierCNetLine, 
 import type { HourLineCategory, TaxTreatment, PreTaxDeductionCategory, PostTaxSocialCategory, NetDeductionCategory, ReservationType } from '../payroll-engine/payslip-model.js';
 import type { DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { sanitizeText } from './pii-patterns.js';
+import { TIER_C_EXTRACTION_SCHEMA, toMistralAnnotationSchema, mergeRawExtractionPages } from './tier-c-extraction-schema.js';
 
 /**
  * Stage 2g (audit v27, §2g.0f): DELETED - `AiOcrFields`, the old `SYSTEM_PROMPT`,
@@ -417,39 +418,18 @@ function documentTextBlock(textItems: DocumentTextItem[]): string | null {
   return [`=== DOCUMENT TEXT LAYER ${boundary} (primary source for amounts) ===`, ...lines, `=== END DOCUMENT TEXT LAYER ${boundary} ===`].join('\n');
 }
 
-export async function extractTierCPayslip(imageDataUrls: string[], textItems: DocumentTextItem[] = []): Promise<TierCExtraction> {
-  const textBlock = documentTextBlock(textItems);
-  const requestBody: ChatCompletionCreateParamsNonStreaming = {
-    model: documentVisionModel(),
-    temperature: 0,
-    max_tokens: 4000,
-    messages: [
-      { role: 'system', content: TIER_C_SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tego paska wypłaty i zwróć JSON zgodny z opisaną strukturą.` },
-          ...imageDataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-          ...(textBlock ? [{ type: 'text' as const, text: textBlock }] : []),
-        ],
-      },
-    ],
-  };
-  let completion;
-  try {
-    completion = await documentVisionClient().chat.completions.create(requestBody);
-  } catch (error) {
-    await logVisionProviderFailure(requestBody);
-    throw error;
-  }
-
-  const raw = completion.choices[0]?.message?.content ?? '{}';
-  // Stage 2c: no more truncation-repair fallback for this path. The 1000-token/minute free-tier cap
-  // that made partial responses routine is gone on a paid model; a response that fails to parse now
-  // is a genuine extraction failure, surfaced as one (the controller's existing try/catch ->
-  // extraction_failed), not silently patched back together.
-  const hitLengthLimit = completion.choices[0]?.finish_reason === 'length';
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
+/**
+ * Stage 2s (audit v51, §2s.2): "both readings use the extraction's existing shape (TierCExtraction);
+ * both requests are derived from it, not written separately." Extracted from `extractTierCPayslip`
+ * (was inline) so Reader A (this function's own caller, unchanged) and Reader B (Gemini,
+ * `gemini-client.ts`) and Reader A's own NEW annotation path (`extractTierCPayslipViaMistralAnnotation`,
+ * this file) all map their raw JSON through the exact same code - one function, three callers, so a
+ * mapping bug fixed for one reader is fixed for all three, and the three can never silently drift into
+ * disagreeing about what a given raw field name means. `truncated` is passed in rather than detected
+ * here, since each caller's own API signals truncation differently (finish_reason for the chat-
+ * completions call, a different field for the others).
+ */
+export function mapRawExtractionToTierC(parsed: Record<string, unknown>, truncated: boolean): TierCExtraction {
   const redactedFields: string[] = [];
   const unreadableAmountFields: string[] = [];
 
@@ -568,8 +548,89 @@ export async function extractTierCPayslip(imageDataUrls: string[], textItems: Do
     printed_arbeidskorting_label: sanitizeText(parsed.printed_arbeidskorting_label, 'printed_arbeidskorting_label', redactedFields),
     printed_net_label: sanitizeText(parsed.printed_net_label, 'printed_net_label', redactedFields),
     printed_payout_label: sanitizeText(parsed.printed_payout_label, 'printed_payout_label', redactedFields),
-    truncated: hitLengthLimit,
+    truncated,
     redacted_fields: redactedFields,
     unreadable_amount_fields: unreadableAmountFields,
   };
+}
+
+export async function extractTierCPayslip(imageDataUrls: string[], textItems: DocumentTextItem[] = []): Promise<TierCExtraction> {
+  const textBlock = documentTextBlock(textItems);
+  const requestBody: ChatCompletionCreateParamsNonStreaming = {
+    model: documentVisionModel(),
+    temperature: 0,
+    max_tokens: 4000,
+    messages: [
+      { role: 'system', content: TIER_C_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tego paska wypłaty i zwróć JSON zgodny z opisaną strukturą.` },
+          ...imageDataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+          ...(textBlock ? [{ type: 'text' as const, text: textBlock }] : []),
+        ],
+      },
+    ],
+  };
+  let completion;
+  try {
+    completion = await documentVisionClient().chat.completions.create(requestBody);
+  } catch (error) {
+    await logVisionProviderFailure(requestBody);
+    throw error;
+  }
+
+  const raw = completion.choices[0]?.message?.content ?? '{}';
+  // Stage 2c: no more truncation-repair fallback for this path. The 1000-token/minute free-tier cap
+  // that made partial responses routine is gone on a paid model; a response that fails to parse now
+  // is a genuine extraction failure, surfaced as one (the controller's existing try/catch ->
+  // extraction_failed), not silently patched back together.
+  const hitLengthLimit = completion.choices[0]?.finish_reason === 'length';
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return mapRawExtractionToTierC(parsed, hitLengthLimit);
+}
+
+/**
+ * Stage 2s (audit v51, §2s.2): "Reader A - Mistral OCR, returning a document annotation in our own
+ * extraction schema... On this path it replaces the current Mistral Medium vision call." Used only on
+ * the image-only path (no embedded PDF text) - the embedded-PDF path keeps calling
+ * `extractTierCPayslip` above, unchanged. One `document_annotation_format` call per page image
+ * (§2s.1a's confirmed live shape: `model: 'mistral-ocr-latest'`, `document: {type:'image_url',
+ * image_url:<data: URL>}`), fired in parallel (§2s.1e/§2s.3c), then merged
+ * (`mergeRawExtractionPages`) before mapping through the SAME `mapRawExtractionToTierC` every other
+ * reader uses. Fails closed exactly like `documentVisionClient()`/`isOcrConfigured()`: refuses unless
+ * the active provider is Mistral and EU-hosted - annotation is a Mistral-only endpoint, like plain OCR.
+ */
+export async function extractTierCPayslipViaMistralAnnotation(imageDataUrls: string[]): Promise<TierCExtraction> {
+  const config = activeDocumentVisionConfig();
+  if (!config.euHosted || config.name !== 'mistral') {
+    throw new Error('Mistral OCR annotation requires the active provider to be Mistral and EU-hosted.');
+  }
+  const apiKey = process.env[config.apiKeyEnvVar];
+  if (!apiKey) {
+    throw new Error(`${config.apiKeyEnvVar} is not configured for provider "${config.name}".`);
+  }
+  const annotationSchema = toMistralAnnotationSchema(TIER_C_EXTRACTION_SCHEMA);
+  const callOnePage = async (imageDataUrl: string): Promise<Record<string, unknown>> => {
+    const res = await fetch(`${config.baseURL}/ocr`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mistral-ocr-latest',
+        document: { type: 'image_url', image_url: imageDataUrl },
+        document_annotation_format: { type: 'json_schema', json_schema: { name: 'tier_c_extraction', schema: annotationSchema } },
+      }),
+    });
+    if (!res.ok) throw new Error(`Mistral OCR annotation call failed: HTTP ${res.status}`);
+    const body = (await res.json()) as { document_annotation?: string };
+    if (!body.document_annotation) return {};
+    try {
+      return JSON.parse(body.document_annotation) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+  const pages = await Promise.all(imageDataUrls.map(callOnePage));
+  const merged = mergeRawExtractionPages(pages);
+  return mapRawExtractionToTierC(merged, false);
 }

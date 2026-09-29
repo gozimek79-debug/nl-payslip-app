@@ -32,9 +32,20 @@ let baseUrl: string;
 let originalFetch: typeof fetch;
 let originalApiKey: string | undefined;
 
+// Stage 2s (audit v51, §2s.2): "Reader A... on this path it replaces the current Mistral Medium
+// vision call." Every test in this file that sends NO `documentText` now takes the image-only
+// two-reader path, whose Reader A calls `/ocr`'s `document_annotation_format`, not `chat/completions`
+// - answered here with the SAME fixture JSON, in the shape Mistral's own annotation response actually
+// uses (`{document_annotation: "<JSON string>"}`, confirmed live in §2s.1a), so every existing
+// image-only test still exercises the identical extraction content it always did, just through the
+// real, current call path. `chat/completions` stays answered too, for this file's own embedded-PDF-
+// text tests (which DO send `documentText` and therefore still take the unchanged text-first path).
 function mockCompletion(extractionJson: unknown) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('mistral.ai') && url.includes('/ocr')) {
+      return new Response(JSON.stringify({ document_annotation: JSON.stringify(extractionJson) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     if (url.includes('mistral.ai') && url.includes('chat/completions')) {
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(extractionJson) }, finish_reason: 'stop' }] }), {
         status: 200,

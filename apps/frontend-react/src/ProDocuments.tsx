@@ -144,6 +144,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       outcome?: { status: string; result?: { payout_amount: number } };
       discrepancies?: unknown[];
       period?: { period_label: string | null; period_end_date: string | null; hour_lines?: PayslipHourLineForSummary[] };
+      technicalDetails?: { text_layer_source?: 'client' | 'two_readers' | 'one_reader' | 'none' };
       error_code?: string;
     };
     if (!res.ok || !data.status) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
@@ -154,7 +155,11 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       return { status: 'done', payslipSummary: { ok: false, net: null, periodLabel, periodEndDate, fullyReproduced: false, hourLines } };
     }
     const net = data.outcome?.status === 'complete' ? data.outcome.result?.payout_amount ?? null : null;
-    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0;
+    // Stage 2s (§2s.3d): "a payslip... that had only one reader can never count as fully reproduced
+    // in PRO." A clean single-reader read still reaches status 'ok' with an empty discrepancy list
+    // (reader B never ran to disagree with anything) - `discrepancies.length === 0` alone cannot tell
+    // "two readers agreed" apart from "only one reader was ever asked", so the source is checked too.
+    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0 && data.technicalDetails?.text_layer_source !== 'one_reader';
     return { status: 'done', payslipSummary: { ok: true, net, periodLabel, periodEndDate, fullyReproduced, hourLines } };
   }
 

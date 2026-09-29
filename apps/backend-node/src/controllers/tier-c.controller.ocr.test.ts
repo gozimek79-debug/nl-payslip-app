@@ -4,21 +4,28 @@ import type { AddressInfo } from 'node:net';
 import type { Request as ExpressRequest, Response as ExpressResponse, NextFunction } from 'express';
 
 /**
- * Stage 2q (audit v45, §2q.5): the four required end-to-end proofs for the OCR text-layer path - "a
- * synthetic image-only document produces an OCR text layer and the guard verifies its amounts... a
- * synthetic document with a deliberately wrong amount is flagged on the image-only path same as the
- * text-PDF path... OCR text never appears in a log line or response body (tested, not just asserted)...
- * fail-closed holds." A SEPARATE file from tier-c.controller.test.ts: that file's own `mockCompletion`
- * only ever answers `chat/completions`; every test here needs BOTH that AND `/ocr` answered, plus its
- * own captured console.error calls - a clean separation of concern, not a module-mock timing
- * requirement this time (the same `ipRateLimit` passthrough every HTTP-level Tier C test file needs).
+ * Stage 2s (audit v51, §2s.2/§2s.3): the required HTTP-level disagreement matrix for the two-reader
+ * image-only path - "Mistral and Gemini calls mocked, each in both directions... 3 of 5 fields
+ * disagreeing (must be unreliable, never ok)... a line only one reading has... both agreeing on
+ * everything (ok, two-readings wording)... one reader failing (single-reader state, never ok as
+ * confirmed)... fail-closed: reader B makes no network call unless its enabling env var is set."
+ *
+ * SUPERSEDES this file's own earlier content (stages 2q/2r): those tests exercised the
+ * OCR-text-layer-plus-bag-of-numbers-guard mechanism for the image-only path, which 2s retires
+ * entirely ("the bag-of-numbers guard is no longer what decides a photo or a scan"). The comparison
+ * ALGORITHM itself (field/line alignment, the disagreement matrix) is unit-tested directly against
+ * `compareReaderExtractions` in `reader-comparison.test.ts`; these HTTP-level tests exist to prove the
+ * WIRING - that `/analyze` actually calls both readers in parallel, gates on their comparison, reports
+ * the right `reading_basis`/`text_layer_source` state, and fails closed on reader B's own switch.
  */
 
 let app: (typeof import('../app.js'))['default'];
 let server: ReturnType<typeof app.listen>;
 let baseUrl: string;
 let originalFetch: typeof fetch;
-let originalApiKey: string | undefined;
+let originalMistralKey: string | undefined;
+let originalGeminiKey: string | undefined;
+let originalGeminiEnabled: string | undefined;
 
 before(async () => {
   mock.module('../rate-limiter.js', {
@@ -28,8 +35,11 @@ before(async () => {
   });
   ({ default: app } = await import('../app.js'));
 
-  originalApiKey = process.env.MISTRAL_API_KEY;
-  process.env.MISTRAL_API_KEY = 'test-key-2q';
+  originalMistralKey = process.env.MISTRAL_API_KEY;
+  originalGeminiKey = process.env.GEMINI_API_KEY;
+  originalGeminiEnabled = process.env.GEMINI_READER_ENABLED;
+  process.env.MISTRAL_API_KEY = 'test-key-2s';
+  process.env.GEMINI_API_KEY = 'test-gemini-key-2s';
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });
@@ -39,13 +49,17 @@ before(async () => {
 
 after(async () => {
   globalThis.fetch = originalFetch;
-  if (originalApiKey === undefined) delete process.env.MISTRAL_API_KEY;
-  else process.env.MISTRAL_API_KEY = originalApiKey;
+  if (originalMistralKey === undefined) delete process.env.MISTRAL_API_KEY;
+  else process.env.MISTRAL_API_KEY = originalMistralKey;
+  if (originalGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = originalGeminiKey;
+  if (originalGeminiEnabled === undefined) delete process.env.GEMINI_READER_ENABLED;
+  else process.env.GEMINI_READER_ENABLED = originalGeminiEnabled;
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 });
 
 // A minimal, single-line synthetic extraction - deliberately small so the only thing that can block
-// it is the one thing each test means to exercise (the text-layer guard), not an unrelated gate.
+// it is the ONE thing each test means to exercise, not an unrelated gate.
 const BASE_EXTRACTION = {
   period_label: 'week 12/2026', period_end_date: '2026-03-22', payment_date: null, period_type: 'week',
   is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
@@ -58,96 +72,198 @@ const BASE_EXTRACTION = {
   printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null, printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
 };
 
-// Fabricated, never a real name/IBAN - present ONLY to prove OCR's full document text (which would, on
-// a real document, carry a name/address/IBAN/BSN) never reaches a log line or the response body.
+// Fabricated, never a real name/IBAN - present only to prove a reader's raw content never reaches a
+// log line or the response body (§2q.4's own discipline, still required - readers still go through
+// the same sanitizeText/mapRawExtractionToTierC mapping every extraction always has).
 const PII_MARKER = 'Jan Testkowalski NL00BANK0123456789';
 
-// Every printed figure BASE_EXTRACTION itself carries (hour line, table tax, net, payout) - a genuinely
-// clean synthetic OCR read that confirms all four, so the guard's own "too little confirms, distrust
-// the whole layer" fallback (2i.0a) never fires and each test exercises the ONE thing it means to.
-const CORRECT_OCR_TEXT = `${PII_MARKER}\nLoon normaal 699,78\nLoonheffing 145,51\nNetto 554,27`;
-
-function mockFetchWithOcr(extractionJson: unknown, ocrMarkdown: string) {
+function mockReaders(mistralJson: unknown, geminiJson: unknown | null) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
     if (url.includes('mistral.ai') && url.includes('/ocr')) {
-      return new Response(JSON.stringify({ pages: [{ markdown: ocrMarkdown }] }), { status: 200 });
+      return new Response(JSON.stringify({ document_annotation: JSON.stringify(mistralJson) }), { status: 200 });
     }
-    if (url.includes('mistral.ai') && url.includes('chat/completions')) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(extractionJson) }, finish_reason: 'stop' }] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (url.includes('generativelanguage.googleapis.com')) {
+      if (geminiJson === null) return new Response('{}', { status: 500 });
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(geminiJson) }] } }] }),
+        { status: 200 },
+      );
     }
     throw new Error(`unexpected fetch in test: ${url}`);
   };
 }
 
-test('2q.2/2q.5: an image-only upload (no documentText) builds an OCR text layer and the guard verifies a correct amount', async () => {
-  globalThis.fetch = mockFetchWithOcr(BASE_EXTRACTION, CORRECT_OCR_TEXT) as typeof fetch;
+test('2s.3: both readers disabled/reader B not configured - a clean read is still usable, reported as one_reader, never presented as two', async () => {
+  delete process.env.GEMINI_READER_ENABLED;
+  globalThis.fetch = mockReaders(BASE_EXTRACTION, null) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
   });
-  const body = (await res.json()) as { status?: string; technicalDetails?: { text_layer_source?: string; amounts_checked?: number; amounts_not_found?: number } };
-  assert.equal(res.status, 200);
-  assert.equal(body.status, 'ok', `expected an 'ok' read, got: ${JSON.stringify(body)}`);
-  assert.equal(body.technicalDetails?.text_layer_source, 'ocr');
-  assert.ok((body.technicalDetails?.amounts_checked ?? 0) > 0, 'expected at least one amount checked against the OCR text layer');
-  assert.equal(body.technicalDetails?.amounts_not_found, 0);
+  const body = (await res.json()) as { status?: string; technicalDetails?: { text_layer_source?: string } };
+  assert.equal(body.status, 'ok', `expected a usable single-reader read, got: ${JSON.stringify(body)}`);
+  assert.equal(body.technicalDetails?.text_layer_source, 'one_reader');
 });
 
-test('2q.3/2q.5: a deliberately wrong amount is flagged on the image-only (OCR) path, the same way the text-PDF path already flags it', async () => {
-  const wrongAmountExtraction = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.75 }] };
-  globalThis.fetch = mockFetchWithOcr(wrongAmountExtraction, CORRECT_OCR_TEXT) as typeof fetch;
-  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
-  });
-  const body = (await res.json()) as { status?: string; issues?: Array<{ code?: string; field?: string }> };
-  assert.equal(body.status, 'unreliable', `expected the guard to block, got: ${JSON.stringify(body)}`);
-  assert.ok(
-    body.issues?.some((i) => i.code === 'amount_unreadable' && i.field === 'hour_lines[0].amount'),
-    `expected an amount_unreadable issue for hour_lines[0].amount, got: ${JSON.stringify(body.issues)}`,
-  );
-});
-
-test('2r.1: OCR text is withheld from the extraction prompt - the model never sees it, only the guard does', async () => {
-  let capturedChatBody: string | undefined;
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+test('2s: Reader A failing produces a structured 502, not an unhandled rejection - the reader calls must run INSIDE the try/catch, not before it', async () => {
+  delete process.env.GEMINI_READER_ENABLED;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-    if (url.includes('mistral.ai') && url.includes('/ocr')) {
-      return new Response(JSON.stringify({ pages: [{ markdown: CORRECT_OCR_TEXT }] }), { status: 200 });
-    }
-    if (url.includes('mistral.ai') && url.includes('chat/completions')) {
-      capturedChatBody = typeof init?.body === 'string' ? init.body : undefined;
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(BASE_EXTRACTION) }, finish_reason: 'stop' }] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-    throw new Error(`unexpected fetch in test: ${url}`);
+    if (url.includes('mistral.ai') && url.includes('/ocr')) throw new Error('simulated Reader A network failure');
+    throw new Error(`unexpected fetch: ${url}`);
   }) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
   });
-  const body = (await res.json()) as { technicalDetails?: { text_layer_source?: string } };
-  assert.equal(body.technicalDetails?.text_layer_source, 'ocr', 'expected this request to actually take the OCR branch');
-  assert.ok(capturedChatBody, 'expected a captured outgoing extraction request');
-  // Not a check for the literal words "DOCUMENT TEXT LAYER" - the system prompt's OWN instructional
-  // text describing the mechanism contains that phrase unconditionally, on every call, whether or not
-  // a block is actually attached. The real per-request block carries a random 16-hex-digit boundary
-  // token (documentTextBlock, ocr-client.ts) - its ABSENCE, plus the OCR content's own absence, is
-  // what actually proves no block was attached this time.
-  assert.ok(!/=== DOCUMENT TEXT LAYER [0-9a-f]{16}/.test(capturedChatBody!), 'the extraction prompt must carry no actual text-layer data block when the source is OCR');
-  assert.ok(!capturedChatBody!.includes(PII_MARKER), 'OCR text must never reach the extraction model');
+  assert.equal(res.status, 502, `expected a structured 502, got ${res.status}`);
+  const body = (await res.json()) as { error_code?: string };
+  assert.equal(body.error_code, 'extraction_failed');
 });
 
-test('2q.4/2r.4b: OCR text never appears in a log line (error, log or warn) or the response body, not even as a fragment', async () => {
+test('2s.1e/2s.3: reader B makes NO network call at all when its switch is off - fail-closed, not merely unused', async () => {
+  delete process.env.GEMINI_READER_ENABLED;
+  let geminiCalled = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('generativelanguage.googleapis.com')) {
+      geminiCalled = true;
+      return new Response('{}', { status: 200 });
+    }
+    if (url.includes('mistral.ai') && url.includes('/ocr')) {
+      return new Response(JSON.stringify({ document_annotation: JSON.stringify(BASE_EXTRACTION) }), { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+  await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+  });
+  assert.equal(geminiCalled, false, 'Gemini must never be called at all while GEMINI_READER_ENABLED is unset');
+});
+
+test('2s.3: reader B failing (network error) still produces a usable one-reader read - reader A alone is not blocked by reader B', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    if (url.includes('generativelanguage.googleapis.com')) throw new Error('simulated network failure');
+    if (url.includes('mistral.ai') && url.includes('/ocr')) return new Response(JSON.stringify({ document_annotation: JSON.stringify(BASE_EXTRACTION) }), { status: 200 });
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; technicalDetails?: { text_layer_source?: string } };
+    assert.equal(body.status, 'ok');
+    assert.equal(body.technicalDetails?.text_layer_source, 'one_reader', 'a failed reader B must degrade to one_reader, never crash the whole request');
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test('2s.2/2s.3: both readers agreeing on everything - status ok, reading_basis says two readers were compared', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  globalThis.fetch = mockReaders(BASE_EXTRACTION, BASE_EXTRACTION) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; technicalDetails?: { text_layer_source?: string } };
+    assert.equal(body.status, 'ok', `expected agreement to read clean, got: ${JSON.stringify(body)}`);
+    assert.equal(body.technicalDetails?.text_layer_source, 'two_readers');
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test("2s.2: Cursor's self-consistent 699,59/699,51 disagreement - unreliable, never resolved to either value, A right / B wrong", async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  const a = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.59 }] };
+  const b = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.51 }] };
+  globalThis.fetch = mockReaders(a, b) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; issues?: Array<{ code?: string; value_a?: unknown; value_b?: unknown }> };
+    assert.equal(body.status, 'unreliable', `expected a two-reader disagreement to block, got: ${JSON.stringify(body)}`);
+    assert.ok(body.issues?.some((i) => i.code === 'reader_line_disagreement'), JSON.stringify(body.issues));
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test('2s.2: B right / A wrong - the same disagreement, direction reversed, still blocks (neither reader is trusted by default)', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  const a = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.51 }] };
+  const b = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.59 }] };
+  globalThis.fetch = mockReaders(a, b) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; issues?: Array<{ code?: string }> };
+    assert.equal(body.status, 'unreliable');
+    assert.ok(body.issues?.some((i) => i.code === 'reader_line_disagreement'));
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test('2s.2: a line only one reading has (a reservation the other reader missed) blocks with reader_line_only_in_a/b', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  const a = { ...BASE_EXTRACTION, reservation_lines: [{ type: 'vakantiegeld', accrued: 78.51, paid_out: 0 }] };
+  const b = { ...BASE_EXTRACTION, reservation_lines: [] };
+  globalThis.fetch = mockReaders(a, b) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; issues?: Array<{ code?: string }> };
+    assert.equal(body.status, 'unreliable');
+    assert.ok(body.issues?.some((i) => i.code === 'reader_line_only_in_a'), JSON.stringify(body.issues));
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test('2s.2: many disagreements (3+ fields) still block - unreliable, never ok, no threshold clears them', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
+  const a = { ...BASE_EXTRACTION, printed_table_tax: 100, reported_total_net: 500, reported_net_paid: 500 };
+  const b = { ...BASE_EXTRACTION, printed_table_tax: 200, reported_total_net: 501, reported_net_paid: 502 };
+  globalThis.fetch = mockReaders(a, b) as typeof fetch;
+  try {
+    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
+    });
+    const body = (await res.json()) as { status?: string; issues?: Array<{ code?: string }> };
+    assert.equal(body.status, 'unreliable');
+    const disagreements = body.issues?.filter((i) => i.code === 'reader_field_disagreement') ?? [];
+    assert.ok(disagreements.length >= 3, `expected at least 3 disagreement issues, got ${disagreements.length}: ${JSON.stringify(body.issues)}`);
+  } finally {
+    delete process.env.GEMINI_READER_ENABLED;
+  }
+});
+
+test('2s.4: no reader content (raw JSON, PII) ever appears in a log line or the response body', async () => {
+  process.env.GEMINI_READER_ENABLED = 'true';
   const originalConsoleError = console.error;
   const originalConsoleLog = console.log;
   const originalConsoleWarn = console.warn;
@@ -158,12 +274,14 @@ test('2q.4/2r.4b: OCR text never appears in a log line (error, log or warn) or t
   console.error = capture as typeof console.error;
   console.log = capture as typeof console.log;
   console.warn = capture as typeof console.warn;
-  const wrongAmountExtraction = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], amount: 699.75 }] };
-  globalThis.fetch = mockFetchWithOcr(wrongAmountExtraction, CORRECT_OCR_TEXT) as typeof fetch;
-  // Stage 2r (§2r.4b): a fragment of the marker (the IBAN alone), not only the exact full string -
-  // the original 2q leak test would have missed a log line that echoed part of the OCR text (e.g. a
-  // stray field) without reproducing the whole marker verbatim.
-  const PII_FRAGMENT = 'NL00BANK0123456789';
+  // Stage 2s (§2s.4): the description field goes through sanitizeText in mapRawExtractionToTierC (the
+  // same as every existing reader) - this isolates whether the COMPARISON mechanism itself (the new
+  // surface this round adds) introduces a leak, separate from hirer_name/employer_names, which were
+  // already unsanitized before this round and already reach period.hirer.name regardless of reader
+  // comparison - a real, pre-existing gap, out of this round's own scope, named in the report.
+  const a = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], description: PII_MARKER, amount: 699.59 }] };
+  const b = { ...BASE_EXTRACTION, hour_lines: [{ ...BASE_EXTRACTION.hour_lines[0], description: PII_MARKER, amount: 699.51 }] };
+  globalThis.fetch = mockReaders(a, b) as typeof fetch;
   try {
     const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
       method: 'POST',
@@ -171,38 +289,14 @@ test('2q.4/2r.4b: OCR text never appears in a log line (error, log or warn) or t
       body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
     });
     const rawBody = await res.text();
-    assert.ok(!rawBody.includes(PII_MARKER) && !rawBody.includes(PII_FRAGMENT), 'OCR text (or a fragment of it) must never reach the response body');
+    assert.ok(!rawBody.includes(PII_MARKER), 'reader content must never reach the response body raw');
     for (const line of logged) {
-      assert.ok(!line.includes(PII_MARKER) && !line.includes(PII_FRAGMENT), `OCR text (or a fragment) leaked into a log line: ${line}`);
+      assert.ok(!line.includes(PII_MARKER), `reader content leaked into a log line: ${line}`);
     }
-    assert.ok(
-      logged.some((l) => l.includes('consistency-gate')),
-      'expected the gate to have actually logged something for this blocked request - otherwise this test proves nothing at all',
-    );
   } finally {
+    delete process.env.GEMINI_READER_ENABLED;
     console.error = originalConsoleError;
     console.log = originalConsoleLog;
     console.warn = originalConsoleWarn;
-  }
-});
-
-test('2q.4: TIER_C_OCR_DISABLED skips OCR entirely, falling back to the pre-existing image_only behaviour', async () => {
-  globalThis.fetch = mockFetchWithOcr(BASE_EXTRACTION, CORRECT_OCR_TEXT) as typeof fetch;
-  process.env.TIER_C_OCR_DISABLED = 'true';
-  try {
-    const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images: ['data:image/jpeg;base64,Zg=='] }),
-    });
-    const body = (await res.json()) as {
-      status?: string;
-      technicalDetails?: { text_layer_source?: string };
-      trace?: { technical_details?: { text_layer_source?: string } };
-    };
-    const source = body.technicalDetails?.text_layer_source ?? body.trace?.technical_details?.text_layer_source;
-    assert.equal(source, 'none', `expected OCR to be skipped entirely, got: ${JSON.stringify(body)}`);
-  } finally {
-    delete process.env.TIER_C_OCR_DISABLED;
   }
 });

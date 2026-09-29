@@ -3,12 +3,15 @@ import type { Discrepancy } from './discrepancy.js';
 import { matchesPii } from '../ocr-service/pii-patterns.js';
 
 /**
- * Stage 2c (audit "CONSOLIDATED ASSIGNMENT" v15): the boundary between what the READING model sees
- * (a document image, read in the EU by Mistral) and what an eventual ANALYSIS model sees (Gemini,
- * US-hosted, per the owner's split - reading vs interpretation are different tasks with different
- * demands, so different models; see document-vision-provider.ts). Gemini must never receive a
- * document image, and never a name, address, date of birth, IBAN or employee number - only extracted
- * figures and line names.
+ * Stage 2c (audit "CONSOLIDATED ASSIGNMENT" v15), updated 2t (audit v52): the boundary between what
+ * the READING model sees and what an eventual ANALYSIS model sees - originally a split between an
+ * EU-hosted reader (Mistral) and a US-hosted analysis model (Gemini), now both reading AND analysis
+ * use Gemini (stage 2t moved reading there too - see `gemini-client.ts`), so the EU/US framing this
+ * comment once described no longer applies. The boundary itself is unchanged and still load-bearing:
+ * the READING call receives full document images (that is its job); an eventual ANALYSIS call must
+ * never receive a document image, and never a name, address, date of birth, IBAN or employee number -
+ * only extracted figures and line names, exactly as before. Same vendor on both sides now, still two
+ * genuinely different requests with different inputs.
  *
  * Mirrors the three-layer protection already built for contracts (ai-client.ts's explainContract):
  * (1) the extraction schema itself never captures identity fields - PayslipPeriod/TierCExtraction

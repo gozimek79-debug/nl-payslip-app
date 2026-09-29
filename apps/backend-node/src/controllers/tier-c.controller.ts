@@ -4,14 +4,10 @@ import { isCompleteTaxRatesFile, loadStaticTaxRatesAt, type TaxRatesFile } from 
 import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates, type PayslipPeriod } from '../payroll-engine/payslip-model.js';
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, resolveNetPosition, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
-import { verifyAmountsAgainstText, textLayerVerificationCounts, type DocumentTextItem } from '../payroll-engine/document-text-guard.js';
+import type { DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCPeriodType } from '../payroll-engine/tier-c.js';
-import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
-import { isGeminiReaderEnabled, extractTierCPayslipViaGemini } from '../ai-service/gemini-client.js';
-import { extractTierCPayslip, extractTierCPayslipViaMistralAnnotation } from '../ocr-service/ocr-client.js';
-import { compareReaderExtractions } from '../payroll-engine/reader-comparison.js';
+import { isGeminiConfigured, extractTierCPayslip } from '../ai-service/gemini-client.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
-import type { TierCExtraction } from '../payroll-engine/tier-c.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
 /**
@@ -70,53 +66,12 @@ function sanitizeDocumentText(raw: unknown): { items: DocumentTextItem[]; status
   return { items, status: 'ok' };
 }
 
-export type TextLayerStatus = 'ok' | 'too_large' | 'mismatch' | 'none';
-
-/**
- * Stage 2h (§2h.2): "if the guard cannot find half or more of the amounts it checked... treat the
- * layer as unusable: do not block on the guard, fall back to the image-only read with its gate."
- * CHOSEN and labelled (per the assignment's own instruction): 0.5 - a layer that fails to confirm
- * half the read is more likely a mismatched text layer (wrong pages, a scan with stray OCR text
- * layer, garbled encoding) than a model that is wrong on half its fields at once.
- *
- * Stage 2i (audit v29, §2i.0a): "the guard cannot be switched off by one miss." The reviewer found
- * this ratio alone falls back at `checked=2, unverified=1` - the exact shape of the classic single-
- * invented-digit case (699.75 vs printed 699.78: one field wrong out of a short, correctly-read
- * period), so the ratio being satisfied could silence the ONE check that exists to catch it. A floor
- * requires BOTH the ratio AND an absolute minimum count of unverified fields before falling back.
- */
-const TEXT_LAYER_MISMATCH_RATIO = 0.5;
-/** CHOSEN (§2i.0a's own suggestion, adopted): 3. Below 3 unverified fields, no plausible "wrong
- * text layer" explanation is more likely than "the model got a small number of individual fields
- * wrong" - a genuinely mismatched layer (wrong pages, OCR garbage, a different document) fails to
- * confirm far more than a couple of fields, not exactly one or two. 3 is the smallest count that
- * cannot be produced by the single-invented-digit case alone. */
-const TEXT_LAYER_MISMATCH_FLOOR = 3;
-
-/**
- * Stage 2i (§2i.0a): the floor-and-ratio decision as its own pure, directly testable function -
- * exported so the exact checked/unverified matrix the assignment names (2/1, 4/2, 6/3, 12/6, 12/1)
- * can be tested without going through a full period/text-item fixture.
- */
-export function isTextLayerMismatch(checked: number, unverified: number): boolean {
-  return checked > 0 && unverified >= TEXT_LAYER_MISMATCH_FLOOR && unverified / checked >= TEXT_LAYER_MISMATCH_RATIO;
-}
-
-/**
- * Decides, from the SAME counts the trace will report (§2h.4: "amounts checked, amounts not found"),
- * whether this upload's text layer is usable at all. Returns the unverified field list ONLY when the
- * layer is usable (so the caller blocks exactly those fields, unchanged from 2g.3); returns an empty
- * list and `status: 'mismatch'` when it is not (so the caller does not block on the guard at all).
- */
-function assessTextLayer(period: PayslipPeriod, documentText: DocumentTextItem[], baseStatus: TextLayerStatus): { unverifiedFields: string[]; status: TextLayerStatus; checked: number; unverified: number } {
-  if (baseStatus === 'too_large') return { unverifiedFields: [], status: 'too_large', checked: 0, unverified: 0 };
-  if (documentText.length === 0) return { unverifiedFields: [], status: 'none', checked: 0, unverified: 0 };
-  const { checked, unverified } = textLayerVerificationCounts(period, documentText);
-  if (isTextLayerMismatch(checked, unverified)) {
-    return { unverifiedFields: [], status: 'mismatch', checked, unverified };
-  }
-  return { unverifiedFields: verifyAmountsAgainstText(period, documentText), status: 'ok', checked, unverified };
-}
+/** Stage 2t (audit v52, §2t.3): "the check is the payslip's own arithmetic... without the
+ * reader-comparison and bag-of-numbers layers on top." The amount-verification guard this status
+ * type once had a 'mismatch' state for (and the whole floor-and-ratio mismatch decision, the guard
+ * itself) is retired - `sanitizeDocumentText` below only ever needs to say whether the client's text
+ * list was usable or dropped for being too large. */
+export type TextLayerStatus = 'ok' | 'too_large';
 
 /**
  * Stage 2i (audit v29, §2i.0e): "when Content-Length is absent or disagrees with the re-encoded size
@@ -236,7 +191,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // §2.6/CONVENTIONS.md: error_code + params, never a prebaked sentence - this controller had the
   // same pre-existing defect as tier-a/contract had before those were fixed; wiring this route to a
   // real frontend this round (Stage 2) is exactly when it stops being a theoretical gap.
-  if (!isDocumentVisionConfigured()) {
+  if (!isGeminiConfigured()) {
     return res.status(503).json({ error_code: 'vision_unavailable' });
   }
   const images = Array.isArray(req.body?.images) ? (req.body.images as unknown[]) : [];
@@ -246,19 +201,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // Stage 2g (§2g.1): optional - a plain image upload, or a PDF with no usable text layer, sends none.
   // Stage 2h (§2h.2): the sanitizer's own status ('ok'/'too_large') is carried forward - a too-large
   // list is never partially trusted, it is treated exactly like no text layer at all.
-  const { items: clientDocumentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
-  // Stage 2s (audit v51, §2s.2/§2s.3): "the bag-of-numbers guard is no longer what decides a photo or
-  // a scan. It stays on the embedded-PDF path." Embedded PDF text (from the client) is unchanged -
-  // exact, so it stays the extraction's primary source, verified afterward by the pre-existing
-  // document-text-guard.ts mechanism. When no client text exists, TWO INDEPENDENT READERS replace the
-  // old OCR-text-layer-plus-single-vision-call mechanism entirely: Reader A (Mistral OCR annotation,
-  // §2s.1a) and Reader B (Gemini, §2s.1b/§5.2 - off unless GEMINI_READER_ENABLED is set, the one
-  // deliberate non-EU exception). Both run in parallel with each other (§2s.1e/§2s.3c); Reader A's own
-  // per-page calls are themselves parallel (extractTierCPayslipViaMistralAnnotation). Reader B's own
-  // failure never blocks the read - a one-reader-only result is still usable, just never "confirmed"
-  // (§2s.3a/d) - but Reader A failing is a genuine extraction failure (propagates to the outer catch),
-  // exactly like any other extraction failure, since there is no fallback reader for reader A itself.
-  const documentText: DocumentTextItem[] = clientDocumentText;
+  const { items: documentText, status: sanitizedStatus } = sanitizeDocumentText(req.body?.documentText);
   // Stage 2h (§2h.4): "the total request size in kilobytes" - the header the client itself sent, not
   // a re-serialisation of req.body (which can differ from the wire size by whitespace/encoding).
   // Falls back to a re-encode only when a client/proxy omits the header.
@@ -279,110 +222,43 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   const renderStep = typeof renderStepRaw === 'string' && KNOWN_RENDER_STEPS.includes(renderStepRaw) ? renderStepRaw : 'unknown';
 
   try {
-    // Stage 2s (audit v51, §2s.2/§2s.3): "the bag-of-numbers guard is no longer what decides a photo
-    // or a scan. It stays on the embedded-PDF path." Embedded PDF text (from the client) is unchanged -
-    // exact, so it stays the extraction's primary source, verified afterward by the pre-existing
-    // document-text-guard.ts mechanism. When no client text exists, TWO INDEPENDENT READERS replace
-    // the old OCR-text-layer-plus-single-vision-call mechanism entirely: Reader A (Mistral OCR
-    // annotation, §2s.1a) and Reader B (Gemini, §2s.1b/§5.2 - off unless GEMINI_READER_ENABLED is set,
-    // the one deliberate non-EU exception). Both run in parallel with each other (§2s.1e/§2s.3c);
-    // Reader A's own per-page calls are themselves parallel
-    // (extractTierCPayslipViaMistralAnnotation). Reader B's own failure never blocks the read - a
-    // one-reader-only result is still usable, just never "confirmed" (§2s.3a/d) - but Reader A failing
-    // IS a genuine extraction failure, caught by this same try/catch and answered as
-    // `extraction_failed` exactly like any other extraction failure, since there is no fallback reader
-    // for reader A itself. Deliberately INSIDE this try block (not resolved earlier) - a thrown Reader
-    // A error must reach this catch, not escape as an unhandled rejection.
-    let textLayerSource: 'client' | 'two_readers' | 'one_reader';
-    let extraction: TierCExtraction;
-    let readerComparisonIssues: ConsistencyIssue[] = [];
-    if (clientDocumentText.length > 0) {
-      textLayerSource = 'client';
-      extraction = await extractTierCPayslip(images as string[], documentText);
-    } else {
-      const readerBEnabled = isGeminiReaderEnabled();
-      const [readerA, readerB] = await Promise.all([
-        extractTierCPayslipViaMistralAnnotation(images as string[]),
-        readerBEnabled ? extractTierCPayslipViaGemini(images as string[]).catch(() => null) : Promise.resolve(null),
-      ]);
-      if (readerB) {
-        textLayerSource = 'two_readers';
-        readerComparisonIssues = compareReaderExtractions(readerA, readerB);
-      } else {
-        textLayerSource = 'one_reader';
-      }
-      extraction = readerA;
-    }
+    // Stage 2t (audit v52, §2t.2): "one reader for everything." Mistral Medium, Mistral OCR annotation
+    // and the 2s two-reader comparison are gone - gemini-client.ts's `extractTierCPayslip` is the ONE
+    // reader for every payslip shape (embedded-PDF, scan, photo alike). Embedded PDF text (from the
+    // client, when present) is still sent alongside the images as ground truth the reader can lean on
+    // (documentTextBlock, unchanged) - it is no longer independently re-verified against the model's
+    // own output afterward (§2t.3 retires that bag-of-numbers guard entirely, not only for photos).
+    const extraction = await extractTierCPayslip(images as string[], documentText);
     const referenceDate = resolveReferenceDate(extraction.period_end_date);
     const applicableMinimumWage = await getMinimumWageAt(referenceDate);
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
 
-    // Stage 2h (§2h.2): decide once whether this upload's text layer is usable at all, before it can
-    // block anything - a mismatched or too-large layer falls back to the image-only read and gate,
-    // never a per-field block on numbers that were never trustworthy to compare against in the first
-    // place. `textLayerTrace` is the (possibly emptied) list every `buildExtractionTrace` call below
-    // uses, so `reading_basis`/`unused_printed_amounts` agree with this decision everywhere.
-    const textLayerAssessment = assessTextLayer(period, documentText, sanitizedStatus);
-    const textLayerTrace = textLayerAssessment.status === 'ok' ? documentText : [];
+    const textLayerStatus: TextLayerStatus | 'none' = sanitizedStatus === 'too_large' ? 'too_large' : documentText.length > 0 ? 'ok' : 'none';
+    const textLayerSource: 'client' | 'none' = documentText.length > 0 ? 'client' : 'none';
     const traceMeta = {
-      textLayerStatus: textLayerAssessment.status,
+      textLayerStatus,
       requestSizeKb,
       requestSizeSource,
       renderStep,
       textItemsSent: documentText.length,
-      amountsChecked: textLayerAssessment.checked,
-      amountsNotFound: textLayerAssessment.unverified,
       textLayerSource,
     };
 
-    // Stage 2f (§2f.4): "unknown stays unknown after the flag" - stage 2e raised these two issues but
-    // still computed with 'week' and 0 underneath them. Checked against the RAW extraction (only it
-    // can tell "genuinely absent" from "read as zero/week" - mapExtractionToPeriod's own period_type/
-    // et_exchange_amount defaults exist only so this period is buildable for the trace below), and
-    // checked BEFORE fetchRates/computePayslipPeriod run at all: no period_multiplier is resolved, no
-    // tax is computed, no net figure is shown, when either of these is true.
+    // Stage 2t (§2t.4): "ask, don't refuse." The only genuinely uncomputable read is a missing period
+    // type - fetchRates/computePayslipPeriod have no rate to resolve without one, so this is the ONE
+    // remaining hard block. Every other gap that used to block outright (an unread ET exchange amount,
+    // a field the reader itself could not find, any of checkExtractionConsistency's own arithmetic
+    // findings) is gathered into `needsConfirmation` below instead, alongside a computed result - see
+    // the owner's own "an unreadable amount is not a zero" design: the field already sits at 0 in the
+    // period (mapExtractionToPeriod's own doing), so the engine's computation is already safe to show;
+    // what changes here is that the user is ASKED about it rather than shown nothing at all.
     const periodType = extraction.period_type;
-    const extractionGapIssues: ConsistencyIssue[] = [];
-    // Stage 2s (§2s.2): "there is no rule that removes the check when many fields disagree - many
-    // disagreements make the read unreliable, they never make a reader disappear." Folded into the
-    // SAME gate every other extraction-gap issue already blocks on, not a second, parallel channel -
-    // any reader disagreement, however small or however many, blocks exactly like an unread period
-    // type or an unreadable amount already does.
-    extractionGapIssues.push(...readerComparisonIssues);
-    if (periodType === null) extractionGapIssues.push({ code: 'period_type_unknown' });
-    // Stage 2i (§2i.3): reads the SAME resolution mapExtractionToPeriod uses (resolveEtExchangeAmountFromExtraction,
-    // which also recognises an ET-labelled line the model left in pre_tax_deduction_lines - see its own
-    // comment) rather than the raw `et_exchange_amount` field alone, so a reading the mapper can now
-    // resolve is never blocked here as if it were still genuinely absent.
-    if (extraction.et_reimbursement_lines.length > 0 && resolveEtExchangeAmountFromExtraction(extraction) === null) {
-      extractionGapIssues.push({ code: 'et_exchange_amount_unknown' });
-    }
-    // Stage 2f (§2f.8): "an unreadable amount is not a zero" - hour/net/ET-reimbursement/payout/
-    // reservation amounts are stored as 0 when non-finite (no shared type changed for this), so this
-    // is the only place that distinguishes "read as zero" from "could not be read" for them.
-    for (const field of extraction.unreadable_amount_fields) {
-      extractionGapIssues.push({ code: 'amount_unreadable', field });
-    }
-    // Stage 2g (§2g.3): "for every amount the model returns, require that its magnitude equals...
-    // some number in the text list... Applies only when a text list exists." The classic case:
-    // 699.75 (= 45 x 15.55, computed) is not printed anywhere the document says 699.78.
-    // Stage 2h (§2h.2): only the fields `assessTextLayer` decided are worth blocking on - empty when
-    // the layer was judged a mismatch or too large, exactly as if no text had been sent at all.
-    for (const field of textLayerAssessment.unverifiedFields) {
-      extractionGapIssues.push({ code: 'amount_unreadable', field });
-    }
-    if (periodType === null || extractionGapIssues.length > 0) {
-      console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(extractionGapIssues)));
-      // Stage 2l (§2l.2): the exact field paths already named by `amount_unreadable` above - passed
-      // through so the trace can exclude a flagged guess from gross_total/pre_tax_deductions_sum
-      // instead of silently summing it as if it were trustworthy. Only this call site ever has any -
-      // the 'ok' path and the gate-blocked-but-extraction-clean path below both require
-      // extractionGapIssues to already be empty to be reached at all.
-      const flaggedFieldPaths = extractionGapIssues.filter((i) => i.code === 'amount_unreadable').map((i) => i.field);
+    if (periodType === null) {
+      console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging([{ code: 'period_type_unknown' }])));
       return res.json({
         status: 'unreliable',
-        issues: extractionGapIssues,
-        trace: buildExtractionTrace(period, null, textLayerTrace, { ...traceMeta, flaggedFieldPaths }),
+        issues: [{ code: 'period_type_unknown' }] satisfies ConsistencyIssue[],
+        trace: buildExtractionTrace(period, null, documentText, traceMeta),
         period,
         truncated: extraction.truncated,
         redactedFields: extraction.redacted_fields,
@@ -396,36 +272,39 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
 
     const outcome = computePayslipPeriod(period, fetched.rates, true);
 
+    // Stage 2t (§2t.4): everything gathered here used to short-circuit to `status: 'unreliable'` with
+    // no computed result at all (Stage 2b's own gate, and 2f.4/2f.8's extraction-gap issues). Now
+    // returned alongside the computed `outcome`/`discrepancies` below, so the interface can point at
+    // exactly these fields/lines for the user to confirm - never hiding a whole read behind "not read"
+    // for a gap that is, at most, a handful of specific values.
+    const needsConfirmation: ConsistencyIssue[] = [];
+    // Stage 2i (§2i.3): reads the SAME resolution mapExtractionToPeriod uses (resolveEtExchangeAmountFromExtraction,
+    // which also recognises an ET-labelled line the model left in pre_tax_deduction_lines - see its own
+    // comment) rather than the raw `et_exchange_amount` field alone, so a reading the mapper can now
+    // resolve is never flagged here as if it were still genuinely absent.
+    if (extraction.et_reimbursement_lines.length > 0 && resolveEtExchangeAmountFromExtraction(extraction) === null) {
+      needsConfirmation.push({ code: 'et_exchange_amount_unknown' });
+    }
+    // Stage 2f (§2f.8): "an unreadable amount is not a zero" - hour/net/ET-reimbursement/payout/
+    // reservation amounts are stored as 0 when non-finite (no shared type changed for this), so this
+    // is the only place that distinguishes "read as zero" from "could not be read" for them.
+    for (const field of extraction.unreadable_amount_fields) {
+      needsConfirmation.push({ code: 'amount_unreadable', field });
+    }
     // Stage 2b (audit v12, §Stage 2b): the §Stage 2a live test showed three "discrepancies" that were
     // entirely OUR extraction's own errors, presented exactly as a real employer violation would be -
     // the three-band classifier separates noise from findings BY MAGNITUDE, and a systematic
-    // extraction failure also produces large residuals. This gate runs BEFORE comparePeriodToDocument
-    // and, if the extraction fails its own internal-consistency checks, short-circuits to a distinct
-    // response shape that never reaches a discrepancy list at all.
-    const consistencyIssues = checkExtractionConsistency(extraction.payment_date, period, outcome);
-    if (consistencyIssues.length > 0) {
-      // v18 (audit): a real Olympia retest showed the gate firing twice, with two different
-      // computed nets from what was reported as "the same document" - and there was NOTHING to
-      // check afterward. This route never persisted to the database (only the orphaned old
-      // payslip.controller.ts route does; the 24h retention_until column that policy assumed does
-      // not apply here), and the SDK-bypass diagnostic added for the Mistral cutover only fires on
-      // a THROWN error - a gate firing is a normal 200 response, so it never logged either. This is
-      // the fix: log it unconditionally here, so the next gate-firing request is diagnosable from
-      // Vercel's logs without needing to reproduce it. v24 (§2e.7): the raw extraction DOES carry
-      // employer/hirer names and free-text descriptions (tier-c.ts's own comment calling
-      // TierCExtraction PII-free was about identity fields like BSN/IBAN, not business names or
-      // descriptions) - logs an allowlisted projection instead, never the raw extraction or period.
-      console.error('[consistency-gate] blocked - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
-      // Stage 2d (§2d.1): "the blocking panel must show what it read" - every extracted line, and
-      // the gate's own gross-to-net chain, not just the one figure that happened to trip a check.
-      return res.json({
-        status: 'unreliable',
-        issues: consistencyIssues,
-        trace: buildExtractionTrace(period, outcome, textLayerTrace, traceMeta),
-        period,
-        truncated: extraction.truncated,
-        redactedFields: extraction.redacted_fields,
-      });
+    // extraction failure also produces large residuals. This still runs BEFORE comparePeriodToDocument,
+    // but (§2t.4) no longer withholds the computed result - its findings join `needsConfirmation`.
+    needsConfirmation.push(...checkExtractionConsistency(extraction.payment_date, period, outcome));
+
+    if (needsConfirmation.length > 0) {
+      // v18 (audit): a real Olympia retest showed the gate firing twice, with two different computed
+      // nets from what was reported as "the same document" - and there was NOTHING to check
+      // afterward. Logged unconditionally here (unchanged since v18), so a flagged read is diagnosable
+      // from Vercel's own logs without needing to reproduce it - an allowlisted projection, never the
+      // raw extraction or period (v24, §2e.7).
+      console.error('[consistency-gate] flagged for confirmation - extraction:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(needsConfirmation)));
     }
 
     // Stage 2h (§2h.3) / 2i (§2i.0b): the printed net's confirmed chain position (or lack of one) -
@@ -440,13 +319,14 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       outcome,
       discrepancies,
       net_position,
+      // Stage 2t (§2t.4): NEW - the specific fields/lines this read could not fully confirm, shown
+      // alongside a real computed result rather than in place of one. Empty on a clean read.
+      needsConfirmation,
       // Stage 2h (§2h.4): shown on a successful read too, per its own "why" - the owner's one real-PDF
-      // upload result is read from this line whether or not it happens to block on anything.
+      // upload result is read from this line whether or not it happens to flag anything.
       technicalDetails: {
         text_items_sent: documentText.length,
-        amounts_checked: textLayerAssessment.checked,
-        amounts_not_found: textLayerAssessment.unverified,
-        text_layer_status: textLayerAssessment.status,
+        text_layer_status: textLayerStatus,
         request_size_kb: requestSizeKb,
         request_size_source: requestSizeSource,
         render_step: renderStep,
@@ -655,7 +535,7 @@ router.post('/recompute', async (req, res) => {
       net_position,
       // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
       // period) - the technical-details line still appears, honestly reporting nothing to check.
-      technicalDetails: { text_items_sent: 0, amounts_checked: 0, amounts_not_found: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf', text_layer_source: 'none' as const },
+      technicalDetails: { text_items_sent: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf', text_layer_source: 'none' as const },
       taxRatesSource: fetched.source,
     });
   } catch (error) {

@@ -48,8 +48,8 @@ before(async () => {
   });
   ({ default: app } = await import('../app.js'));
 
-  originalApiKey = process.env.MISTRAL_API_KEY;
-  process.env.MISTRAL_API_KEY = 'test-key-2p2';
+  originalApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-key-2p2';
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });
@@ -57,8 +57,8 @@ before(async () => {
 });
 
 after(async () => {
-  if (originalApiKey === undefined) delete process.env.MISTRAL_API_KEY;
-  else process.env.MISTRAL_API_KEY = originalApiKey;
+  if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = originalApiKey;
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 });
 

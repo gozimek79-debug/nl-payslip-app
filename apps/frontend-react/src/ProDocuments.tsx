@@ -63,10 +63,21 @@ interface PayslipHourLineForSummary { category: string; percent: number | null; 
  * spec §5's "a payslip the engine could fully reproduce": the Tier C consistency gate passed
  * (`status: 'ok'`) AND the discrepancy list is genuinely empty - not merely every entry being an
  * unconfirmed 'confirm'-band question, since a question is not yet a verified fact (stage 1's own
- * three-band model). */
+ * three-band model). Stage 2t (audit v52, §2t.4) added a second way a clean-looking 'ok' read can
+ * still be unconfirmed: `needsConfirmation` - a non-empty list there means the SAME thing for this
+ * check as a non-empty discrepancy list always did, and is now required to be empty too.
+ */
 interface PayslipSummary {
   ok: boolean;
-  net: number | null;
+  /** Stage 2t (§2t.5): the DOCUMENT's own printed payout/net figure (period.printed_payout,
+   * falling back to period.printed_net) - never the engine's own computed figure, which a real
+   * discrepancy in the OTTO/Olympia retests showed can silently differ from what is actually printed
+   * while still being labelled "read correctly". `null` only when the document prints neither. */
+  printedAmount: number | null;
+  /** The engine's own computed payout - shown separately, only when it diverges from `printedAmount`
+   * by more than a cent, so a real discrepancy is visible rather than hidden behind the printed figure
+   * alone (§2t.5: "the engine's own discrepancy explicitly shown separately when it differs"). */
+  computedAmount: number | null;
   periodLabel: string | null;
   periodEndDate: string | null;
   fullyReproduced: boolean;
@@ -143,8 +154,8 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       status?: 'ok' | 'unreliable';
       outcome?: { status: string; result?: { payout_amount: number } };
       discrepancies?: unknown[];
-      period?: { period_label: string | null; period_end_date: string | null; hour_lines?: PayslipHourLineForSummary[] };
-      technicalDetails?: { text_layer_source?: 'client' | 'two_readers' | 'one_reader' | 'none' };
+      needsConfirmation?: unknown[];
+      period?: { period_label: string | null; period_end_date: string | null; printed_payout?: number | null; printed_net?: number | null; hour_lines?: PayslipHourLineForSummary[] };
       error_code?: string;
     };
     if (!res.ok || !data.status) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
@@ -152,15 +163,19 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     const periodEndDate = data.period?.period_end_date ?? null;
     const hourLines = data.period?.hour_lines ?? [];
     if (data.status === 'unreliable') {
-      return { status: 'done', payslipSummary: { ok: false, net: null, periodLabel, periodEndDate, fullyReproduced: false, hourLines } };
+      return { status: 'done', payslipSummary: { ok: false, printedAmount: null, computedAmount: null, periodLabel, periodEndDate, fullyReproduced: false, hourLines } };
     }
-    const net = data.outcome?.status === 'complete' ? data.outcome.result?.payout_amount ?? null : null;
-    // Stage 2s (§2s.3d): "a payslip... that had only one reader can never count as fully reproduced
-    // in PRO." A clean single-reader read still reaches status 'ok' with an empty discrepancy list
-    // (reader B never ran to disagree with anything) - `discrepancies.length === 0` alone cannot tell
-    // "two readers agreed" apart from "only one reader was ever asked", so the source is checked too.
-    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0 && data.technicalDetails?.text_layer_source !== 'one_reader';
-    return { status: 'done', payslipSummary: { ok: true, net, periodLabel, periodEndDate, fullyReproduced, hourLines } };
+    // Stage 2t (§2t.5): the document's OWN printed figure, never the engine's computed one - see
+    // PayslipSummary's own doc comment for why (OTTO showed a hidden +4.76 discrepancy under the old
+    // "read correctly" wording, which displayed the engine's figure, not the printed one).
+    const printedAmount = data.period?.printed_payout ?? data.period?.printed_net ?? null;
+    const computedAmount = data.outcome?.status === 'complete' ? data.outcome.result?.payout_amount ?? null : null;
+    // Stage 2t (§2t.4): "ask, don't refuse" moved what used to be a hard block (a non-empty
+    // discrepancy/consistency-issue list) into a same-'ok'-response `needsConfirmation` list - a
+    // payslip is only "fully reproduced" (spec §5's own parameter-sourcing rule) when BOTH are empty,
+    // exactly as only an empty discrepancy list counted before this stage.
+    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0 && (data.needsConfirmation?.length ?? 0) === 0;
+    return { status: 'done', payslipSummary: { ok: true, printedAmount, computedAmount, periodLabel, periodEndDate, fullyReproduced, hourLines } };
   }
 
   async function processContract(entry: DocEntry): Promise<Partial<DocEntry>> {
@@ -320,8 +335,20 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                 {entry.status === 'processing' && t.statusProcessing}
                 {entry.status === 'error' && (entry.errorMessage ?? t.statusError)}
                 {entry.status === 'done' && entry.payslipSummary && (entry.payslipSummary.ok
-                  ? t.payslipSummaryOk(entry.payslipSummary.net !== null ? `€${entry.payslipSummary.net.toFixed(2)}` : '—')
+                  ? (entry.payslipSummary.fullyReproduced ? t.payslipSummaryOk : t.payslipSummaryNeedsConfirmation)(
+                      entry.payslipSummary.printedAmount !== null ? `€${entry.payslipSummary.printedAmount.toFixed(2)}` : '—',
+                    )
                   : t.payslipSummaryUnreliable)}
+                {/* Stage 2t (§2t.5): "the engine's own discrepancy explicitly shown separately when it
+                    differs" - never folded into the headline figure above, which is always the
+                    document's own printed one. */}
+                {entry.status === 'done' && entry.payslipSummary?.ok && entry.payslipSummary.computedAmount !== null
+                  && entry.payslipSummary.printedAmount !== null
+                  && Math.abs(entry.payslipSummary.computedAmount - entry.payslipSummary.printedAmount) > 0.005 && (
+                  <span className="pro-document-computed-note">
+                    {t.payslipSummaryComputedDiffers(`€${entry.payslipSummary.computedAmount.toFixed(2)}`)}
+                  </span>
+                )}
                 {entry.status === 'done' && entry.contractExtraction && t.statusDone}
               </span>
               <button type="button" className="plain-button" disabled={submitting} aria-label={t.remove}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { known, type PayslipPeriod, type HourLine, type PreTaxDeduction } from './payslip-model.js';
-import { verifyAmountsAgainstText, findUnusedPrintedAmounts, textLayerVerificationCounts, type DocumentTextItem } from './document-text-guard.js';
+import { findUnusedPrintedAmounts, type DocumentTextItem } from './document-text-guard.js';
 
 /**
  * Stage 2g (audit v27, §2g.6): "generate synthetic PDFs inside the test... no names, no employer, no
@@ -125,29 +125,28 @@ test('2g.6: text-layer extraction from a synthetic PDF returns the exact printed
   assert.ok(texts.includes('34,79'), `expected '34,79' among extracted items, got: ${JSON.stringify(texts)}`);
 });
 
-test('2g.6: the guard accepts a correct read of StiPP 34.79 against the synthetic text layer', async () => {
+test('2g.6: a correct read of StiPP 34.79 leaves nothing unused against the synthetic text layer', async () => {
   const bytes = await buildSyntheticPayslipPdf([STIPP_ROW]);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ pre_tax_deductions: [stippDeduction(34.79)] });
-  const unverified = verifyAmountsAgainstText(period, items);
-  assert.deepEqual(unverified, []);
+  assert.deepEqual(findUnusedPrintedAmounts(period, items), []);
 });
 
-test('2g.6: the guard rejects the same PDF when the model reads StiPP one digit wrong (34.89 instead of 34.79)', async () => {
+test('2g.6: a StiPP read one digit wrong (34.89 instead of 34.79) leaves the printed 34.79 unused', async () => {
   const bytes = await buildSyntheticPayslipPdf([STIPP_ROW]);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ pre_tax_deductions: [stippDeduction(34.89)] });
-  const unverified = verifyAmountsAgainstText(period, items);
-  assert.deepEqual(unverified, ['pre_tax_deductions[0].amount']);
+  const unused = findUnusedPrintedAmounts(period, items);
+  assert.ok(unused.includes(34.79), `expected the genuinely printed 34.79 to stay unused (the read field carries 34.89 instead), got: ${JSON.stringify(unused)}`);
 });
 
-test('2g.6: 699.75 (45 x 15.55, computed) is rejected against a text layer that prints 699.78', async () => {
+test('2g.6: 699.75 (45 x 15.55, computed) leaves the printed 699.78 unused, distinguishing the fabricated figure from the real one', async () => {
   const bytes = await buildSyntheticPayslipPdf([LOON_NORMAAL_ROW]);
   const items = await extractPdfTextItems(bytes);
   assert.equal(45 * 15.55, 699.75, 'sanity: the raw multiplication really does land on .75, not .78');
   const period = basePeriod({ hour_lines: [hourLine({ amount: 699.75 })] });
-  const unverified = verifyAmountsAgainstText(period, items);
-  assert.deepEqual(unverified, ['hour_lines[0].amount']);
+  const unused = findUnusedPrintedAmounts(period, items);
+  assert.ok(unused.includes(699.78), `expected the genuinely printed 699.78 to stay unused (the read field carries 699.75 instead), got: ${JSON.stringify(unused)}`);
 });
 
 test('2g.6: an unused printed amount (58.31) is listed when the model never returns that line', async () => {
@@ -225,32 +224,38 @@ async function buildOneRunPerLinePdf(lines: string[]): Promise<Uint8Array> {
   return doc.save();
 }
 
-test('2h.7: a merged single text run ("Loon normaal 699,78") verifies correctly - the reviewer\'s exact T1(a) failure case', async () => {
+test('2h.7: a merged single text run ("Loon normaal 699,78") is correctly tokenised - the reviewer\'s exact T1(a) failure case', async () => {
   const bytes = await buildOneRunPerLinePdf(['Loon normaal 699,78', 'STIPP-pensioen werknemer 34,79']);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ hour_lines: [hourLine({ amount: 699.78 })], pre_tax_deductions: [stippDeduction(34.79)] });
-  assert.deepEqual(verifyAmountsAgainstText(period, items), [], 'expected both merged-run amounts to verify');
+  assert.deepEqual(findUnusedPrintedAmounts(period, items), [], 'expected both merged-run amounts to be recognised as used, nothing left unused');
 });
 
-test('2h.7: a trailing currency code ("699,78 EUR") in one text run verifies correctly', async () => {
+test('2h.7: a trailing currency code ("699,78 EUR") in one text run is correctly tokenised', async () => {
   const bytes = await buildOneRunPerLinePdf(['Loon normaal 699,78 EUR']);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ hour_lines: [hourLine({ amount: 699.78 })] });
-  assert.deepEqual(verifyAmountsAgainstText(period, items), []);
+  assert.deepEqual(findUnusedPrintedAmounts(period, items), []);
 });
 
-test('2h.7: a thousands amount printed with spaces ("1 234,56") in one text run verifies correctly', async () => {
+test('2h.7: a thousands amount printed with spaces ("1 234,56") in one text run is correctly tokenised', async () => {
   const bytes = await buildOneRunPerLinePdf(['Jaarloon bijzonder tarief 1 234,56']);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ printed_gross_total: 1234.56 });
-  assert.deepEqual(verifyAmountsAgainstText(period, items), []);
+  // 1234.56 itself is recognised and excluded from the unused list; the trailing "234,56" fragment is
+  // also independently money-shaped on its own and stays its own, separate, genuinely-unmatched
+  // candidate - a pre-existing property of the shared tokeniser (document-text-guard.test.ts's own
+  // "2h.1" test names the same property), unrelated to this test's own concern.
+  const unused = findUnusedPrintedAmounts(period, items);
+  assert.ok(!unused.includes(1234.56), `expected 1234.56 to be recognised as printed_gross_total, not reported unused; got: ${JSON.stringify(unused)}`);
 });
 
-test('2h.7: 699.75 (45 x 15.55, computed) is still rejected even when the printed 699,78 sits inside a merged single text run', async () => {
+test('2h.7: 699.75 (45 x 15.55, computed) still leaves the printed 699,78 unused even when it sits inside a merged single text run', async () => {
   const bytes = await buildOneRunPerLinePdf(['Loon normaal 45,00 x 15,55 699,78']);
   const items = await extractPdfTextItems(bytes);
   const period = basePeriod({ hour_lines: [hourLine({ amount: 699.75 })] });
-  assert.deepEqual(verifyAmountsAgainstText(period, items), ['hour_lines[0].amount']);
+  const unused = findUnusedPrintedAmounts(period, items);
+  assert.ok(unused.includes(699.78), `expected the genuinely printed 699.78 to stay unused, got: ${JSON.stringify(unused)}`);
 });
 
 /**
@@ -283,7 +288,7 @@ async function buildDenseThreePagePdf(rowsPerPage: number): Promise<Uint8Array> 
   return doc.save();
 }
 
-test('2h.7: a dense three-page document (>500 items) is processed in full by the guard - nothing truncated', async () => {
+test('2h.7: a dense three-page document (>500 items) is processed in full - nothing truncated', async () => {
   const rowsPerPage = 60; // 4 items/row x 60 rows x 3 pages = 720 items, comfortably over 500
   const bytes = await buildDenseThreePagePdf(rowsPerPage);
   const items = await extractPdfTextItems(bytes);
@@ -293,15 +298,6 @@ test('2h.7: a dense three-page document (>500 items) is processed in full by the
   // 2h.4's own "rates/hours also print numbers" case, now measured on a genuinely dense document
   // instead of a 3-row toy one.
   const period = basePeriod({ hour_lines: Array.from({ length: rowsPerPage * 3 }, () => hourLine({ amount: 1.23 })) });
-  const { checked, unverified } = textLayerVerificationCounts(period, items);
-  assert.equal(checked, rowsPerPage * 3, 'expected the guard to check every single hour_line, none dropped');
-  assert.equal(unverified, 0, 'expected every one of the 1,23 amounts to verify against the dense text layer');
-
-  // "verified in full, or falls back explicitly" - this fixture verifies in full (checked>0,
-  // unverified===0, well under the 2h.2 mismatch threshold); the explicit-fallback side of that same
-  // guarantee is covered by tier-c.controller.test.ts's "2h.2" HTTP tests.
-  const mismatchRatio = checked > 0 ? unverified / checked : 0;
-  assert.ok(mismatchRatio < 0.5, 'expected this correct, dense read to stay well under the mismatch threshold');
 
   // Nothing truncated: 9,99 (a genuinely unexplained value - no field on this period reads it),
   // present on EVERY one of the (rowsPerPage * 3) rows, must all still appear as unused candidates -

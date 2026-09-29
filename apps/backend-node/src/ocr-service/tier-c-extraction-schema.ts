@@ -1,10 +1,11 @@
 /**
- * Stage 2s (audit v51, §2s.2): "both readings use the extraction's existing shape (TierCExtraction);
- * both requests are derived from it, not written separately." One canonical, vendor-neutral schema
- * definition, mirroring `TIER_C_SYSTEM_PROMPT`'s own JSON shape (ocr-client.ts) and `TierCExtraction`
- * (tier-c.ts) field-for-field - built once here, then adapted into each vendor's own wire format by
- * the two functions below. Neither reader's request is hand-written a second time; both are this same
- * object, passed through `toMistralAnnotationSchema` or `toGeminiResponseSchema`.
+ * Stage 2s (audit v51, §2s.2), carried into 2t: one canonical schema definition, mirroring
+ * `TIER_C_SYSTEM_PROMPT`'s own JSON shape (ocr-client.ts) and `TierCExtraction` (tier-c.ts)
+ * field-for-field - built once here, then adapted into Gemini's own wire format
+ * (`toGeminiResponseSchema`). Stage 2t (§2t.2) retired the Mistral-side adapter
+ * (`toMistralAnnotationSchema`) and the per-page merge (`mergeRawExtractionPages`) along with Mistral
+ * itself - Gemini's own `generateContent` takes every page in one call (confirmed live, 2s.1b), so no
+ * merge is needed for the one reader that remains.
  */
 
 export type SchemaNode =
@@ -102,53 +103,6 @@ export const TIER_C_EXTRACTION_SCHEMA: SchemaNode = obj(
     'printed_arbeidskorting_label', 'printed_net_label', 'printed_payout_label',
   ],
 );
-
-/** Mistral's `document_annotation_format` (§2s.1a, confirmed live): lowercase JSON-schema types,
- * nullable expressed as a `type` array (`['string', 'null']`), matching this project's own existing
- * convention in `TIER_C_SYSTEM_PROMPT`'s hand-written schema. */
-export function toMistralAnnotationSchema(node: SchemaNode): unknown {
-  switch (node.kind) {
-    case 'string':
-      return node.nullable ? { type: ['string', 'null'] } : { type: 'string' };
-    case 'number':
-      return node.nullable ? { type: ['number', 'null'] } : { type: 'number' };
-    case 'boolean':
-      return { type: 'boolean' };
-    case 'array':
-      return { type: 'array', items: toMistralAnnotationSchema(node.items) };
-    case 'object':
-      return {
-        type: 'object',
-        properties: Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, toMistralAnnotationSchema(v)])),
-        required: [...node.required],
-      };
-  }
-}
-
-/**
- * Stage 2s (§2s.2): Mistral's OCR annotation endpoint annotates ONE document per call (no confirmed
- * multi-image annotation request shape - not risked this round); this project's own architecture
- * already sends one page image per call (2q/2r). Reader A therefore makes one annotation call PER
- * PAGE IMAGE (in parallel - §2s.1e/§2s.3c) and this function merges the resulting per-page raw JSON
- * objects into ONE, before `mapRawExtractionToTierC` ever sees it: an array field (hour_lines, etc.)
- * concatenates every page's own entries, in page order; a scalar field (period_label, printed_net,
- * etc.) takes the first non-null value found, in page order - a real payslip usually prints period
- * information on page 1 and totals near the end, so "first non-null across pages" reflects how a
- * human reader would piece the same document together, never an invented value (§2.3).
- */
-export function mergeRawExtractionPages(pages: Record<string, unknown>[]): Record<string, unknown> {
-  const schema = TIER_C_EXTRACTION_SCHEMA;
-  if (schema.kind !== 'object') throw new Error('unreachable: TIER_C_EXTRACTION_SCHEMA is always an object');
-  const merged: Record<string, unknown> = {};
-  for (const [key, node] of Object.entries(schema.properties)) {
-    if (node.kind === 'array') {
-      merged[key] = pages.flatMap((page) => (Array.isArray(page[key]) ? (page[key] as unknown[]) : []));
-    } else {
-      merged[key] = pages.map((page) => page[key]).find((v) => v !== null && v !== undefined) ?? null;
-    }
-  }
-  return merged;
-}
 
 /** Gemini's `generationConfig.responseSchema` (§2s.1b, confirmed live): UPPERCASE type names, nullable
  * expressed as its own `nullable: true` boolean field - a genuinely different wire shape from

@@ -1,7 +1,6 @@
 import { tableTaxToleranceFor, type PayslipPeriod, type PayslipComputationOutcome, type PreTaxDeductionCategory, type PostTaxSocialCategory } from './payslip-model.js';
 import { findUnusedPrintedAmounts, type DocumentTextItem } from './document-text-guard.js';
 import { resolveNetReconciliationBasis } from './discrepancy.js';
-import type { ReaderComparisonIssue } from './reader-comparison.js';
 
 /**
  * Stage 2b (audit "CONSOLIDATED ASSIGNMENT" v12, §Stage 2b): a gate that runs BEFORE
@@ -82,12 +81,7 @@ export type ConsistencyIssue =
   // in the field itself (no shared type changed for this) but raised here, from the raw extraction's
   // `unreadable_amount_fields`, as a blocking gap - never presented as a comparison against a zero
   // that was never actually read.
-  | { code: 'amount_unreadable'; field: string }
-  // Stage 2s (§2s.2): the two-reader comparison's own issue codes (reader-comparison.ts) - merged into
-  // this SAME union and the SAME gate mechanism rather than a second, parallel issue channel, so the
-  // existing "no discrepancy list while any issue is open" discipline and the 2g.0c frontend-coverage
-  // test both apply to them exactly as they do to every other code here.
-  | ReaderComparisonIssue;
+  | { code: 'amount_unreadable'; field: string };
 
 /**
  * Stage 2f (audit v26, §2f.9): "the interface must know every code (2.10a)... make it structural."
@@ -123,11 +117,6 @@ export const ALL_CONSISTENCY_ISSUE_CODES = [
   'period_type_unknown',
   'et_exchange_amount_unknown',
   'amount_unreadable',
-  'reader_field_disagreement',
-  'reader_line_disagreement',
-  'reader_line_only_in_a',
-  'reader_line_only_in_b',
-  'reader_line_ambiguous_alignment',
 ] as const satisfies readonly ConsistencyIssue['code'][];
 
 // Compile-time half of the check: a code added to ConsistencyIssue but not to the list above fails
@@ -157,9 +146,8 @@ function reconciliationTolerance(termCount: number): number {
  * judgment call, recorded as one. */
 const MEANINGFUL_TAXABLE_BASE = 10;
 
-/** Stage 2s (§2s.2): exported for `reader-comparison.ts`'s own line/field alignment - one function,
- * every caller that needs to tell "the same word, different transcription noise" apart from a real
- * disagreement, so they can never quietly diverge on what counts as noise. */
+/** Normalizes a description before matching it against a keyword pattern, so "the same word, different
+ * transcription noise" (accents, case) never causes a real category match to be missed. */
 export function stripDiacritics(value: string): string {
   return value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
@@ -702,12 +690,13 @@ export interface ExtractionTrace {
   /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
    * image_only when there was no text layer." Defaults to 'image_only' for every existing caller
    * (unit tests, and any path with no text layer) - only the controller, holding the real
-   * `documentText` from the request, can say `'text_layer_verified'`.
-   * Stage 2s (§2s.3b): two new states for the image-only path, which no longer uses a text layer at
-   * all - `'two_readers_verified'` (Mistral annotation + Gemini both ran and were compared - the
-   * ISSUES list separately says whether they agreed) and `'one_reader_only'` (reader B unavailable or
-   * failed; the read cannot count as confirmed - see §2s.3d). */
-  reading_basis: 'text_layer_verified' | 'two_readers_verified' | 'one_reader_only' | 'image_only';
+   * `documentText` from the request, can say `'text_layer_verified'`. Stage 2t (audit v52, §2t.2/
+   * §2t.3) retired the two-reader comparison AND the bag-of-numbers amount-verification guard - one
+   * Gemini reader now handles every document shape, and nothing independently "verifies" a text layer
+   * against the read amounts any more. This field is currently unused by the frontend panel (grepped,
+   * 2t) - kept two-valued and honestly named for whichever caller reads it next, not expanded back to
+   * the retired two/one-reader states. */
+  reading_basis: 'text_layer_verified' | 'image_only';
   /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding on its
    * own (a rate, a percentage base, or a reservation balance also prints two-decimal numbers that are
    * not payment amounts, so an unused item is a possibility, not proof of a missing line). */
@@ -718,9 +707,11 @@ export interface ExtractionTrace {
    * is what the owner's one real-PDF upload result is read from, per the stage's own "why". */
   technical_details: {
     text_items_sent: number;
-    amounts_checked: number;
-    amounts_not_found: number;
-    text_layer_status: 'ok' | 'mismatch' | 'too_large' | 'none';
+    /** Stage 2t (audit v52, §2t.3): "the check is the payslip's own arithmetic... without the
+     * reader-comparison and bag-of-numbers layers on top." The amount-verification guard this field
+     * once reported ('mismatch' included) no longer runs - only whether embedded text was present, and
+     * whether it was dropped for being too large, remain meaningful. */
+    text_layer_status: 'ok' | 'too_large' | 'none';
     request_size_kb: number;
     /** Stage 2i (§2i.0e): "when Content-Length is absent or disagrees with the re-encoded size by
      * more than a margin, show the measured size and say which." Which of the two numbers
@@ -728,14 +719,12 @@ export interface ExtractionTrace {
     request_size_source: 'content_length' | 'measured';
     /** Stage 2i (§2i.0d): "put the chosen step in the technical line." */
     render_step: string;
-    /** Stage 2q (§2q.2)/2s (§2s.3b): 'client' when the browser's own pdf.js read supplied an embedded
-     * PDF text layer (unchanged, text-first path). For the image-only path, the old 'ocr' single-
-     * reader-plus-guard mechanism is retired (§2s: "the bag-of-numbers guard is no longer what decides
-     * a photo or a scan") in favour of 'two_readers' (Mistral OCR annotation + Gemini both ran) or
-     * 'one_reader' (only one of the two ran or succeeded). 'none' is genuine for /recompute (no
-     * document reading happens there at all) but not reachable from /analyze - a failed Reader A there
-     * is a hard extraction failure, not a completed read with no source. */
-    text_layer_source: 'client' | 'two_readers' | 'one_reader' | 'none';
+    /** Stage 2q (§2q.2), simplified in 2t (§2t.2): 'client' when the browser's own pdf.js read
+     * supplied an embedded PDF text layer (unchanged, text-first path - still sent to the one Gemini
+     * reader as ground truth, see gemini-client.ts's documentTextBlock); 'none' otherwise - every
+     * document, with or without a text layer, now goes through the SAME single reader, so there is no
+     * longer a second reading mechanism this field needs to name. */
+    text_layer_source: 'client' | 'none';
   };
   /** Stage 2i (audit v29, §2i.0b): "the dual net position is visible, and the layers still catch it."
    * `'before'`/`'after'` name which chain position the printed net actually confirmed (Olympia/
@@ -765,24 +754,21 @@ export interface ExtractionTrace {
 }
 
 /** Everything about a request's text-layer handling that only the controller (holding the raw HTTP
- * request and the pre-fallback verification counts) can know - see `tier-c.controller.ts`'s
- * `assessTextLayer`. Every field defaults so existing unit-test call sites (no text layer at all)
+ * request) can know. Every field defaults so existing unit-test call sites (no text layer at all)
  * need no changes. */
 export interface ExtractionTraceMeta {
-  textLayerStatus: 'ok' | 'mismatch' | 'too_large' | 'none';
+  textLayerStatus: 'ok' | 'too_large' | 'none';
   requestSizeKb: number;
   requestSizeSource: 'content_length' | 'measured';
   renderStep: string;
   textItemsSent: number;
-  amountsChecked: number;
-  amountsNotFound: number;
-  /** Stage 2q (§2q.2)/2s (§2s.3b): see ExtractionTrace['technical_details']['text_layer_source'] above. */
-  textLayerSource: 'client' | 'two_readers' | 'one_reader' | 'none';
+  /** Stage 2q (§2q.2), simplified in 2t (§2t.2): see ExtractionTrace['technical_details']['text_layer_source'] above. */
+  textLayerSource: 'client' | 'none';
   /** Stage 2l (§2l.2): the exact `amount_unreadable` field paths (e.g. "hour_lines[7].amount",
    * "pre_tax_deductions[0].amount") the controller already raised as gaps - only the controller,
-   * holding the raw extraction's `unreadable_amount_fields` and the guard's own `unverifiedFields`,
-   * knows this. Defaults to empty for every existing caller (the 'ok' path never has any at this
-   * point - see mapExtractionToPeriod's own callers). */
+   * holding the raw extraction's `unreadable_amount_fields`, knows this. Defaults to empty for every
+   * existing caller (the 'ok' path never has any at this point - see mapExtractionToPeriod's own
+   * callers). */
   flaggedFieldPaths: string[];
 }
 
@@ -898,18 +884,13 @@ export function buildExtractionTrace(
     et_reimbursements: period.et?.et_applicable ? period.et.et_reimbursements.map((r) => traceLine(r.description, 'et_reimbursement', r.amount)) : [],
     implied_payout: impliedPayout,
     printed_payout: period.printed_payout,
-    reading_basis:
-      meta.textLayerSource === 'two_readers' ? 'two_readers_verified' :
-      meta.textLayerSource === 'one_reader' ? 'one_reader_only' :
-      textItems.length > 0 ? 'text_layer_verified' : 'image_only',
+    reading_basis: textItems.length > 0 ? 'text_layer_verified' : 'image_only',
     unused_printed_amounts: (() => {
       const unused = findUnusedPrintedAmounts(period, textItems);
       return { count: unused.length, sample: unused.slice(0, 5) };
     })(),
     technical_details: {
       text_items_sent: meta.textItemsSent ?? textItems.length,
-      amounts_checked: meta.amountsChecked ?? 0,
-      amounts_not_found: meta.amountsNotFound ?? 0,
       text_layer_status: meta.textLayerStatus ?? (textItems.length > 0 ? 'ok' : 'none'),
       request_size_kb: meta.requestSizeKb ?? 0,
       request_size_source: meta.requestSizeSource ?? 'measured',

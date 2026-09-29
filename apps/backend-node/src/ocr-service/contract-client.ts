@@ -1,10 +1,9 @@
-import { documentVisionClient, documentVisionModel } from '../ai-service/document-vision-provider.js';
 import type { ContractExtraction } from '../payroll-engine/contract.js';
 import { sanitizeText } from './pii-patterns.js';
 
 // Klucze skrócone celowo — ten sam powód co przy pełnej analizie paska wypłaty: limit tokenów
 // wyjściowych modelu wizyjnego na darmowym planie Groq.
-const SYSTEM_PROMPT = `
+export const CONTRACT_SYSTEM_PROMPT = `
 Jesteś systemem ekstrakcji danych z holenderskich umów o pracę (arbeidsovereenkomst/uitzendovereenkomst),
 działającym w trybie ochrony prywatności.
 
@@ -44,20 +43,6 @@ takiej klauzuli o gwarancji godzin.
 Kropka jako separator dziesiętny. Brak danej = null (nie 0, nie pusty string).
 `.trim();
 
-function extractJson(raw: string): Record<string, unknown> {
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return {};
-    try {
-      return JSON.parse(match[0]) as Record<string, unknown>;
-    } catch {
-      return {};
-    }
-  }
-}
-
 function toNullableNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
@@ -67,30 +52,14 @@ function toNullableNumber(value: unknown): number | null {
 // Siatka bezpieczeństwa: nawet gdyby model złamał instrukcję, te wzorce nie trafią do odpowiedzi.
 // Shared with the payslip extraction path (audit R7/J3) — see pii-patterns.ts.
 
-export async function extractContract(imageDataUrls: string[]): Promise<ContractExtraction> {
-  // v15 (audit "CONSOLIDATED ASSIGNMENT"): "one paid tier, one extraction quality" - contract
-  // extraction moves onto the same decided reading model (Mistral, EU-hosted) as payslip extraction,
-  // instead of staying on Groq's free tier while the payslip path moved on.
-  const completion = await documentVisionClient().chat.completions.create({
-    model: documentVisionModel(),
-    temperature: 0,
-    max_tokens: 900,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: `Odczytaj wszystkie ${imageDataUrls.length} stron(y) tej umowy i zwróć zwarty JSON zgodny z opisaną strukturą. Pamiętaj o zakazie danych osobowych.` },
-          ...imageDataUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-        ],
-      },
-    ],
-  });
-
-  const raw = completion.choices[0]?.message?.content ?? '{}';
-  const parsed = extractJson(raw);
+/**
+ * Stage 2t (audit v52, §2t.2): "Contract reading moves to the same model in this stage too, since it
+ * is the same reading call." Extracted from `extractContract` (was inline) so `gemini-client.ts`'s
+ * `extractContract` can map its raw JSON through this SAME function - one function, the model becomes
+ * a parameter of the caller, not of this mapping.
+ */
+export function mapRawContractExtraction(parsed: Record<string, unknown>): ContractExtraction {
   const redactedFields: string[] = [];
-
   return {
     contractType: sanitizeText(parsed.ct, 'contractType', redactedFields),
     employerName: sanitizeText(parsed.emp, 'employerName', redactedFields),

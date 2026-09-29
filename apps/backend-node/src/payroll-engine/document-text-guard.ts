@@ -21,8 +21,7 @@ const CENT_EPSILON = 0.005;
 /**
  * Stage 2g (§2g.3/§2g.4): every amount-bearing field on a `PayslipPeriod`, as a magnitude (sign is
  * 2f.5's concern, never this one's) with a human-readable path for issue reporting. One place
- * enumerates every field, so `verifyAmountsAgainstText` and `findUnusedPrintedAmounts` can never
- * silently drift apart on which fields they each consider.
+ * enumerates every field, so `findUnusedPrintedAmounts` below can draw on a single canonical list.
  */
 export function collectPeriodAmounts(period: PayslipPeriod): Array<{ path: string; magnitude: number }> {
   const out: Array<{ path: string; magnitude: number }> = [];
@@ -67,10 +66,12 @@ export function collectPeriodAmounts(period: PayslipPeriod): Array<{ path: strin
  * as fields count as explained numbers for the unused list (not for the guard)." OWNER-RETEST-2h-otto.md
  * measured 27 "unused" items on a real upload that were mostly these - numbers the model DID read, into
  * a field, just not one of the EUR-amount fields `collectPeriodAmounts` above enumerates. Kept as a
- * SEPARATE list, deliberately not merged into `collectPeriodAmounts`: `verifyAmountsAgainstText` (the
- * guard) exists to confirm EUR amounts specifically were not hallucinated, and an hours/rate/percent
- * figure is a different kind of claim - the assignment is explicit that these count for the unused list
- * ONLY, never widening what the guard itself checks. Only `findUnusedPrintedAmounts` reads this.
+ * SEPARATE list, deliberately not merged into `collectPeriodAmounts` - an hours/rate/percent figure is
+ * a different kind of claim from a EUR amount. Stage 2t (audit v52, §2t.3) retired the bag-of-numbers
+ * amount-verification guard this list's own doc comment used to describe alongside
+ * `findUnusedPrintedAmounts` - only the unused-amounts list (informational, never blocking - §2g.4)
+ * remains; this function's own list is still scoped to it only. Only `findUnusedPrintedAmounts` reads
+ * this.
  */
 export function collectExplainedNonAmountMagnitudes(period: PayslipPeriod): Array<{ path: string; magnitude: number }> {
   const out: Array<{ path: string; magnitude: number }> = [];
@@ -86,9 +87,9 @@ export function collectExplainedNonAmountMagnitudes(period: PayslipPeriod): Arra
 }
 
 /**
- * Stage 2h (§2h.1): "verifyAmountsAgainstText and findUnusedPrintedAmounts both use it [the
- * tokeniser], so the two can never disagree about what the page prints." One pass over the item list
- * builds the single shared candidate list both functions read from: every number `extractPrintedNumbers`
+ * Stage 2h (§2h.1), carried into 2t as `findUnusedPrintedAmounts`'s own tokeniser (its one caller,
+ * since the amount-verification guard this once also fed was retired in stage 2t - §2t.3): one pass
+ * over the item list builds the single shared candidate list; every number `extractPrintedNumbers`
  * finds inside each item on its own, PLUS every number found by joining two consecutive items that
  * share a page and a rounded y AND look like the precise two halves of one split-thousands number
  * (`looksLikeSplitThousandsPair` - number-parser.ts's own doc comment explains why this must be exact,
@@ -115,44 +116,6 @@ function extractedNumbers(textItems: DocumentTextItem[]): ExtractedNumber[] {
 }
 
 /**
- * Stage 2i (audit v29, §2i.0c): "the guard confirms an amount only with a money token. Bare integers
- * (36, 417, 123456782, 0) never confirm an amount." The reviewer measured this exact gap: an IBAN's
- * digit groups, a week number, or a BSN can parse to a bare integer that happens to equal an invented
- * field's magnitude, wrongly "confirming" it. Only `shape: 'money'` candidates (exactly two decimals)
- * are eligible to confirm anything here - `findUnusedPrintedAmounts` below already required this
- * shape (2g.4's own rule, unchanged); this makes `verifyAmountsAgainstText` require the identical
- * shape, so the two can never disagree about what counts as a real confirmation.
- */
-function parsedTextMagnitudes(textItems: DocumentTextItem[]): number[] {
-  return extractedNumbers(textItems)
-    .filter((n) => n.shape === 'money')
-    .map((n) => Math.round(Math.abs(n.value) * 100) / 100);
-}
-
-/**
- * Stage 2g (§2g.3): "for every amount the model returns, require that its magnitude equals (to the
- * cent, after 2g.2 parsing) some number in the text list. A value that does not appear becomes
- * unreadable through the existing amount_unreadable path (2f.8), naming the field... Sign is not
- * compared (2f.5 owns sign). Applies only when a text list exists." The classic case this catches:
- * 699.75 (= 45 x 15.55, the model computed it) is not printed anywhere the document says 699.78.
- *
- * Returns field paths with no match - empty when every extracted amount is confirmed, or when
- * `textItems` is empty (the caller must not call this for an image-only upload; an empty result here
- * would otherwise be indistinguishable from "everything verified").
- */
-export function verifyAmountsAgainstText(period: PayslipPeriod, textItems: DocumentTextItem[]): string[] {
-  if (textItems.length === 0) return [];
-  const textMagnitudes = parsedTextMagnitudes(textItems);
-  const unverified: string[] = [];
-  for (const { path, magnitude } of collectPeriodAmounts(period)) {
-    const rounded = Math.round(magnitude * 100) / 100;
-    const found = textMagnitudes.some((v) => Math.abs(v - rounded) <= CENT_EPSILON);
-    if (!found) unverified.push(path);
-  }
-  return unverified;
-}
-
-/**
  * Stage 2g (§2g.4): "after the model has filled its fields, list the amount-like items in the text
  * layer that no returned field used... Amount-like means the 2g.2 parser accepts it and it has two
  * decimals." This is what catches a whole missing line (Olympia's 58.31) - a line the model never
@@ -172,21 +135,4 @@ export function findUnusedPrintedAmounts(period: PayslipPeriod, textItems: Docum
     if (!isUsed) unused.push(magnitude);
   }
   return unused;
-}
-
-/**
- * Stage 2h (§2h.2): "if the guard cannot find half or more of the amounts it checked... treat the
- * layer as unusable." One function computes both counts so the controller's threshold decision and
- * the trace's own reported numbers (§2h.4: "amounts checked, amounts not found") can never disagree
- * about what was actually measured.
- */
-export interface TextLayerVerificationCounts {
-  checked: number;
-  unverified: number;
-}
-
-export function textLayerVerificationCounts(period: PayslipPeriod, textItems: DocumentTextItem[]): TextLayerVerificationCounts {
-  const checked = collectPeriodAmounts(period).length;
-  const unverified = verifyAmountsAgainstText(period, textItems).length;
-  return { checked, unverified };
 }

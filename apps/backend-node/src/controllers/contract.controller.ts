@@ -1,10 +1,9 @@
 import express from 'express';
 import { z } from 'zod';
-import { extractContract } from '../ocr-service/contract-client.js';
 import { analyzeContract, checkContractPlausibility, checkHoursPerPeriodPlausibility, type ContractExtraction } from '../payroll-engine/contract.js';
 import { resolveEffectiveContract, type ContractDocumentEntry, type ContractDocumentRole } from '../payroll-engine/contract-timeline.js';
 import { explainContract, translatePayslipTerms } from '../ai-service/ai-client.js';
-import { isDocumentVisionConfigured } from '../ai-service/document-vision-provider.js';
+import { extractContract, isGeminiConfigured } from '../ai-service/gemini-client.js';
 import { getMinimumWageAt } from '../rules-repository.js';
 import { ipRateLimit } from '../rate-limiter.js';
 
@@ -24,7 +23,7 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
   // controller Tier B actually calls (TierBFlow.tsx). Module 2's OWN surfaces - ContractAnalysis.tsx
   // rendering `analysis.flags[].message` directly - are a separate, already-flagged defect (NEW
   // FINDING, prior round) left for whenever Module 2 itself is built, not retrofitted here.
-  if (!isDocumentVisionConfigured()) {
+  if (!isGeminiConfigured()) {
     return res.status(503).json({ error_code: 'vision_unavailable' });
   }
   const parsed = analyzeSchema.safeParse(req.body);

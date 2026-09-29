@@ -99,20 +99,21 @@ interface Discrepancy { code: DiscrepancyCode; computed: number | null; printed:
 // Stage 2n (§2n.2): 'before_post_tax' - a THIRD, earlier position (taxable base minus both taxes,
 // nothing else) 'before'/'after' (both always post-tax) can never represent.
 type NetPosition = 'before_post_tax' | 'before' | 'after' | 'both' | 'none';
-type TextLayerStatus = 'ok' | 'mismatch' | 'too_large' | 'none';
+type TextLayerStatus = 'ok' | 'too_large' | 'none';
 /** Stage 2h (§2h.4): "numbers that let a real upload speak (no content)" - counts and a status code
- * only, never a text item, label or amount from the document. */
+ * only, never a text item, label or amount from the document. Stage 2t (audit v52, §2t.3): the
+ * amount-verification guard this once also reported (`amounts_checked`/`amounts_not_found`, a
+ * `'mismatch'` status) is retired - only whether embedded text was present, and whether it was
+ * dropped for being too large, remain meaningful. */
 interface TechnicalDetails {
   text_items_sent: number;
-  amounts_checked: number;
-  amounts_not_found: number;
   text_layer_status: TextLayerStatus;
-  /** Stage 2r (§2r.2)/2s (§2s.3b): which check actually ran - 'client' (the browser's own embedded
-   * PDF text layer, text-first, unchanged); for the image-only path (no PDF text), the old single-
-   * reader-plus-OCR-text-layer mechanism is retired in favour of 'two_readers' (Mistral OCR
-   * annotation + Gemini both ran and were compared) or 'one_reader' (only one ran/succeeded - never
-   * presented as confirmed). Drives which sentence `readingBasisNote` shows. */
-  text_layer_source: 'client' | 'two_readers' | 'one_reader' | 'none';
+  /** Stage 2r (§2r.2), simplified in 2t (§2t.2): which check actually ran - 'client' (the browser's
+   * own embedded PDF text layer, still sent to the one reader as ground truth) or 'none' (an
+   * image-only upload). Every document now goes through the SAME single Gemini reader either way -
+   * there is no longer a second reading mechanism this field needs to name. Drives which sentence
+   * `readingBasisNote` shows. */
+  text_layer_source: 'client' | 'none';
   request_size_kb: number;
   /** Stage 2i (§2i.0e): which of the two numbers request_size_kb actually is - the client-sent
    * Content-Length header (when it roughly agreed with an independent re-encode) or the measured
@@ -132,6 +133,11 @@ interface OkResponse {
    * confirms - structured data (§2.6), the panel below decides the wording. */
   net_position: NetPosition;
   technicalDetails: TechnicalDetails;
+  /** Stage 2t (audit v52, §2t.4): "ask, don't refuse" - fields/lines the read could not fully confirm,
+   * shown alongside this real computed result rather than in place of one. Optional/defaults to empty:
+   * /recompute's own 'ok' response (recomputeWithCorrection below) never carries this - it re-derives
+   * from an already-confirmed correction, not a fresh read. */
+  needsConfirmation?: ConsistencyIssue[];
   truncated: boolean;
   redactedFields: string[];
   taxRatesSource: 'database' | 'static';
@@ -165,14 +171,7 @@ type ConsistencyIssue =
   | { code: 'pre_tax_not_confirmed' }
   | { code: 'period_type_unknown' }
   | { code: 'et_exchange_amount_unknown' }
-  | { code: 'amount_unreadable'; field: string }
-  // Stage 2s (§2s.2): two independent readers (Mistral OCR annotation, Gemini) compared field by
-  // field and line by line - mirrors extraction-consistency.ts's ReaderComparisonIssue exactly.
-  | { code: 'reader_field_disagreement'; field: string; value_a: string | number | boolean | null; value_b: string | number | boolean | null }
-  | { code: 'reader_line_disagreement'; list: string; line_key: string; index: number; field: string; value_a: string | number | boolean | null; value_b: string | number | boolean | null }
-  | { code: 'reader_line_only_in_a'; list: string; line_key: string; count: number }
-  | { code: 'reader_line_only_in_b'; list: string; line_key: string; count: number }
-  | { code: 'reader_line_ambiguous_alignment'; list: string; line_key: string; count_a: number; count_b: number };
+  | { code: 'amount_unreadable'; field: string };
 
 /** Stage 2d (§2d.1): "the blocking panel must show what it read" - mirrors
  * extraction-consistency.ts's ExtractionTrace exactly. */
@@ -217,10 +216,10 @@ interface ExtractionTrace {
   implied_payout: number | null;
   printed_payout: number | null;
   /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
-   * image_only when there was no text layer." Stage 2s (§2s.3b): two new states for the image-only
-   * path - 'two_readers_verified' (Mistral + Gemini both ran and were compared) and
-   * 'one_reader_only' (never shown as confirmed - see §2s.3a/d). */
-  reading_basis: 'text_layer_verified' | 'two_readers_verified' | 'one_reader_only' | 'image_only';
+   * image_only when there was no text layer." Stage 2t (§2t.2/§2t.3) retired the two-reader
+   * comparison and the amount-verification guard - this field is currently unused by this panel
+   * (grepped, 2t), kept two-valued and honestly named for whichever caller reads it next. */
+  reading_basis: 'text_layer_verified' | 'image_only';
   /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding. */
   unused_printed_amounts: { count: number; sample: number[] };
   /** Stage 2h (§2h.4): numbers only, never document content - see TechnicalDetails above. */
@@ -337,14 +336,6 @@ function discrepancyLabel(t: TierCCopy, code: DiscrepancyCode): string {
 
 /** Stage 2b: builds each consistency issue's sentence from its code + numeric params, per §2.6 -
  * the backend never sends prose, only the discriminated union extraction-consistency.ts defines. */
-/** Stage 2s (§2s.2): a reader-comparison value is not always monetary (a period label, a boolean, a
- * plain count) - unlike `money()`, this never assumes a euro amount. */
-function readerValueText(t: TierCCopy, value: string | number | boolean | null): string {
-  if (value === null) return t.traceUnknown;
-  if (typeof value === 'boolean') return value ? t.booleanYes : t.booleanNo;
-  return String(value);
-}
-
 function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
   switch (issue.code) {
     case 'zero_tax_nonzero_base':
@@ -389,16 +380,6 @@ function issueMessage(t: TierCCopy, issue: ConsistencyIssue): string {
       return t.issueEtExchangeUnknown;
     case 'amount_unreadable':
       return t.issueAmountUnreadable(issue.field);
-    case 'reader_field_disagreement':
-      return t.issueReaderFieldDisagreement(issue.field, readerValueText(t, issue.value_a), readerValueText(t, issue.value_b));
-    case 'reader_line_disagreement':
-      return t.issueReaderLineDisagreement(issue.line_key, issue.field, readerValueText(t, issue.value_a), readerValueText(t, issue.value_b));
-    case 'reader_line_only_in_a':
-      return t.issueReaderLineOnlyInA(issue.line_key, issue.count);
-    case 'reader_line_only_in_b':
-      return t.issueReaderLineOnlyInB(issue.line_key, issue.count);
-    case 'reader_line_ambiguous_alignment':
-      return t.issueReaderLineAmbiguous(issue.line_key, issue.count_a, issue.count_b);
   }
 }
 
@@ -413,38 +394,21 @@ function provenanceLabel(t: TierCCopy, provenance: string): string {
 function textLayerStatusNote(t: TierCCopy, status: TextLayerStatus): string {
   switch (status) {
     case 'ok': return t.textLayerStatusOk;
-    case 'mismatch': return t.textLayerStatusMismatch;
     case 'too_large': return t.textLayerStatusTooLarge;
     case 'none': return t.textLayerStatusNone;
   }
 }
 
-/** Stage 2r (§2r.2): "every panel sentence that describes the check must depend on
- * text_layer_source... the words 'the PDF's text layer' never appear" for OCR-sourced text - it is an
- * independent second reading of the same pages, not the document's own embedded text. */
-/** Stage 2s (§2s.3b): "every panel sentence about the check depends on the source... the success
- * panel too." `text_layer_source` alone already fully identifies which of the four states this read
- * is in - simpler to key the one displayed sentence off that directly than to keep two dispatch
- * mechanisms (this one and `reading_basis`) that could silently drift apart. */
+/** Stage 2r (§2r.2)/2s (§2s.3b), simplified in 2t (§2t.2/§5.2): "every panel sentence about the check
+ * depends on the source." Every document now goes through the SAME single Gemini reader - `client`
+ * means the browser's own embedded PDF text was also sent as ground truth; `none` means it was read
+ * from the image alone. No amount-verification guard runs any more (§2t.3), so this states what was
+ * SENT, never a claim that anything was independently confirmed against it. */
 function readingBasisNote(t: TierCCopy, textLayerSource: TechnicalDetails['text_layer_source']): string {
   switch (textLayerSource) {
     case 'client': return t.readingBasisTextVerified;
-    case 'two_readers': return t.readingBasisTwoReaders;
-    case 'one_reader': return t.readingBasisOneReader;
     case 'none': return t.readingBasisImageOnly;
   }
-}
-
-/** Stage 2j (§2j.3): "an upload that falls back to image-only mid-request is stuck with the lower,
- * pre-chosen quality... that is the real gap... needs its own decision... or the fallback path is
- * accepted as lower-quality for this round and stated as such on the panel." The images were rendered
- * at the moderate `text-layer-present` setting (chosen client-side, before the server ever assessed the
- * text layer); when the server THEN decides that same text layer does not verify (`text_layer_status
- * === 'mismatch'`), the read falls back to image-only but the images already sent are the lower-quality
- * ones. Shown only in exactly that combination - never a general warning about the render step alone,
- * which is fine in the far more common case where the text layer verifies. */
-function renderQualityStuckNote(t: TierCCopy, renderStep: string, textLayerStatus: TextLayerStatus): string | null {
-  return renderStep === 'text-layer-present' && textLayerStatus === 'mismatch' ? t.renderQualityStuckNote : null;
 }
 
 /** Stage 2i (§2i.0b): "say it on the panel in one plain line" - which chain position (if any) the
@@ -814,13 +778,8 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
                     what the owner's real-PDF upload result is read from. */}
                 <p className="form-note">{textLayerStatusNote(t, trace.technical_details.text_layer_status)}</p>
                 <p className="form-note">
-                  {t.technicalDetailsLine(trace.technical_details.text_items_sent, trace.technical_details.amounts_checked, trace.technical_details.amounts_not_found, trace.technical_details.request_size_kb, trace.technical_details.render_step)}
+                  {t.technicalDetailsLine(trace.technical_details.text_items_sent, trace.technical_details.request_size_kb, trace.technical_details.render_step)}
                 </p>
-                {/* Stage 2j (§2j.3): the images were chosen at the pre-chosen text-layer quality before
-                    the server rejected that same text layer - visible, never silent. */}
-                {renderQualityStuckNote(t, trace.technical_details.render_step, trace.technical_details.text_layer_status) && (
-                  <p className="form-note">{renderQualityStuckNote(t, trace.technical_details.render_step, trace.technical_details.text_layer_status)}</p>
-                )}
                 {/* Stage 2i (§2i.0e): "show the measured size and say which" - only worth a line when
                     the trusted Content-Length header was NOT used (the interesting case). */}
                 {trace.technical_details.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
@@ -1040,6 +999,23 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
         </div>
       )}
 
+      {/* Stage 2t (audit v52, §2t.4): "ask, don't refuse" - the specific fields/lines this read could
+          not fully confirm, shown alongside the computed result above rather than in place of one.
+          Reuses the SAME issueMessage() copy the blocked trace panel already builds from, so a code
+          reads identically whichever response shape it happens to arrive in. */}
+      {(response.needsConfirmation?.length ?? 0) > 0 && (
+        <div className="notice-card discrepancy-card">
+          <HelpCircle/>
+          <div>
+            <h3>{t.needsConfirmationTitle}</h3>
+            <p className="form-note">{t.needsConfirmationIntro}</p>
+            {response.needsConfirmation!.map((issue, index) => (
+              <p key={`${issue.code}-${index}`}>{issueMessage(t, issue)}</p>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Stage 2h (§2h.4): shown on a successful read too, not only the unreliable trace panel - "the
           owner's real-PDF result will be read from" this line either way.
           Stage 2s (§2s.3b): "the success panel too" - the same reading-basis sentence the blocked
@@ -1047,11 +1023,8 @@ export function TierCFlow({ lang, onNavigateToDictionary }: { lang: Lang; onNavi
       <p className="form-note">{readingBasisNote(t, response.technicalDetails.text_layer_source)}</p>
       <p className="form-note">{textLayerStatusNote(t, response.technicalDetails.text_layer_status)}</p>
       <p className="form-note">
-        {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.amounts_checked, response.technicalDetails.amounts_not_found, response.technicalDetails.request_size_kb, response.technicalDetails.render_step)}
+        {t.technicalDetailsLine(response.technicalDetails.text_items_sent, response.technicalDetails.request_size_kb, response.technicalDetails.render_step)}
       </p>
-      {renderQualityStuckNote(t, response.technicalDetails.render_step, response.technicalDetails.text_layer_status) && (
-        <p className="form-note">{renderQualityStuckNote(t, response.technicalDetails.render_step, response.technicalDetails.text_layer_status)}</p>
-      )}
       {response.technicalDetails.request_size_source === 'measured' && <p className="form-note">{t.requestSizeMeasuredNote}</p>}
       <p className="form-note">{netPositionNote(t, response.net_position)}</p>
 

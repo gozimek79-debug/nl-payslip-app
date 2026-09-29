@@ -1,6 +1,6 @@
 import express from 'express';
 import { isGroqConfigured } from '../ai-service/groq.js';
-import { readingProviderStatus } from '../ai-service/document-vision-provider.js';
+import { readingProviderStatus } from '../ai-service/gemini-client.js';
 
 const router = express.Router();
 

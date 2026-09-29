@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapHourCategory, mapTaxTreatment, mapPreTaxCategory, mapPostTaxCategory, mapNetCategory, mapReservationType, mapPeriodType, normalizeCode, extractTierCPayslip } from './ocr-client.js';
+import { mapHourCategory, mapTaxTreatment, mapPreTaxCategory, mapPostTaxCategory, mapNetCategory, mapReservationType, mapPeriodType, normalizeCode } from './ocr-client.js';
+import { extractTierCPayslip } from '../ai-service/gemini-client.js';
 
 /**
  * v17 (audit): the live Olympia run on Mistral found "AZW werknemer" recognised as ziektewet by
@@ -84,8 +85,8 @@ test('2c/v17: mapPeriodType tolerates case variance and rejects unknown values a
  */
 test('2g.1: a document-text item containing an injection attempt is placed in the delimited block, never treated as an instruction', async () => {
   const originalFetch = globalThis.fetch;
-  const originalApiKey = process.env.MISTRAL_API_KEY;
-  process.env.MISTRAL_API_KEY = 'test-key-2g1';
+  const originalApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-key-2g1';
   let capturedBody: string | undefined;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     capturedBody = typeof init?.body === 'string' ? init.body : undefined;
@@ -94,7 +95,7 @@ test('2g.1: a document-text item containing an injection attempt is placed in th
       post_tax_deduction_lines: [], net_lines: [], et_reimbursement_lines: [], payout_adjustment_lines: [],
       reservation_lines: [], reported_total_net: 0, reported_net_paid: 0,
     };
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(fixedExtraction) }, finish_reason: 'stop' }] }), {
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(fixedExtraction) }] }, finishReason: 'STOP' }] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -130,8 +131,8 @@ test('2g.1: a document-text item containing an injection attempt is placed in th
     assert.equal(extraction.period_label, 'week 36/2026');
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalApiKey === undefined) delete process.env.MISTRAL_API_KEY;
-    else process.env.MISTRAL_API_KEY = originalApiKey;
+    if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalApiKey;
   }
 });
 
@@ -143,8 +144,8 @@ test('2g.1: a document-text item containing an injection attempt is placed in th
  */
 test('2h.6: an item whose text guesses the old fixed closing delimiter cannot break out of THIS request\'s randomised boundary', async () => {
   const originalFetch = globalThis.fetch;
-  const originalApiKey = process.env.MISTRAL_API_KEY;
-  process.env.MISTRAL_API_KEY = 'test-key-2h6';
+  const originalApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-key-2h6';
   let capturedBody: string | undefined;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     capturedBody = typeof init?.body === 'string' ? init.body : undefined;
@@ -153,7 +154,7 @@ test('2h.6: an item whose text guesses the old fixed closing delimiter cannot br
       post_tax_deduction_lines: [], net_lines: [], et_reimbursement_lines: [], payout_adjustment_lines: [],
       reservation_lines: [], reported_total_net: 0, reported_net_paid: 0,
     };
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(fixedExtraction) }, finish_reason: 'stop' }] }), {
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(fixedExtraction) }] }, finishReason: 'STOP' }] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -185,7 +186,7 @@ test('2h.6: an item whose text guesses the old fixed closing delimiter cannot br
     assert.ok(openIndex < guessedIndex && guessedIndex < realCloseIndex, 'expected the guessed text to remain strictly inside the real, randomised block');
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalApiKey === undefined) delete process.env.MISTRAL_API_KEY;
-    else process.env.MISTRAL_API_KEY = originalApiKey;
+    if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalApiKey;
   }
 });

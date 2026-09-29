@@ -11,7 +11,7 @@ import maintenanceRouter from './controllers/maintenance.controller.js';
 import tierARouter from './controllers/tier-a.controller.js';
 import tierCRouter from './controllers/tier-c.controller.js';
 import { checkDatabase } from './database.js';
-import { readingProviderStatus } from './ai-service/document-vision-provider.js';
+import { readingProviderStatus } from './ai-service/gemini-client.js';
 
 const app = express();
 

@@ -25,32 +25,25 @@ import type { Request as ExpressRequest, Response as ExpressResponse, NextFuncti
  */
 
 let app: (typeof import('../app.js'))['default'];
-let isTextLayerMismatch: (typeof import('./tier-c.controller.js'))['isTextLayerMismatch'];
 let resolveRequestSize: (typeof import('./tier-c.controller.js'))['resolveRequestSize'];
 let server: ReturnType<typeof app.listen>;
 let baseUrl: string;
 let originalFetch: typeof fetch;
 let originalApiKey: string | undefined;
 
-// Stage 2s (audit v51, §2s.2): "Reader A... on this path it replaces the current Mistral Medium
-// vision call." Every test in this file that sends NO `documentText` now takes the image-only
-// two-reader path, whose Reader A calls `/ocr`'s `document_annotation_format`, not `chat/completions`
-// - answered here with the SAME fixture JSON, in the shape Mistral's own annotation response actually
-// uses (`{document_annotation: "<JSON string>"}`, confirmed live in §2s.1a), so every existing
-// image-only test still exercises the identical extraction content it always did, just through the
-// real, current call path. `chat/completions` stays answered too, for this file's own embedded-PDF-
-// text tests (which DO send `documentText` and therefore still take the unchanged text-first path).
+// Stage 2t (audit v52, §2t.2): "one reader for everything." Mistral Medium, Mistral OCR annotation
+// and the 2s two-reader comparison are gone - every test in this file now goes through the SAME
+// single call, `gemini-client.ts`'s `callGemini` (`generativelanguage.googleapis.com/.../generateContent`),
+// whether or not the request sends a `documentText` list - answered here in Gemini's own response
+// shape (`{candidates:[{content:{parts:[{text}]}, finishReason}]}`, confirmed live in §2t.1).
 function mockCompletion(extractionJson: unknown) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
-    if (url.includes('mistral.ai') && url.includes('/ocr')) {
-      return new Response(JSON.stringify({ document_annotation: JSON.stringify(extractionJson) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-    if (url.includes('mistral.ai') && url.includes('chat/completions')) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(extractionJson) }, finish_reason: 'stop' }] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (url.includes('generativelanguage.googleapis.com') && url.includes(':generateContent')) {
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(extractionJson) }] }, finishReason: 'STOP' }] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
     }
     throw new Error(`unexpected fetch in test: ${url}`);
   };
@@ -67,10 +60,10 @@ before(async () => {
     },
   });
   ({ default: app } = await import('../app.js'));
-  ({ isTextLayerMismatch, resolveRequestSize } = await import('./tier-c.controller.js'));
+  ({ resolveRequestSize } = await import('./tier-c.controller.js'));
 
-  originalApiKey = process.env.MISTRAL_API_KEY;
-  process.env.MISTRAL_API_KEY = 'test-key-2f11';
+  originalApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-key-2t';
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });
@@ -80,8 +73,8 @@ before(async () => {
 
 after(async () => {
   globalThis.fetch = originalFetch;
-  if (originalApiKey === undefined) delete process.env.MISTRAL_API_KEY;
-  else process.env.MISTRAL_API_KEY = originalApiKey;
+  if (originalApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = originalApiKey;
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 });
 
@@ -146,34 +139,36 @@ const CORRECT_OLYMPIA = {
   printed_loon_voor_heffingen: 844.92,
 };
 
-test('2g.0a: /analyze with the live read-1 (5a8442c) extraction blocks with the old combined identity, never a discrepancy list', async () => {
+test('2t.4: /analyze with the live read-1 (5a8442c) extraction computes a result and flags totals_do_not_reconcile_net for confirmation, never withholding it', async () => {
   globalThis.fetch = mockCompletion(READ_1_5A8442C) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const body = (await res.json()) as { status: string; issues?: Array<{ code: string }> };
+  const body = (await res.json()) as { status: string; needsConfirmation?: Array<{ code: string }>; outcome?: unknown };
   assert.equal(res.status, 200);
-  assert.equal(body.status, 'unreliable');
-  assert.ok(body.issues?.some((i) => i.code === 'totals_do_not_reconcile_net'), `expected totals_do_not_reconcile_net, got ${JSON.stringify(body.issues)}`);
+  assert.equal(body.status, 'ok', `expected 2t.4's ask-don't-refuse to still compute a result, got ${JSON.stringify(body)}`);
+  assert.ok(body.outcome, 'expected a computed outcome alongside the flagged issue');
+  assert.ok(body.needsConfirmation?.some((i) => i.code === 'totals_do_not_reconcile_net'), `expected totals_do_not_reconcile_net in needsConfirmation, got ${JSON.stringify(body.needsConfirmation)}`);
 });
 
-test('2g.0a: /analyze with the live read-2 (aaaeae1) extraction names the unresolved subtotal role, matching the exit condition\'s own example', async () => {
+test("2t.4: /analyze with the live read-2 (aaaeae1) extraction flags the unresolved subtotal role for confirmation, matching the exit condition's own example", async () => {
   globalThis.fetch = mockCompletion(READ_2_AAAEAE1) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const body = (await res.json()) as { status: string; issues?: Array<{ code: string; printed_subtotal?: number; gross_hypothesis?: number; loon_voor_heffingen_hypothesis?: number }> };
+  const body = (await res.json()) as { status: string; needsConfirmation?: Array<{ code: string; printed_subtotal?: number; gross_hypothesis?: number; loon_voor_heffingen_hypothesis?: number }> };
   assert.equal(res.status, 200);
-  assert.equal(body.status, 'unreliable');
-  const issue = body.issues?.find((i) => i.code === 'printed_subtotal_role_unresolved');
-  assert.ok(issue, `expected printed_subtotal_role_unresolved, got ${JSON.stringify(body.issues)}`);
+  assert.equal(body.status, 'ok', `expected 2t.4's ask-don't-refuse to still compute a result, got ${JSON.stringify(body)}`);
+  const issue = body.needsConfirmation?.find((i) => i.code === 'printed_subtotal_role_unresolved');
+  assert.ok(issue, `expected printed_subtotal_role_unresolved in needsConfirmation, got ${JSON.stringify(body.needsConfirmation)}`);
   assert.equal(issue?.printed_subtotal, 844.92);
   assert.equal(issue?.gross_hypothesis, 826.84);
   assert.equal(issue?.loon_voor_heffingen_hypothesis, 789.37);
 });
 
-test('2g.0a: /analyze with a correct Olympia extraction returns an empty issue list', async () => {
+test('2g.0a: /analyze with a correct Olympia extraction returns an empty needsConfirmation list', async () => {
   globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }>; net_position?: string };
+  const body = (await res.json()) as { status: string; discrepancies?: Array<{ code: string }>; net_position?: string; needsConfirmation?: unknown[] };
   assert.equal(res.status, 200);
   assert.equal(body.status, 'ok', JSON.stringify(body));
+  assert.deepEqual(body.needsConfirmation, [], 'expected a clean read to need no confirmation at all');
   // Only the already-known printed-minimum-wage staleness (14.71 printed vs 14.99 current) - the same
   // single expected discrepancy tier-c.test.ts's own Olympia fixture asserts.
   assert.deepEqual(body.discrepancies?.map((d) => d.code), ['minimum_wage_stale_on_document']);
@@ -227,13 +222,13 @@ test("2i.0b: an overstated printed_table_tax + a compensating fake net line that
 });
 
 /**
- * Stage 2l (audit v32, §2l.2): "a flagged amount should not sit inside a sum shown as fact." Confirms
- * the controller actually WIRES the amount_unreadable field paths it already raises (from
- * extraction.unreadable_amount_fields, via toNumberTracked's non-finite check) into
- * buildExtractionTrace's flaggedFieldPaths - unit-tested directly in extraction-consistency.test.ts's
- * own "2l.2" tests; this is the HTTP-level proof the wiring itself is not missing a step.
+ * Stage 2t (audit v52, §2t.4): "ask, don't refuse." Confirms the controller still WIRES the
+ * amount_unreadable field paths it raises (from extraction.unreadable_amount_fields, via
+ * toNumberTracked's non-finite check) into `needsConfirmation`, alongside a real computed result -
+ * the unreadable line's amount is already stored as 0 (never guessed), so the computed gross_total
+ * naturally excludes any contribution from it without a separate trace-exclusion mechanism.
  */
-test('2l.2: /analyze wires amount_unreadable field paths through to the trace - the flagged line is marked and excluded from gross_total over the real HTTP path', async () => {
+test('2t.4: /analyze wires amount_unreadable field paths into needsConfirmation and still computes a result over the real HTTP path', async () => {
   const UNREADABLE_HOUR_LINE = {
     period_label: 'week 1/2026', period_end_date: null, payment_date: null, period_type: 'week',
     is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
@@ -251,26 +246,22 @@ test('2l.2: /analyze wires amount_unreadable field paths through to the trace - 
   };
   globalThis.fetch = mockCompletion(UNREADABLE_HOUR_LINE) as typeof fetch;
   const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const body = (await res.json()) as { status: string; issues?: Array<{ code: string; field?: string }>; trace?: { gross_total: number; hour_lines: Array<{ label: string; amount: number | null; flagged: boolean }> } };
+  const body = (await res.json()) as { status: string; needsConfirmation?: Array<{ code: string; field?: string }>; period?: { hour_lines: Array<{ amount: number }> }; outcome?: { result?: { gross_total: number } } };
   assert.equal(res.status, 200);
-  assert.equal(body.status, 'unreliable');
-  assert.ok(body.issues?.some((i) => i.code === 'amount_unreadable' && i.field === 'hour_lines[1].amount'), `expected amount_unreadable for hour_lines[1].amount, got ${JSON.stringify(body.issues)}`);
-  assert.equal(body.trace?.gross_total, 699.78, `expected the unreadable line excluded from gross_total over HTTP, got ${body.trace?.gross_total}`);
-  assert.equal(body.trace?.hour_lines[0]?.flagged, false);
-  assert.equal(body.trace?.hour_lines[1]?.flagged, true, 'expected the flagged line marked true in the actual JSON response');
+  assert.equal(body.status, 'ok', `expected 2t.4's ask-don't-refuse to still compute a result, got ${JSON.stringify(body)}`);
+  assert.ok(body.needsConfirmation?.some((i) => i.code === 'amount_unreadable' && i.field === 'hour_lines[1].amount'), `expected amount_unreadable for hour_lines[1].amount, got ${JSON.stringify(body.needsConfirmation)}`);
+  assert.equal(body.period?.hour_lines[1]?.amount, 0, 'expected the unreadable amount stored as 0, never guessed');
+  assert.equal(body.outcome?.result?.gross_total, 699.78, `expected the unreadable line to contribute 0 to gross_total, got ${body.outcome?.result?.gross_total}`);
 });
 
 /**
- * Stage 2m (audit v33, §2m.1): "a flagged amount must stay excluded even through a repost... one test
- * that reposts the exact blocked period from 2l.2's own fixture and confirms the guessed amount stays
- * out of the sum." Reproduces RAPORT-cursor-2l.md's own MINOR finding: a blocked /analyze response's
- * `period` still carries the guessed 'onbekend'-amount (stored as 0 by toNumberTracked's non-finite
- * fallback here, but the SAME field-path mechanism applies regardless of the stored value - see
- * extraction-consistency.test.ts's own 2l.2 tests for the non-zero case). Before this stage, /recompute
- * had no way to know that field was ever flagged at all, and would have happily computed a REAL tax
- * outcome from it - not merely a wrong display sum, an `status: 'ok'` result built on an admitted guess.
+ * Stage 2m (audit v33, §2m.1) / 2p (§2p.5), carried into 2t: "a flagged amount must stay excluded even
+ * through a repost." /analyze itself no longer refuses on an `amount_unreadable` gap (§2t.4) - but a
+ * client that reposts its `needsConfirmation`-flagged period straight to /recompute (without actually
+ * resolving the flagged field) must still be refused there, exactly as before: /recompute's own gate
+ * is unchanged by this stage, only /analyze's blocking philosophy moved.
  */
-test('2m.1: reposting the exact blocked period (from the 2l.2 fixture above) to /recompute, WITH its flagged field paths, refuses to compute rather than silently re-including the guess', async () => {
+test('2m.1: reposting a period still carrying an unresolved amount_unreadable field (from needsConfirmation) to /recompute refuses to compute', async () => {
   const UNREADABLE_HOUR_LINE = {
     period_label: 'week 1/2026', period_end_date: null, payment_date: null, period_type: 'week',
     is_correction: false, version: 1, employer_names: [], hirer_name: null, hours_per_week: null, minimum_wage_printed: null,
@@ -288,14 +279,14 @@ test('2m.1: reposting the exact blocked period (from the 2l.2 fixture above) to 
   };
   globalThis.fetch = mockCompletion(UNREADABLE_HOUR_LINE) as typeof fetch;
   const analyzeRes = await originalFetch(`${baseUrl}/api/tier-c/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ images: ['data:image/png;base64,Zg=='] }) });
-  const analyzeBody = (await analyzeRes.json()) as { status: string; issues: Array<{ code: string; field?: string }>; period: unknown };
-  assert.equal(analyzeBody.status, 'unreliable');
-  const flaggedFieldPaths = analyzeBody.issues.filter((i) => i.code === 'amount_unreadable').map((i) => i.field as string);
-  assert.deepEqual(flaggedFieldPaths, ['hour_lines[1].amount'], 'sanity: the same single flagged path as the 2l.2 test above');
+  const analyzeBody = (await analyzeRes.json()) as { status: string; needsConfirmation: Array<{ code: string; field?: string }>; period: unknown };
+  assert.equal(analyzeBody.status, 'ok', `expected 2t.4's ask-don't-refuse to still compute a result, got ${JSON.stringify(analyzeBody)}`);
+  const flaggedFieldPaths = analyzeBody.needsConfirmation.filter((i) => i.code === 'amount_unreadable').map((i) => i.field as string);
+  assert.deepEqual(flaggedFieldPaths, ['hour_lines[1].amount'], 'sanity: the same single flagged path as the 2t.4 test above');
 
-  // The exact repost the reviewer's finding describes: the blocked response's own `period`, still
-  // carrying the guessed amount, posted straight to /recompute - this time WITH the flagged paths the
-  // client can already read off `issues` (no new field needed on the /analyze response at all).
+  // The client reposts the /analyze response's own `period` (still carrying the unresolved field)
+  // straight to /recompute WITH the flagged paths it read off `needsConfirmation` - /recompute must
+  // still refuse, since the field was never actually resolved.
   const recomputeRes = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -373,33 +364,6 @@ test('2m.1: /recompute rejects a malformed flaggedFieldPaths (not an array of st
 });
 
 /**
- * Stage 2h (audit v28, §2h.2): "if the guard cannot find half or more of the amounts it checked...
- * treat the layer as unusable: do not block on the guard, fall back to the image-only read." A
- * correct Olympia read has several printed amounts to check (gross lines, StiPP, printed subtotals,
- * minimum wage); a documentText list that confirms only ONE of them (well under half) must fall back
- * to image-only rather than blocking on `amount_unreadable` for every unconfirmed field.
- */
-test('2h.2: a text layer that confirms fewer than half the checked amounts falls back to image-only, never blocks per-field', async () => {
-  globalThis.fetch = mockCompletion(CORRECT_OLYMPIA) as typeof fetch;
-  const res = await originalFetch(`${baseUrl}/api/tier-c/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      images: ['data:image/png;base64,Zg=='],
-      // Only "699,78" (one gross line) is genuinely printed here - every other real amount
-      // (116.63, 58.31, 10.78, 0.89, 4.90, 34.79, 6.46, 90.00, 885.50, 844.92, 14.71) is unconfirmed.
-      documentText: [{ page: 1, text: '699,78', x: 10, y: 10 }],
-    }),
-  });
-  const body = (await res.json()) as { status: string; issues?: Array<{ code: string }>; technicalDetails?: { text_layer_status: string; amounts_checked: number; amounts_not_found: number } };
-  assert.equal(res.status, 200);
-  assert.equal(body.status, 'ok', `expected the mismatch to fall back to a clean image-only read, got ${JSON.stringify(body)}`);
-  assert.equal(body.technicalDetails?.text_layer_status, 'mismatch');
-  assert.ok((body.technicalDetails?.amounts_checked ?? 0) > 1, 'expected more than one amount to have been checked');
-  assert.ok((body.technicalDetails?.amounts_not_found ?? 0) / (body.technicalDetails?.amounts_checked ?? 1) >= 0.5, 'expected at least half unverified, matching the mismatch threshold');
-});
-
-/**
  * Stage 2h (§2h.2): "no silent truncation... if it is still over [after dropping non-digit items],
  * send images only and record text_layer_status: 'too_large'." A list with more items than
  * MAX_DOCUMENT_TEXT_ITEMS (3000), every one of them containing a digit (so the digit-only-drop step
@@ -421,27 +385,6 @@ test('2h.2: a documentText list over the item cap (even after dropping non-digit
   assert.equal(body.technicalDetails?.text_layer_status, 'too_large');
   assert.equal(body.technicalDetails?.text_items_sent, 0, 'expected the too-large list to be treated as if nothing was sent, not partially kept');
 });
-
-/**
- * Stage 2i (audit v29, §2i.0a): "the guard cannot be switched off by one miss. The fallback needs
- * both a ratio and an absolute floor... Tests at checked 2/1, 4/2, 6/3, 12/6, 12/1." The reviewer's
- * own MAJOR finding: at checked=2, unverified=1 (ratio exactly 0.5) the old ratio-only rule already
- * fell back - precisely the shape of a single invented digit (e.g. 699.75 vs printed 699.78) in an
- * otherwise short, correctly-read period, silencing the one check built to catch it.
- */
-const MISMATCH_MATRIX: Array<{ checked: number; unverified: number; expectMismatch: boolean; label: string }> = [
-  { checked: 2, unverified: 1, expectMismatch: false, label: 'ratio 0.5 but under the floor - the classic single-invented-digit shape, must still block per-field' },
-  { checked: 4, unverified: 2, expectMismatch: false, label: 'ratio 0.5 but under the floor' },
-  { checked: 6, unverified: 3, expectMismatch: true, label: 'ratio 0.5 and at the floor - falls back' },
-  { checked: 12, unverified: 6, expectMismatch: true, label: 'ratio 0.5 and well over the floor - falls back' },
-  { checked: 12, unverified: 1, expectMismatch: false, label: 'over the floor is not even reached - ratio alone (0.083) is far below the threshold' },
-];
-
-for (const { checked, unverified, expectMismatch, label } of MISMATCH_MATRIX) {
-  test(`2i.0a: isTextLayerMismatch(${checked}, ${unverified}) - ${label}`, () => {
-    assert.equal(isTextLayerMismatch(checked, unverified), expectMismatch);
-  });
-}
 
 /**
  * Stage 2i (audit v29, §2i.0e): "when Content-Length is absent or disagrees with the re-encoded size

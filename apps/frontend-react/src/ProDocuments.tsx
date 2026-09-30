@@ -476,10 +476,10 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                   <div>
                     <h3>{tc.provisionalResultTitle}</h3>
                     <p>{tc.provisionalResultBody}</p>
-                    {entry.payslipAnalysis.outcome.status === 'complete' && (
-                      <p>{tc.provisionalPayoutLabel}: <strong>{money(entry.payslipAnalysis.outcome.result.payout_amount)}</strong></p>
-                    )}
-                    <p className="form-note">{tc.provisionalNote}</p>
+                    {/* Stage 2u (§2u.1): "the specific lines requiring confirmation must appear
+                        before or visually above any provisional computed amount" - confirmed by a
+                        live production check that this order matters: the issue list below must
+                        render BEFORE the provisional euro figure further down, never after it. */}
                     <p className="form-note">{tc.needsConfirmationIntro}</p>
                     {openIssues.map((issue) => {
                       const key = issueKey(issue);
@@ -521,6 +521,13 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                         </div>
                       );
                     })}
+                    {/* The provisional euro figure itself - deliberately AFTER the specific issue(s)
+                        above, and labelled as provisional, never with "Amount payable"/"Paid now"
+                        wording (§2u.1). */}
+                    {entry.payslipAnalysis.outcome.status === 'complete' && (
+                      <p>{tc.provisionalPayoutLabel}: <strong>{money(entry.payslipAnalysis.outcome.result.payout_amount)}</strong></p>
+                    )}
+                    <p className="form-note">{tc.provisionalNote}</p>
                   </div>
                 </div>
               )}

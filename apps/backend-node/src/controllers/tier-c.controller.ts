@@ -5,7 +5,7 @@ import { computePayslipPeriod, periodMultiplierFor, type PayslipComputationRates
 import { comparePeriodToDocument } from '../payroll-engine/discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace, resolveNetPosition, type ConsistencyIssue } from '../payroll-engine/extraction-consistency.js';
 import type { DocumentTextItem } from '../payroll-engine/document-text-guard.js';
-import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCPeriodType } from '../payroll-engine/tier-c.js';
+import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, remapUnreadableFieldToPeriodPath, type TierCPeriodType } from '../payroll-engine/tier-c.js';
 import { isGeminiConfigured, extractTierCPayslip } from '../ai-service/gemini-client.js';
 import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
 import { ipRateLimit } from '../rate-limiter.js';
@@ -288,8 +288,11 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
     // Stage 2f (§2f.8): "an unreadable amount is not a zero" - hour/net/ET-reimbursement/payout/
     // reservation amounts are stored as 0 when non-finite (no shared type changed for this), so this
     // is the only place that distinguishes "read as zero" from "could not be read" for them.
+    // Stage 2u (§2u.2): the field path is remapped from the RAW extraction shape to the one the
+    // CLIENT actually holds (`period`) and can correct - see remapUnreadableFieldToPeriodPath's own
+    // doc comment for why this is not always a straight rename (net_lines's own split).
     for (const field of extraction.unreadable_amount_fields) {
-      needsConfirmation.push({ code: 'amount_unreadable', field });
+      needsConfirmation.push({ code: 'amount_unreadable', field: remapUnreadableFieldToPeriodPath(field, extraction) });
     }
     // Stage 2b (audit v12, §Stage 2b): the §Stage 2a live test showed three "discrepancies" that were
     // entirely OUR extraction's own errors, presented exactly as a real employer violation would be -
@@ -513,15 +516,19 @@ router.post('/recompute', async (req, res) => {
 
     const outcome = computePayslipPeriod(period, fetched.rates, true);
 
-    // Same gate as /analyze (Stage 2b): a correction to one printed_* field does not itself prove the
-    // rest of the extraction is trustworthy. No payment_date travels with a bare PayslipPeriod (it is
-    // extraction-only, per tier-c.ts), so the year-mismatch check simply does not re-fire here - the
-    // checks that DO still apply (zero-tax, period length from the label, category, both totals
-    // reconciliations) are exactly the ones a single-field correction can newly satisfy or newly break.
-    const consistencyIssues = checkExtractionConsistency(null, period, outcome);
-    if (consistencyIssues.length > 0) {
-      console.error('[consistency-gate] blocked on /recompute - period:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(consistencyIssues)));
-      return res.json({ status: 'unreliable', issues: consistencyIssues, trace: buildExtractionTrace(period, outcome) });
+    // Stage 2u (audit v53, §2u.2): "keep 2t's ask-don't-refuse product decision" - applied here too,
+    // now that the frontend's own correction flow reaches this route for a `needsConfirmation` item,
+    // not only for a Stage 1 discrepancy. A correction to one printed_*/field does not itself prove the
+    // REST of the extraction is trustworthy, so the SAME arithmetic checks /analyze already runs still
+    // run here - but a remaining finding no longer withholds the computed result; it joins
+    // `needsConfirmation` instead, exactly like /analyze's own. The ONLY hard blocks this route keeps
+    // are the two checked above (`flaggedFieldPaths`, `period_type_confirmed`) - §2u.2's own explicit
+    // instruction to carry that discipline forward, never bypass it. No payment_date travels with a
+    // bare PayslipPeriod (it is extraction-only, per tier-c.ts), so the year-mismatch check simply does
+    // not re-fire here, unchanged from before this stage.
+    const needsConfirmation = checkExtractionConsistency(null, period, outcome);
+    if (needsConfirmation.length > 0) {
+      console.error('[consistency-gate] flagged for confirmation on /recompute - period:', JSON.stringify(redactedGateLogPayload(period)), 'issues:', JSON.stringify(redactedIssuesForLogging(needsConfirmation)));
     }
 
     // Stage 2h (§2h.3) / 2i (§2i.0b): same structured basis /analyze reports - a correction can change
@@ -533,6 +540,7 @@ router.post('/recompute', async (req, res) => {
       outcome,
       discrepancies,
       net_position,
+      needsConfirmation,
       // Stage 2h (§2h.4): /recompute sends no document text at all (it re-derives from an already-read
       // period) - the technical-details line still appears, honestly reporting nothing to check.
       technicalDetails: { text_items_sent: 0, text_layer_status: 'none' as const, request_size_kb: 0, request_size_source: 'measured' as const, render_step: 'non-pdf', text_layer_source: 'none' as const },

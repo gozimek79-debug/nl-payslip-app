@@ -217,6 +217,51 @@ export function resolveEtExchangeAmountFromExtraction(extraction: TierCExtractio
   return etLabeledPreTaxLines.reduce((sum, l) => sum + (l.amount as number), 0);
 }
 
+const UNREADABLE_HOUR_LINE_PATH = /^hour_lines\[(\d+)\]\.amount$/;
+const UNREADABLE_NET_LINE_PATH = /^net_lines\[(\d+)\]\.amount$/;
+const UNREADABLE_ET_REIMBURSEMENT_PATH = /^et_reimbursement_lines\[(\d+)\]\.amount$/;
+const UNREADABLE_PAYOUT_ADJUSTMENT_PATH = /^payout_adjustment_lines\[(\d+)\]\.amount$/;
+const UNREADABLE_RESERVATION_ACCRUED_PATH = /^reservation_lines\[(\d+)\]\.accrued$/;
+const UNREADABLE_RESERVATION_PAID_OUT_PATH = /^reservation_lines\[(\d+)\]\.paid_out$/;
+
+/**
+ * Stage 2u (audit v53, §2u.2): "bind the [correction] action to the exact field path that caused the
+ * issue." `extraction.unreadable_amount_fields` names a field on the RAW extraction shape
+ * (`hour_lines[3].amount`, `net_lines[1].amount`, ...) - the one a client can act on is `PayslipPeriod`
+ * (what `/recompute` actually takes), and the two shapes are not always the same path for the same
+ * line. `hour_lines`/`payout_adjustment_lines` (→`payout_adjustments`)/`reservation_lines`
+ * (→`reservations`, renamed fields)/`et_reimbursement_lines` (→`et.et_reimbursements`) all keep the
+ * SAME per-line index across the mapping (mapExtractionToPeriod above copies each 1:1, never
+ * filtering), so renaming the path is a straight substitution. `net_lines` is the one genuine
+ * exception: `mapExtractionToPeriod` SPLITS it into `net_additions` (category === 'reimbursement') and
+ * `net_deductions` (everything else) by a stable filter, so the raw index alone cannot say which list
+ * or position a given line landed at - this function re-derives that position from the SAME raw
+ * `net_lines` array (with its own `category`) the split itself read, so the two can never disagree
+ * about where a line ended up.
+ */
+export function remapUnreadableFieldToPeriodPath(field: string, extraction: TierCExtraction): string {
+  if (UNREADABLE_HOUR_LINE_PATH.test(field)) return field; // same list name, same index in PayslipPeriod
+  const etMatch = UNREADABLE_ET_REIMBURSEMENT_PATH.exec(field);
+  if (etMatch) return `et.et_reimbursements[${etMatch[1]}].amount`;
+  const payoutMatch = UNREADABLE_PAYOUT_ADJUSTMENT_PATH.exec(field);
+  if (payoutMatch) return `payout_adjustments[${payoutMatch[1]}].amount`;
+  const accruedMatch = UNREADABLE_RESERVATION_ACCRUED_PATH.exec(field);
+  if (accruedMatch) return `reservations[${accruedMatch[1]}].opgebouwd_this_period`;
+  const paidOutMatch = UNREADABLE_RESERVATION_PAID_OUT_PATH.exec(field);
+  if (paidOutMatch) return `reservations[${paidOutMatch[1]}].paid_out_this_period`;
+  const netMatch = UNREADABLE_NET_LINE_PATH.exec(field);
+  if (netMatch) {
+    const rawIndex = Number(netMatch[1]);
+    const isReimbursement = extraction.net_lines[rawIndex]?.category === 'reimbursement';
+    let positionInBucket = 0;
+    for (let i = 0; i < rawIndex; i += 1) {
+      if ((extraction.net_lines[i]?.category === 'reimbursement') === isReimbursement) positionInBucket += 1;
+    }
+    return isReimbursement ? `net_additions[${positionInBucket}].amount` : `net_deductions[${positionInBucket}].amount`;
+  }
+  return field; // unrecognised shape - should not happen given unreadableAmountFields's own producers above
+}
+
 /**
  * Maps a (widened) AI extraction onto PayslipPeriod. Pure and synchronous - no computation happens
  * here (spec §2), only population, exactly mirroring how tier-a.ts's buildTierAPeriod() only builds

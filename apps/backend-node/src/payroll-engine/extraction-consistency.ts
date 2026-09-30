@@ -687,16 +687,6 @@ export interface ExtractionTrace {
   et_reimbursements: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
-  /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
-   * image_only when there was no text layer." Defaults to 'image_only' for every existing caller
-   * (unit tests, and any path with no text layer) - only the controller, holding the real
-   * `documentText` from the request, can say `'text_layer_verified'`. Stage 2t (audit v52, §2t.2/
-   * §2t.3) retired the two-reader comparison AND the bag-of-numbers amount-verification guard - one
-   * Gemini reader now handles every document shape, and nothing independently "verifies" a text layer
-   * against the read amounts any more. This field is currently unused by the frontend panel (grepped,
-   * 2t) - kept two-valued and honestly named for whichever caller reads it next, not expanded back to
-   * the retired two/one-reader states. */
-  reading_basis: 'text_layer_verified' | 'image_only';
   /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding on its
    * own (a rate, a percentage base, or a reservation balance also prints two-decimal numbers that are
    * not payment amounts, so an unused item is a possibility, not proof of a missing line). */
@@ -884,7 +874,6 @@ export function buildExtractionTrace(
     et_reimbursements: period.et?.et_applicable ? period.et.et_reimbursements.map((r) => traceLine(r.description, 'et_reimbursement', r.amount)) : [],
     implied_payout: impliedPayout,
     printed_payout: period.printed_payout,
-    reading_basis: textItems.length > 0 ? 'text_layer_verified' : 'image_only',
     unused_printed_amounts: (() => {
       const unused = findUnusedPrintedAmounts(period, textItems);
       return { count: unused.length, sample: unused.slice(0, 5) };

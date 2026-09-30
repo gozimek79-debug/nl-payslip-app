@@ -100,18 +100,14 @@ function blobToBase64(blob: Blob): Promise<string> {
  * present upload never needs the image ladder's high step... say plainly whether an upload that falls
  * back to image-only mid-request is stuck with the lower, pre-chosen quality." It is: `hasTextLayer`
  * is decided from the CLIENT's own local `extractTextItems` read, before anything is sent - the images
- * are rendered and fixed at `TEXT_LAYER_STEP` (moderate quality) at that point. The SERVER's own
- * `assessTextLayer` (tier-c.controller.ts) can independently decide, after receiving both, that the
- * text layer does not verify well enough and fall back to `reading_basis: 'image_only'` - but by then
- * the images already sent are the ones the client chose assuming the text layer WOULD help. There is
- * no way to "un-send" a higher-quality render after the fact within a single request. Re-architecting
- * this into two round-trips (client sends `documentText` first, server decides which quality to
- * request, client renders and sends images second) is a real fix but a genuinely bigger change than
- * this stage's own scope (§2j: "not in this stage: the image reader itself") - ACCEPTED for this round
- * as a stated limitation rather than rebuilt: the fallback path keeps the lower, pre-chosen quality,
- * and `tier-c.controller.ts`/`TierCFlow.tsx` say so explicitly on the technical-details line whenever
- * `render_step === 'text-layer-present'` AND the server's own `text_layer_status` is `'mismatch'` -
- * exactly the "stuck" case - so it is visible, never silent. The step-selection decision itself
+ * are rendered and fixed at `TEXT_LAYER_STEP` (moderate quality) at that point, and there is no way to
+ * "un-send" a higher-quality render after the fact within a single request. Stage 2t (audit v52,
+ * §2t.3) retired the server-side amount-verification guard this comment originally described (the
+ * server no longer independently re-assesses the text layer's usability after receiving it - the one
+ * Gemini reader simply uses whatever text was sent, or none). Re-architecting this into two round-trips
+ * (client sends `documentText` first, server decides which quality to request, client renders and
+ * sends images second) remains a real, un-built improvement for a genuinely low-confidence text-layer
+ * case, but is a bigger change than any stage to date has scoped. The step-selection decision itself
  * (`selectRenderSteps`, `render-step-policy.ts`) is proven never to reach the image ladder's own high
  * step while `hasTextLayer` is true by `render-step-policy.test.ts`, run under plain Node (no DOM
  * needed for that one fact, unlike the actual rendering below).

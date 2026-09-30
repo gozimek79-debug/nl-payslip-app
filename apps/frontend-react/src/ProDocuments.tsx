@@ -1,20 +1,31 @@
 import { useRef, useState } from 'react';
-import { Trash2, Upload } from 'lucide-react';
+import { Trash2, Upload, AlertTriangle } from 'lucide-react';
 import { renderPageImages, extractTextItems } from './local-ocr.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
 import { derivePayslipOvertimePercents, selectMostRecentReproducedPayslip, type ReproducedPayslipCandidate } from './pro-parameter-sourcing.ts';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
+import {
+  issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
+  correctableReadValue, correctableExpectedValue, outstandingAmountUnreadablePaths, recomputeWithPathCorrection,
+  openNeedsConfirmation, isPayslipFullyReproduced,
+  money, type TierCPeriodResponse, type Outcome, type Discrepancy, type NetPosition, type TechnicalDetails, type ConsistencyIssue,
+} from './tier-c-shared.ts';
 
 /**
  * Stage 3.0 (audit v40, "PRO accepts several documents"): the shell that replaces PRO's old
  * single-file upload - adds, lists, routes and extracts several documents together, and shows the
  * contract TIMELINE (base + annexes) resolved as of a given date. A payslip goes through the
- * existing, unchanged Tier C `/analyze` (its own full discrepancy panel is deliberately NOT
- * reproduced here - that is TierCFlow.tsx's own job; a payslip entry shows a compact status line
- * only). A contract/annex goes through the existing, unchanged `/api/contracts/analyze`; once every
- * contract/annex entry has an extraction, they are sent together to `/api/contracts/resolve-timeline`,
- * whose response is what "the values in force on that date" (§2.12) actually looks like on screen.
+ * existing, unchanged Tier C `/analyze`.
+ *
+ * Stage 2u (audit v53 — auditor ruling): the ORIGINAL plan routed a payslip's full discrepancy panel
+ * and confirm/correct interaction through `TierCFlow.tsx`. Direct inspection of the import graph
+ * showed that file is unreachable from the running app - `App.tsx`'s own routing mounts THIS
+ * component for the 'pro' tier and never imports `TierCFlow`, confirmed by its own doc comment
+ * ("TierCFlow.tsx itself is untouched and unimported here"). Per the auditor's own ruling: this file
+ * is therefore the actual, only live PRO surface, and Stage 2u's provisional-result/confirm/correct
+ * requirements are implemented HERE, not in the unreachable file - reusing the pure logic
+ * (`tier-c-shared.ts`) `TierCFlow.tsx` already had, never a second, independent implementation of it.
  *
  * Stage 3.0a (audit v42): the actual point of PRO (spec §5) - the projection. Rate, hours per week,
  * the overtime threshold, and guaranteed hours come from the resolved timeline above (no new
@@ -56,32 +67,20 @@ const EFFECTIVE_CONTRACT_FIELDS = [
 
 type DocStatus = 'pending' | 'processing' | 'done' | 'error';
 
-interface PayslipHourLineForSummary { category: string; percent: number | null; adds_hours: boolean }
-
-/** Stage 3.0a: everything the parameter-sourcing layer needs from a processed payslip, beyond the
- * compact status line 3.0 already showed. `fullyReproduced` is this file's own operational reading of
- * spec §5's "a payslip the engine could fully reproduce": the Tier C consistency gate passed
- * (`status: 'ok'`) AND the discrepancy list is genuinely empty - not merely every entry being an
- * unconfirmed 'confirm'-band question, since a question is not yet a verified fact (stage 1's own
- * three-band model). Stage 2t (audit v52, §2t.4) added a second way a clean-looking 'ok' read can
- * still be unconfirmed: `needsConfirmation` - a non-empty list there means the SAME thing for this
- * check as a non-empty discrepancy list always did, and is now required to be empty too.
+/**
+ * Stage 2u (audit v53): the full `/analyze`('ok')-shaped result for a payslip entry, replacing the
+ * old, reduced `PayslipSummary` - kept so a needsConfirmation item can actually be corrected (the
+ * correction needs the whole `period` to apply a field-path edit to and resubmit to /recompute), not
+ * only displayed.
  */
-interface PayslipSummary {
-  ok: boolean;
-  /** Stage 2t (§2t.5): the DOCUMENT's own printed payout/net figure (period.printed_payout,
-   * falling back to period.printed_net) - never the engine's own computed figure, which a real
-   * discrepancy in the OTTO/Olympia retests showed can silently differ from what is actually printed
-   * while still being labelled "read correctly". `null` only when the document prints neither. */
-  printedAmount: number | null;
-  /** The engine's own computed payout - shown separately, only when it diverges from `printedAmount`
-   * by more than a cent, so a real discrepancy is visible rather than hidden behind the printed figure
-   * alone (§2t.5: "the engine's own discrepancy explicitly shown separately when it differs"). */
-  computedAmount: number | null;
-  periodLabel: string | null;
-  periodEndDate: string | null;
-  fullyReproduced: boolean;
-  hourLines: PayslipHourLineForSummary[];
+interface PayslipAnalysis {
+  period: TierCPeriodResponse;
+  outcome: Outcome;
+  discrepancies: Discrepancy[];
+  net_position: NetPosition;
+  technicalDetails: TechnicalDetails;
+  needsConfirmation: ConsistencyIssue[];
+  taxRatesSource: 'database' | 'static';
 }
 
 interface DocEntry {
@@ -94,7 +93,18 @@ interface DocEntry {
   errorMessage?: string;
   // Populated once status === 'done'.
   contractExtraction?: ContractExtraction;
-  payslipSummary?: PayslipSummary;
+  /** Present only for a payslip whose read COMPUTED (status 'ok', possibly with needsConfirmation). */
+  payslipAnalysis?: PayslipAnalysis;
+  /** True for the one payslip hard-block left (period_type_unknown) - no analysis exists to show or
+   * correct at all (§2.3: there is no period to compute against without a period type). */
+  payslipBlocked?: boolean;
+  // Stage 2u: per-entry confirm/correct UI state - a client-side "confirmed" set (no recompute; see
+  // `confirmNeedsConfirmationIssue` below), the in-progress numeric correction inputs, and which
+  // issue (if any) is mid-recompute, all keyed by `issueKey()` so `amount_unreadable`'s several
+  // possible instances never collide with each other.
+  confirmedIssueKeys?: Set<string>;
+  correctionInputs?: Record<string, string>;
+  recomputingKey?: string | null;
 }
 
 function todayIso(): string {
@@ -105,8 +115,22 @@ function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Stage 2u (audit v53, §2u.1/§2u.3): thin, entry-shaped wrappers around the shared, pure, tested
+ * `openNeedsConfirmation`/`isPayslipFullyReproduced` (tier-c-shared.ts) - see that module for why the
+ * two must never be computed differently in two places. */
+function visibleNeedsConfirmation(entry: DocEntry): ConsistencyIssue[] {
+  if (!entry.payslipAnalysis) return [];
+  return openNeedsConfirmation(entry.payslipAnalysis.needsConfirmation, entry.confirmedIssueKeys ?? new Set());
+}
+
+function isFullyReproduced(entry: DocEntry): boolean {
+  if (!entry.payslipAnalysis) return false;
+  return isPayslipFullyReproduced(entry.payslipAnalysis.discrepancies.length, entry.payslipAnalysis.needsConfirmation, entry.confirmedIssueKeys ?? new Set());
+}
+
 export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
   const t = translations[lang].proDocuments;
+  const tc = translations[lang].tierC;
   const inputRef = useRef<HTMLInputElement>(null);
   const [docs, setDocs] = useState<DocEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -118,7 +142,6 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   const [submitCount, setSubmitCount] = useState(0);
   const [asOfDate, setAsOfDate] = useState(todayIso());
   const [effectiveContract, setEffectiveContract] = useState<EffectiveContract | null>(null);
-  const [reproducedPayslip, setReproducedPayslip] = useState<ReproducedPayslipCandidate | null>(null);
   const [globalError, setGlobalError] = useState('');
 
   function handleFilesAdded(files: FileList | null) {
@@ -144,7 +167,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
   async function processPayslip(entry: DocEntry): Promise<Partial<DocEntry>> {
     let documentText: Awaited<ReturnType<typeof extractTextItems>> = [];
-    try { documentText = await extractTextItems(entry.file); } catch { /* falls back to image-only, same as TierCFlow */ }
+    try { documentText = await extractTextItems(entry.file); } catch { /* falls back to image-only */ }
     const { images, renderStep } = await renderPageImages(entry.file, documentText.length > 0);
     const res = await fetch('/api/tier-c/analyze', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -152,30 +175,33 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     });
     const data = await res.json() as {
       status?: 'ok' | 'unreliable';
-      outcome?: { status: string; result?: { payout_amount: number } };
-      discrepancies?: unknown[];
-      needsConfirmation?: unknown[];
-      period?: { period_label: string | null; period_end_date: string | null; printed_payout?: number | null; printed_net?: number | null; hour_lines?: PayslipHourLineForSummary[] };
+      outcome?: Outcome;
+      discrepancies?: Discrepancy[];
+      needsConfirmation?: ConsistencyIssue[];
+      period?: TierCPeriodResponse;
+      net_position?: NetPosition;
+      technicalDetails?: TechnicalDetails;
+      taxRatesSource?: 'database' | 'static';
       error_code?: string;
     };
     if (!res.ok || !data.status) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
-    const periodLabel = data.period?.period_label ?? null;
-    const periodEndDate = data.period?.period_end_date ?? null;
-    const hourLines = data.period?.hour_lines ?? [];
     if (data.status === 'unreliable') {
-      return { status: 'done', payslipSummary: { ok: false, printedAmount: null, computedAmount: null, periodLabel, periodEndDate, fullyReproduced: false, hourLines } };
+      return { status: 'done', payslipBlocked: true };
     }
-    // Stage 2t (§2t.5): the document's OWN printed figure, never the engine's computed one - see
-    // PayslipSummary's own doc comment for why (OTTO showed a hidden +4.76 discrepancy under the old
-    // "read correctly" wording, which displayed the engine's figure, not the printed one).
-    const printedAmount = data.period?.printed_payout ?? data.period?.printed_net ?? null;
-    const computedAmount = data.outcome?.status === 'complete' ? data.outcome.result?.payout_amount ?? null : null;
-    // Stage 2t (§2t.4): "ask, don't refuse" moved what used to be a hard block (a non-empty
-    // discrepancy/consistency-issue list) into a same-'ok'-response `needsConfirmation` list - a
-    // payslip is only "fully reproduced" (spec §5's own parameter-sourcing rule) when BOTH are empty,
-    // exactly as only an empty discrepancy list counted before this stage.
-    const fullyReproduced = (data.discrepancies?.length ?? 0) === 0 && (data.needsConfirmation?.length ?? 0) === 0;
-    return { status: 'done', payslipSummary: { ok: true, printedAmount, computedAmount, periodLabel, periodEndDate, fullyReproduced, hourLines } };
+    if (!data.period || !data.outcome || !data.discrepancies || !data.net_position || !data.technicalDetails || !data.taxRatesSource) {
+      return { status: 'error', errorMessage: t.error };
+    }
+    return {
+      status: 'done',
+      payslipAnalysis: {
+        period: data.period, outcome: data.outcome, discrepancies: data.discrepancies,
+        net_position: data.net_position, technicalDetails: data.technicalDetails,
+        needsConfirmation: data.needsConfirmation ?? [], taxRatesSource: data.taxRatesSource,
+      },
+      confirmedIssueKeys: new Set(),
+      correctionInputs: {},
+      recomputingKey: null,
+    };
   }
 
   async function processContract(entry: DocEntry): Promise<Partial<DocEntry>> {
@@ -231,21 +257,75 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       }
     }
 
-    // Stage 3.0a.2: "from the most recent payslip the engine could fully reproduce" - spec's own
-    // rule, applied via the shared, tested selector (never re-decided inline here).
-    const payslipEntries = processed.filter((e) => routeForDocument(e.documentType) === 'tier_c' && e.payslipSummary);
-    const candidates: ReproducedPayslipCandidate[] = payslipEntries.map((e) => ({
-      label: e.label,
-      periodLabel: e.payslipSummary?.periodLabel ?? null,
-      periodEndDate: e.payslipSummary?.periodEndDate ?? null,
-      fullyReproduced: e.payslipSummary?.fullyReproduced ?? false,
-      hourLines: e.payslipSummary?.hourLines ?? [],
-    }));
-    setReproducedPayslip(selectMostRecentReproducedPayslip(candidates));
-
     setSubmitting(false);
     setHasSubmitted(true);
     setSubmitCount((n) => n + 1);
+  }
+
+  /** Stage 2u (§2u.2): the restored field-specific correction path, now living on the actual live PRO
+   * surface - reuses `recomputeWithPathCorrection` (tier-c-shared.ts), the SAME function a future
+   * TierCFlow reconnect would use, so the two can never diverge into separate correction logic. */
+  async function correctNeedsConfirmationIssue(entryId: string, issue: ConsistencyIssue) {
+    const entry = docs.find((e) => e.id === entryId);
+    if (!entry?.payslipAnalysis) return;
+    const path = correctableFieldPath(issue);
+    const key = issueKey(issue);
+    const raw = entry.correctionInputs?.[key];
+    const value = Number((raw ?? '').trim().replace(',', '.'));
+    if (!path || !Number.isFinite(value)) return;
+
+    const analysis = entry.payslipAnalysis;
+    const except = issue.code === 'amount_unreadable' ? issue.field : undefined;
+    const flaggedFieldPaths = outstandingAmountUnreadablePaths(analysis.needsConfirmation, except);
+
+    setDocs((current) => current.map((e) => (e.id === entryId ? { ...e, recomputingKey: key } : e)));
+    try {
+      const result = await recomputeWithPathCorrection(analysis.period, path, value, flaggedFieldPaths);
+      if (result.status === 'unreliable') {
+        // Expected when another amount_unreadable field is still outstanding elsewhere in the SAME
+        // document (2m.1/2p.5's own discipline, carried forward - §2u.2) - the correction itself is
+        // not lost (applied to `period` below), only the recompute is deferred until that field too
+        // is resolved via its own correction. This one issue is dropped from the locally-shown list;
+        // every other one stays exactly as before.
+        setDocs((current) => current.map((e) => (e.id !== entryId ? e : {
+          ...e,
+          payslipAnalysis: { ...analysis, period: result.period, needsConfirmation: analysis.needsConfirmation.filter((i) => i !== issue) },
+          recomputingKey: null,
+        })));
+        return;
+      }
+      setDocs((current) => current.map((e) => (e.id !== entryId ? e : {
+        ...e,
+        payslipAnalysis: {
+          period: result.period, outcome: result.outcome, discrepancies: result.discrepancies,
+          net_position: result.net_position, technicalDetails: result.technicalDetails,
+          needsConfirmation: result.needsConfirmation, taxRatesSource: result.taxRatesSource,
+        },
+        confirmedIssueKeys: new Set(),
+        correctionInputs: { ...(e.correctionInputs ?? {}), [key]: '' },
+        recomputingKey: null,
+      })));
+    } catch {
+      setGlobalError(t.error);
+      setDocs((current) => current.map((e) => (e.id === entryId ? { ...e, recomputingKey: null } : e)));
+    }
+  }
+
+  /** Stage 2u (§2u.2): "provide Confirm when the read value is visible" - client-side only, matching
+   * Stage 1's own `confirmDiscrepancy` pattern exactly: nothing about the computation changes, only
+   * that the user has looked at the printed figure and says it is correct. Only ever offered for the
+   * two codes `correctableReadValue` returns non-null for (see the render site below). */
+  function confirmNeedsConfirmationIssue(entryId: string, issue: ConsistencyIssue) {
+    setDocs((current) => current.map((e) => {
+      if (e.id !== entryId) return e;
+      const next = new Set(e.confirmedIssueKeys ?? []);
+      next.add(issueKey(issue));
+      return { ...e, confirmedIssueKeys: next };
+    }));
+  }
+
+  function setCorrectionInput(entryId: string, key: string, value: string) {
+    setDocs((current) => current.map((e) => (e.id === entryId ? { ...e, correctionInputs: { ...(e.correctionInputs ?? {}), [key]: value } } : e)));
   }
 
   function fieldLabel(field: keyof EffectiveContract): string {
@@ -265,6 +345,19 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     if (reason.code === 'disagreement') return t.reasonDisagreement(reason.documentLabels.join(' / '));
     return t.reasonUndated(reason.documentLabel);
   }
+
+  // Stage 2u: recomputed fresh from `docs` on every render (not a snapshot taken once in submitAll) -
+  // so a correction applied AFTER submission (via the panel below) immediately re-evaluates PRO
+  // eligibility too, never leaving a stale "fully reproduced" verdict from before the correction.
+  const payslipEntries = docs.filter((e) => routeForDocument(e.documentType) === 'tier_c' && e.payslipAnalysis);
+  const candidates: ReproducedPayslipCandidate[] = payslipEntries.map((e) => ({
+    label: e.label,
+    periodLabel: e.payslipAnalysis?.period.period_label ?? null,
+    periodEndDate: e.payslipAnalysis?.period.period_end_date ?? null,
+    fullyReproduced: isFullyReproduced(e),
+    hourLines: e.payslipAnalysis?.period.hour_lines ?? [],
+  }));
+  const reproducedPayslip = selectMostRecentReproducedPayslip(candidates);
 
   // Stage 3.0a.2/3.0a.3: the projection's own prefill - rate/hours/threshold from the resolved
   // timeline (reused as-is, no new resolver), the two overtime tier percentages from the most
@@ -311,52 +404,137 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
       {docs.length > 0 && (
         <ul className="pro-document-list">
-          {docs.map((entry) => (
+          {docs.map((entry) => {
+            const openIssues = visibleNeedsConfirmation(entry);
+            const isProvisional = openIssues.length > 0;
+            const fullyReproduced = isFullyReproduced(entry);
+            // Stage 2t (§2t.5): the DOCUMENT's own printed payout/net figure - never the engine's own
+            // computed one (see the doc comment on the "computed differs" note below for why).
+            const printedAmount = entry.payslipAnalysis ? entry.payslipAnalysis.period.printed_payout ?? entry.payslipAnalysis.period.printed_net : null;
+            return (
             <li key={entry.id} className="pro-document-row">
-              <span className="pro-document-name">{entry.label}</span>
-              <select
-                value={entry.documentType}
-                disabled={submitting}
-                onChange={(event) => setDocs((current) => setDocumentType(current, entry.id, event.target.value as ProDocumentType))}
-              >
-                <option value="payslip">{t.typePayslip}</option>
-                <option value="contract_base">{t.typeContractBase}</option>
-                <option value="contract_annex">{t.typeContractAnnex}</option>
-              </select>
-              {entry.documentType === 'contract_annex' && (
-                <label className="pro-document-date">
-                  {t.effectiveDateLabel}
-                  <input type="date" required disabled={submitting} value={entry.effectiveDate ?? ''}
-                    onChange={(event) => setDocs((current) => setEffectiveDate(current, entry.id, event.target.value))}/>
-                </label>
-              )}
-              <span className={`pro-document-status pro-document-status-${entry.status}`}>
-                {entry.status === 'pending' && t.statusPending}
-                {entry.status === 'processing' && t.statusProcessing}
-                {entry.status === 'error' && (entry.errorMessage ?? t.statusError)}
-                {entry.status === 'done' && entry.payslipSummary && (entry.payslipSummary.ok
-                  ? (entry.payslipSummary.fullyReproduced ? t.payslipSummaryOk : t.payslipSummaryNeedsConfirmation)(
-                      entry.payslipSummary.printedAmount !== null ? `€${entry.payslipSummary.printedAmount.toFixed(2)}` : '—',
-                    )
-                  : t.payslipSummaryUnreliable)}
-                {/* Stage 2t (§2t.5): "the engine's own discrepancy explicitly shown separately when it
-                    differs" - never folded into the headline figure above, which is always the
-                    document's own printed one. */}
-                {entry.status === 'done' && entry.payslipSummary?.ok && entry.payslipSummary.computedAmount !== null
-                  && entry.payslipSummary.printedAmount !== null
-                  && Math.abs(entry.payslipSummary.computedAmount - entry.payslipSummary.printedAmount) > 0.005 && (
-                  <span className="pro-document-computed-note">
-                    {t.payslipSummaryComputedDiffers(`€${entry.payslipSummary.computedAmount.toFixed(2)}`)}
-                  </span>
+              <div className="pro-document-row-main">
+                <span className="pro-document-name">{entry.label}</span>
+                <select
+                  value={entry.documentType}
+                  disabled={submitting}
+                  onChange={(event) => setDocs((current) => setDocumentType(current, entry.id, event.target.value as ProDocumentType))}
+                >
+                  <option value="payslip">{t.typePayslip}</option>
+                  <option value="contract_base">{t.typeContractBase}</option>
+                  <option value="contract_annex">{t.typeContractAnnex}</option>
+                </select>
+                {entry.documentType === 'contract_annex' && (
+                  <label className="pro-document-date">
+                    {t.effectiveDateLabel}
+                    <input type="date" required disabled={submitting} value={entry.effectiveDate ?? ''}
+                      onChange={(event) => setDocs((current) => setEffectiveDate(current, entry.id, event.target.value))}/>
+                  </label>
                 )}
-                {entry.status === 'done' && entry.contractExtraction && t.statusDone}
-              </span>
-              <button type="button" className="plain-button" disabled={submitting} aria-label={t.remove}
-                onClick={() => setDocs((current) => removeDocument(current, entry.id))}>
-                <Trash2 size={16}/>
-              </button>
+                <span className={`pro-document-status pro-document-status-${entry.status}`}>
+                  {entry.status === 'pending' && t.statusPending}
+                  {entry.status === 'processing' && t.statusProcessing}
+                  {entry.status === 'error' && (entry.errorMessage ?? t.statusError)}
+                  {/* Stage 2u (audit v53, §2u.1): "must not present the engine payout using clean-success
+                      wording or styling" while provisional - a distinct phrase/status class from the
+                      clean case, never the bare euro figure alone. */}
+                  {entry.status === 'done' && entry.payslipAnalysis && (
+                    isProvisional
+                      ? t.payslipSummaryNeedsConfirmation(printedAmount !== null ? money(printedAmount) : '—')
+                      : t.payslipSummaryOk(printedAmount !== null ? money(printedAmount) : '—')
+                  )}
+                  {entry.status === 'done' && entry.payslipBlocked && t.payslipSummaryUnreliable}
+                  {/* Stage 2t (§2t.5): "the engine's own discrepancy explicitly shown separately when it
+                      differs" - never folded into the headline figure above, which is always the
+                      document's own printed one. Stage 2u: only shown for a CLEAN (non-provisional)
+                      read - while provisional, the engine figure is already shown, clearly labelled, in
+                      the confirmation panel below, so repeating it here would be confusing, not helpful. */}
+                  {entry.status === 'done' && entry.payslipAnalysis && !isProvisional
+                    && entry.payslipAnalysis.outcome.status === 'complete'
+                    && printedAmount !== null
+                    && Math.abs(entry.payslipAnalysis.outcome.result.payout_amount - printedAmount) > 0.005 && (
+                    <span className="pro-document-computed-note">
+                      {t.payslipSummaryComputedDiffers(money(entry.payslipAnalysis.outcome.result.payout_amount))}
+                    </span>
+                  )}
+                  {entry.status === 'done' && entry.contractExtraction && t.statusDone}
+                </span>
+                <button type="button" className="plain-button" disabled={submitting} aria-label={t.remove}
+                  onClick={() => setDocs((current) => removeDocument(current, entry.id))}>
+                  <Trash2 size={16}/>
+                </button>
+              </div>
+
+              {/* Stage 2u (§2u.1/§2u.2): the inline provisional/confirmation panel - "the specific
+                  lines requiring confirmation must appear before or visually above any provisional
+                  computed amount" is satisfied by rendering this BEFORE the calculator/projection
+                  section further down uses this entry as a parameter source, and by stating plainly,
+                  right here, that the figure above is not yet confirmed. */}
+              {entry.status === 'done' && entry.payslipAnalysis && isProvisional && (
+                <div className="notice-card pro-payslip-confirmation">
+                  <AlertTriangle size={16}/>
+                  <div>
+                    <h3>{tc.provisionalResultTitle}</h3>
+                    <p>{tc.provisionalResultBody}</p>
+                    {entry.payslipAnalysis.outcome.status === 'complete' && (
+                      <p>{tc.provisionalPayoutLabel}: <strong>{money(entry.payslipAnalysis.outcome.result.payout_amount)}</strong></p>
+                    )}
+                    <p className="form-note">{tc.provisionalNote}</p>
+                    <p className="form-note">{tc.needsConfirmationIntro}</p>
+                    {openIssues.map((issue) => {
+                      const key = issueKey(issue);
+                      const path = correctableFieldPath(issue);
+                      const readValue = correctableReadValue(issue);
+                      const expectedValue = correctableExpectedValue(issue);
+                      const printedLabel = entry.payslipAnalysis && path ? correctablePrintedLabel(entry.payslipAnalysis.period, issue) : null;
+                      const recomputing = entry.recomputingKey === key;
+                      return (
+                        <div key={key} className="discrepancy-item confirm">
+                          <p>{issueMessage(tc, issue)}</p>
+                          {path && entry.payslipAnalysis && (
+                            <>
+                              <p className="form-note">
+                                <strong>{correctableLineLabel(tc, entry.payslipAnalysis.period, issue)}</strong>{' '}
+                                {printedLabel && <span className="nl-term">({tc.dutchTerm(printedLabel)})</span>}
+                              </p>
+                              {readValue !== null
+                                ? <p className="form-note">{tc.weRead(money(readValue))}</p>
+                                : <p className="form-note">{tc.notReadAtAll}</p>}
+                              {expectedValue !== null && <p className="form-note">{tc.expectedValue(money(expectedValue))}</p>}
+                              {readValue !== null && (
+                                <div className="calc-toggles">
+                                  <button type="button" className="secondary" onClick={() => confirmNeedsConfirmationIssue(entry.id, issue)}>{tc.confirmYes}</button>
+                                </div>
+                              )}
+                              <label>{tc.correctionLabel}
+                                <div className="money-input">
+                                  <span>€</span>
+                                  <input inputMode="decimal" value={entry.correctionInputs?.[key] ?? ''}
+                                    onChange={(event) => setCorrectionInput(entry.id, key, event.target.value.replace(/[^0-9.,-]/g, ''))}/>
+                                </div>
+                              </label>
+                              <button type="button" className="secondary" disabled={recomputing} onClick={() => void correctNeedsConfirmationIssue(entry.id, issue)}>
+                                {recomputing ? tc.recomputing : tc.correctSubmit}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {/* Stage 2u (§2u.3): a fully-resolved payslip becomes eligible as a PRO parameter source
+                  silently (no special notice needed) - but a CLEAN read that was never provisional at
+                  all gets no confirmation panel, matching the pre-2u compact behaviour exactly. This
+                  plain note only fires for the fully-reproduced case, so the user can tell the
+                  projection may now use this document. */}
+              {entry.status === 'done' && entry.payslipAnalysis && fullyReproduced && reproducedPayslip?.label === entry.label && (
+                <p className="form-note pro-payslip-eligible-note">{t.payslipEligibleForProjection}</p>
+              )}
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
 

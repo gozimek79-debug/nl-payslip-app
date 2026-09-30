@@ -340,6 +340,31 @@ test('2p.5: /recompute with an explicit empty flaggedFieldPaths (the ordinary ca
   assert.equal(body.status, 'ok', `expected the ordinary, explicitly-empty case to compute normally, got ${JSON.stringify(body)}`);
 });
 
+/**
+ * Stage 2u (audit v53, §2u.2): "keep 2t's ask-don't-refuse product decision" extended to /recompute -
+ * before this stage, a checkExtractionConsistency finding on a /recompute call hard-refused
+ * (status: 'unreliable', no computed outcome at all), exactly the presentation Cursor's 2t review
+ * rejected. It must now behave exactly like /analyze: compute a real result and surface the finding
+ * in needsConfirmation, never withhold the whole result for it. The two hard gates this route keeps
+ * (flaggedFieldPaths, period_type_confirmed - tested elsewhere in this file) are UNCHANGED by this.
+ */
+test("2u.2: /recompute surfaces a checkExtractionConsistency finding as needsConfirmation and still computes a result, never the old hard 'unreliable' block", async () => {
+  const periodWithBadPrintedNet = {
+    ...RECOMPUTE_TEST_PERIOD,
+    printed_net: 500, // does not reconcile with 885.50 gross - 170.46 tax (~715), a real finding
+  };
+  const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: periodWithBadPrintedNet, flaggedFieldPaths: [] }),
+  });
+  const body = (await res.json()) as { status: string; outcome?: { status: string }; needsConfirmation?: Array<{ code: string }> };
+  assert.equal(res.status, 200);
+  assert.equal(body.status, 'ok', `expected ask-don't-refuse to still compute a result, got ${JSON.stringify(body)}`);
+  assert.equal(body.outcome?.status, 'complete', 'expected a real computed outcome, not withheld');
+  assert.ok(body.needsConfirmation && body.needsConfirmation.length > 0, `expected the net mismatch to surface in needsConfirmation, got ${JSON.stringify(body.needsConfirmation)}`);
+});
+
 test('2m.1: /recompute rejects a malformed flaggedFieldPaths (not an array of strings) with invalid_period, never crashes', async () => {
   const res = await originalFetch(`${baseUrl}/api/tier-c/recompute`, {
     method: 'POST',

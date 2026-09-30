@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, type TierCExtraction } from './tier-c.js';
+import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, remapUnreadableFieldToPeriodPath, type TierCExtraction } from './tier-c.js';
 import { computePayslipPeriod, tableTaxToleranceFor, type PayslipComputationRates } from './payslip-model.js';
 import { comparePeriodToDocument, resolveNetReconciliationBasis } from './discrepancy.js';
 import { checkExtractionConsistency, buildExtractionTrace } from './extraction-consistency.js';
@@ -1382,3 +1382,44 @@ test('2g.0a regression: net_mismatch compares wage_net (before net additions), n
   assert.ok(!discrepancies.some((d) => d.code === 'net_mismatch'), `expected no net_mismatch on a correct read, got ${JSON.stringify(discrepancies)}`);
 });
 
+
+/**
+ * Stage 2u (audit v53, §2u.2): "bind the correction action to the exact field path that caused the
+ * issue." `remapUnreadableFieldToPeriodPath` translates a RAW-extraction `unreadable_amount_fields`
+ * path into the one the client actually holds (`PayslipPeriod`) - most lists keep the same index
+ * (hour_lines, et_reimbursement_lines->et.et_reimbursements, payout_adjustment_lines->
+ * payout_adjustments, reservation_lines->reservations), but `net_lines` is SPLIT by
+ * `mapExtractionToPeriod` into `net_additions`/`net_deductions` by category, losing the raw index -
+ * this is the one shape the function must re-derive, not merely rename.
+ */
+test('2u.2: remapUnreadableFieldToPeriodPath renames every 1:1-mapped list to its PayslipPeriod name, same index', () => {
+  const extraction = baseExtraction({ net_lines: [] });
+  assert.equal(remapUnreadableFieldToPeriodPath('hour_lines[2].amount', extraction), 'hour_lines[2].amount', 'hour_lines keeps its own name and index');
+  assert.equal(remapUnreadableFieldToPeriodPath('et_reimbursement_lines[1].amount', extraction), 'et.et_reimbursements[1].amount');
+  assert.equal(remapUnreadableFieldToPeriodPath('payout_adjustment_lines[0].amount', extraction), 'payout_adjustments[0].amount');
+  assert.equal(remapUnreadableFieldToPeriodPath('reservation_lines[3].accrued', extraction), 'reservations[3].opgebouwd_this_period');
+  assert.equal(remapUnreadableFieldToPeriodPath('reservation_lines[3].paid_out', extraction), 'reservations[3].paid_out_this_period');
+});
+
+test('2u.2: remapUnreadableFieldToPeriodPath re-derives the net_lines split position, matching mapExtractionToPeriod\'s own real split exactly', () => {
+  const netLines = [
+    { description: 'Voorschot', amount: 20, category: 'other' as const },        // net_lines[0] -> net_deductions[0]
+    { description: 'Reiskosten', amount: 90, category: 'reimbursement' as const }, // net_lines[1] -> net_additions[0]
+    { description: 'Correctie', amount: 5, category: 'other' as const },         // net_lines[2] -> net_deductions[1]
+    { description: 'Onkosten', amount: 15, category: 'reimbursement' as const },   // net_lines[3] -> net_additions[1]
+  ];
+  const extraction = baseExtraction({ net_lines: netLines });
+
+  assert.equal(remapUnreadableFieldToPeriodPath('net_lines[0].amount', extraction), 'net_deductions[0].amount');
+  assert.equal(remapUnreadableFieldToPeriodPath('net_lines[1].amount', extraction), 'net_additions[0].amount');
+  assert.equal(remapUnreadableFieldToPeriodPath('net_lines[2].amount', extraction), 'net_deductions[1].amount');
+  assert.equal(remapUnreadableFieldToPeriodPath('net_lines[3].amount', extraction), 'net_additions[1].amount');
+
+  // Proves the two can never disagree: the SAME extraction's real mapExtractionToPeriod output has
+  // exactly the lines this test's own remap predictions name, at those exact indices.
+  const period = mapExtractionToPeriod(extraction, null);
+  assert.equal(period.net_deductions[0]?.description, 'Voorschot');
+  assert.equal(period.net_additions[0]?.description, 'Reiskosten');
+  assert.equal(period.net_deductions[1]?.description, 'Correctie');
+  assert.equal(period.net_additions[1]?.description, 'Onkosten');
+});

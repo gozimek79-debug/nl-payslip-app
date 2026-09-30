@@ -125,6 +125,9 @@ const pl = {
     payslipSummaryNeedsConfirmation: (net: string) => `Odczytano - netto/wypłata wg dokumentu ${net} (są pozycje do potwierdzenia)`,
     payslipSummaryComputedDiffers: (computed: string) => `obliczona przez silnik kwota różni się: ${computed}`,
     payslipSummaryUnreliable: 'Bramka spójności zablokowała ten pasek - odczyt niepewny',
+    // Stage 2u (audit v53, §2u.3): shown only once a payslip's needsConfirmation items are all
+    // resolved (confirmed or corrected) - the moment it becomes eligible as a PRO parameter source.
+    payslipEligibleForProjection: 'Wszystkie pozycje potwierdzone - ten dokument może teraz zasilać projekcję poniżej.',
     effectiveContractTitle: 'Warunki obowiązujące na dzień', asOfDateLabel: 'Dzień, na który sprawdzamy',
     sourceLabel: (label: string) => `źródło: ${label}`,
     reasonDisagreement: (labels: string) => `${labels} podają różne wartości na ten sam dzień - nie zgadujemy, która jest właściwa.`,
@@ -288,6 +291,15 @@ const pl = {
     // confirm, shown alongside the real computed result above, never in place of one.
     needsConfirmationTitle: 'Do potwierdzenia',
     needsConfirmationIntro: 'Wynik powyżej jest obliczony, ale poniższe pozycje warto sprawdzić na oryginalnym dokumencie - odczyt nie jest co do nich całkowicie pewny.',
+    // Stage 2u (audit v53, §2u.1): "must say plainly that the payout is provisional... if you display
+    // the provisional computed number at all, label it explicitly as provisional."
+    provisionalResultTitle: 'Wynik tymczasowy - wymaga potwierdzenia',
+    provisionalResultBody: 'Co najmniej jedna wartość źródłowa wymaga potwierdzenia - poniższa kwota jest obliczona tymczasowo i NIE jest jeszcze ostateczną wypłatą.',
+    provisionalPayoutLabel: 'Kwota tymczasowa (niepotwierdzona)',
+    provisionalNote: 'Przynajmniej jedna nieodczytana lub niepewna wartość jest obecnie pominięta lub przyjęta tymczasowo w tym obliczeniu. Wynik zostanie przeliczony po potwierdzeniu lub poprawieniu pozycji poniżej.',
+    notReadAtAll: 'nie udało się tego odczytać',
+    fieldEtExchangeAmount: 'Kwota redukcji podstawy (ET)',
+    codeAmountGeneric: 'Kwota na pasku',
     discrepanciesRatesSourceNote: 'Poniższe porównania (podatek wg tabeli, podatek BT, kredyty podatkowe, netto, wypłata) liczone są wg aktualnie obowiązujących stawek z bazy danych - inny raport sporządzony w innym momencie może pokazać nieco inną różnicę, nawet jeśli nic nie jest błędne, jeśli stawki od tamtej pory się zmieniły.',
     discrepanciesRatesSourceStaticNote: 'Baza aktualnych stawek była w tej chwili niedostępna - powyższe porównania liczone są wg zapasowej, statycznej tabeli, która może nie być aktualna.',
     codeTableTax: 'Podatek wg tabeli', codeBtTax: 'Podatek wg stawki specjalnej (BT)',
@@ -499,6 +511,9 @@ const en: typeof pl = {
     payslipSummaryNeedsConfirmation: (net: string) => `Read - net/payout as printed ${net} (some items need confirming)`,
     payslipSummaryComputedDiffers: (computed: string) => `the engine's own computed figure differs: ${computed}`,
     payslipSummaryUnreliable: 'The consistency gate blocked this payslip - the read is unreliable',
+    // Stage 2u (audit v53, §2u.3): shown only once a payslip's needsConfirmation items are all
+    // resolved (confirmed or corrected) - the moment it becomes eligible as a PRO parameter source.
+    payslipEligibleForProjection: 'All items confirmed - this document can now feed the projection below.',
     effectiveContractTitle: 'Terms in force as of', asOfDateLabel: 'Date to check against',
     sourceLabel: (label: string) => `source: ${label}`,
     reasonDisagreement: (labels: string) => `${labels} state different values as of the same date - never guessed which is right.`,
@@ -647,6 +662,15 @@ const en: typeof pl = {
     // confirm, shown alongside the real computed result above, never in place of one.
     needsConfirmationTitle: 'To confirm',
     needsConfirmationIntro: 'The result above is computed, but the items below are worth checking against the original document - the read is not fully certain about them.',
+    // Stage 2u (audit v53, §2u.1): "must say plainly that the payout is provisional... if you display
+    // the provisional computed number at all, label it explicitly as provisional."
+    provisionalResultTitle: 'Provisional result - needs confirmation',
+    provisionalResultBody: 'At least one source value needs confirming - the figure below is a provisional calculation, NOT yet a final payout.',
+    provisionalPayoutLabel: 'Provisional amount (unconfirmed)',
+    provisionalNote: 'At least one unread or uncertain value is currently excluded or represented provisionally in this calculation. The result will be recalculated once you confirm or correct the item(s) below.',
+    notReadAtAll: 'could not be read',
+    fieldEtExchangeAmount: 'Base-reduction amount (ET)',
+    codeAmountGeneric: 'Amount on the payslip',
     discrepanciesRatesSourceNote: 'The comparisons below (table tax, BT tax, tax credits, net, payout) are computed using the currently applicable rates from the database - a report produced at a different time may show a slightly different figure even when nothing is wrong, if the rates have changed since.',
     discrepanciesRatesSourceStaticNote: 'The current-rates database was unavailable at this moment - the comparisons above use a fallback, static table that may not be up to date.',
     codeTableTax: 'Tax per the table', codeBtTax: 'Tax at the special rate (BT)',

@@ -215,11 +215,6 @@ interface ExtractionTrace {
   et_reimbursements: ExtractionTraceLine[];
   implied_payout: number | null;
   printed_payout: number | null;
-  /** Stage 2g (§2g.5): "the trace records reading_basis: text_layer_verified when 2g.3 ran, or
-   * image_only when there was no text layer." Stage 2t (§2t.2/§2t.3) retired the two-reader
-   * comparison and the amount-verification guard - this field is currently unused by this panel
-   * (grepped, 2t), kept two-valued and honestly named for whichever caller reads it next. */
-  reading_basis: 'text_layer_verified' | 'image_only';
   /** Stage 2g (§2g.4): "printed amounts that were not used" - a stated gap, never a finding. */
   unused_printed_amounts: { count: number; sample: number[] };
   /** Stage 2h (§2h.4): numbers only, never document content - see TechnicalDetails above. */

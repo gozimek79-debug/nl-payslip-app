@@ -387,7 +387,7 @@ function isFiniteAmountLine(v: unknown): boolean {
  * a shape failure here means a bug or a forged request, neither of which benefits from a field-level
  * diagnostic in the response body.
  */
-function isValidPayslipPeriodShape(value: unknown): value is PayslipPeriod {
+export function isValidPayslipPeriodShape(value: unknown): value is PayslipPeriod {
   if (!value || typeof value !== 'object') return false;
   const p = value as Record<string, unknown>;
   if (typeof p.period_type !== 'string' || !KNOWN_PERIOD_TYPES.includes(p.period_type as TierCPeriodType)) return false;

@@ -87,7 +87,25 @@ Payslip evidence is not filtered by `asOfDate`. An older payslip rate vs a newer
 
 `pro-parameter-sourcing.ts` still contains `derivePayslipOvertimePercents` / `selectMostRecentReproducedPayslip` and its tests still teach “single percentage is tier 1”. Not live-imported by `ProDocuments`. Dead/legacy; disconnect requirement met. Cleanup deferred is acceptable.
 
+### F7 — NOTE — Two-percent “lowest→tier1 / highest→tier2” is also an ordinal heuristic
+
+When a payslip prints two (or more) genuine overtime percentages, P1 still invents ordinal slots by sorting (`payroll-profile.ts` ~L542–550). Weaker than F1 when both steps appear on one slip, but still not label-proven CAO/engine tier identity. A parallel source pass ([Parallel P1 source review](bc-b5d55780-ad0a-52cf-9d57-52122cfad66e)) additionally showed the same printed 150% can be slotted as tier1 on a lone-percent slip and as tier2 on a two-percent slip — further proof the slot is invented, not read. Does not change the P2 blocker (F1 already blocks).
+
+### F8 — MINOR — Overtime lines without a printed percent are silently dropped
+
+`overtimeEvidence` filters with `isFiniteNumber(l.percent)` and emits no `percent_not_printed` exclusion (unlike deduction `percentLineEvidence`). Uneven “never silently dropped” discipline for overtime evidence.
+
+### F9 — MINOR — Ambiguous OT exclusions are attached to both tier fields
+
+`ot.excluded` is passed into both `overtimeTier1Premium` and `overtimeTier2Premium`; `overtimeAdditionalTierPremiums` receives `[]`. Inspection noise / incomplete excluded provenance; not a wrong usable value by itself.
+
+### F10 — MINOR — `asOfDate` can diverge from a resolved profile until re-submit
+
+Changing the as-of date after `submitAll` does not re-call `/api/profile/resolve`. Inspection title keeps frozen `profile.asOfDate`. Same one-shot pattern as the retired timeline call; not a silent wrong numeric winner.
+
 No CRITICAL findings.
+
+A second independent source pass ([Parallel P1 source review](bc-b5d55780-ad0a-52cf-9d57-52122cfad66e)) corroborates F1 as the blocking defect and the successful `fullyReproduced` disconnect; it also contributed F7–F10. Correction-panel non-re-resolve remains classified **NOTE** (F4) per P1 design (“diagnostic only”), not raised to MAJOR.
 
 ---
 

@@ -55,6 +55,20 @@ function payslipDoc(index: number, label: string, p: PayslipPeriod, unreadableFi
 
 const AS_OF = '2026-06-01';
 
+/** P1.1: the observed (tier-neutral) premiums as [premium, state, documentLabels]. */
+function observed(profile: ReturnType<typeof resolvePayrollProfile>): Array<[unknown, string, string[]]> {
+  return profile.observedOvertimePremiums.fields.map((f) => [f.value, f.state, f.sources.map((s) => s.documentLabel ?? '')]);
+}
+
+function assertNoTierIdentity(profile: ReturnType<typeof resolvePayrollProfile>): void {
+  for (const tier of [profile.payroll.overtimeTier1Premium, profile.payroll.overtimeTier2Premium]) {
+    assert.equal(tier.state, 'unknown', `${tier.key} must not receive an invented tier identity`);
+    assert.equal(tier.value, null);
+    assert.deepEqual(tier.candidates, []);
+    assert.deepEqual(tier.excluded, [], `${tier.key} must not carry copies of overtime exclusions (F9)`);
+  }
+}
+
 function isUsable(field: ProfileField): boolean {
   return USABLE_EVIDENCE_STATES.includes(field.state) && field.value !== null;
 }
@@ -129,46 +143,73 @@ test('P1.8 #4 / #12: a payslip with a real discrepancy and consistency findings 
   assert.ok(issues.length > 0, 'precondition: this payslip also has open consistency issues');
 
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
-  assert.equal(profile.payroll.overtimeTier1Premium.state, 'document_exact');
-  assert.equal(profile.payroll.overtimeTier1Premium.value, 25);
-  assert.equal(profile.payroll.overtimeTier2Premium.state, 'document_exact');
-  assert.equal(profile.payroll.overtimeTier2Premium.value, 50);
+  assert.deepEqual(observed(profile), [[25, 'document_exact', ['pasek.pdf']], [50, 'document_exact', ['pasek.pdf']]]);
   assert.equal(profile.employment.hourlyRate.state, 'document_exact');
 });
 
-test('P1.8 #5: one genuine overtime line printed at 150% -> profile premium +50 (never +150)', () => {
+test('P1.1 #1: one generic 150% overtime line -> observed +50 kept; tier 1 and tier 2 both unknown', () => {
   const p = period({ hour_lines: [hourLine({}), hourLine({ description: 'Overuren 150%', hours: 10, percent: 150, amount: 243, category: 'overtime', adds_hours: true })] });
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
-  const tier1 = profile.payroll.overtimeTier1Premium;
-  assert.equal(tier1.value, 50);
-  assert.equal(tier1.unit, 'premium_percent');
-  assert.equal(tier1.candidates[0]?.detail?.printedPercent, 150);
-  assert.equal(tier1.sources[0]?.printedLabel, 'Overuren 150%');
-  assert.equal(profile.payroll.overtimeTier2Premium.state, 'unknown', 'one distinct percentage is one tier - no second tier is invented');
+  const [premium] = profile.observedOvertimePremiums.fields;
+  assert.equal(premium?.value, 50, 'printed 150% is a +50 premium (never +150)');
+  assert.equal(premium?.unit, 'premium_percent');
+  assert.equal(premium?.meaning, 'overtime_premium_observed_tier_unknown');
+  assert.equal(premium?.candidates[0]?.detail?.printedPercent, 150);
+  assert.equal(premium?.sources[0]?.printedLabel, 'Overuren 150%');
+  assert.equal(premium?.sources[0]?.payPeriod?.label, 'week 10/2026');
+  assertNoTierIdentity(profile);
+  assert.deepEqual(profile.payroll.overtimeTier1Premium.reason, { code: 'tier_identity_not_evidenced' });
+  assert.deepEqual(profile.payroll.overtimeTier2Premium.reason, { code: 'tier_identity_not_evidenced' });
 });
 
-test('P1.8 #6: two payslips with the same overtime premiums -> corroborated', () => {
+test('P1.1 #2: one payslip with 125% + 150% -> +25 and +50 observed, no ordinal tier assignment', () => {
+  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', overtimePeriod())] });
+  assert.deepEqual(observed(profile), [[25, 'document_exact', ['pasek.pdf']], [50, 'document_exact', ['pasek.pdf']]]);
+  assertNoTierIdentity(profile);
+});
+
+test('P1.1 #3: one payslip with 125% + 150% + 200% -> all three observed, no lowest/highest/middle semantics', () => {
+  const p = period({
+    hour_lines: [hourLine({}), ...[125, 150, 200].map((pct) => hourLine({ description: `Overwerk ${pct}%`, hours: 1, percent: pct, amount: 16.2 * pct / 100, category: 'overtime', adds_hours: true }))],
+  });
+  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
+  assert.deepEqual(observed(profile).map(([v]) => v), [25, 50, 100]);
+  assertNoTierIdentity(profile);
+  assert.ok(!('overtimeAdditionalTierPremiums' in profile.payroll), 'the ordinal "between tier 1 and tier 2" slot no longer exists');
+});
+
+test('P1.1 #4: payslip A {150%} + payslip B {125%, 150%} -> no false tier conflict; +25 and +50 kept with provenance', () => {
+  const a = period({ hour_lines: [hourLine({}), hourLine({ description: 'Overuren 150%', hours: 10, percent: 150, amount: 243, category: 'overtime', adds_hours: true })] });
+  const b = overtimePeriod({ period_label: 'week 11/2026', period_end_date: '2026-03-15' });
+  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'a.pdf', a), payslipDoc(1, 'b.pdf', b)] });
+  assertNoTierIdentity(profile);
+  assert.deepEqual(observed(profile), [[25, 'document_exact', ['b.pdf']], [50, 'corroborated', ['a.pdf', 'b.pdf']]]);
+  assert.ok(profile.observedOvertimePremiums.fields.every((f) => f.state !== 'conflict'), 'different SETS of observed premiums are not a conflict');
+  const fifty = profile.observedOvertimePremiums.fields[1];
+  assert.deepEqual(fifty?.sources.map((s) => [s.documentLabel, s.payPeriod?.label]), [['a.pdf', 'week 10/2026'], ['b.pdf', 'week 11/2026']]);
+});
+
+test('P1.1 #5: the same observed premium on two documents is corroborated without claiming a tier', () => {
   const profile = resolvePayrollProfile({
     asOfDate: AS_OF,
     documents: [payslipDoc(0, 'pasek-10.pdf', overtimePeriod()), payslipDoc(1, 'pasek-11.pdf', overtimePeriod({ period_label: 'week 11/2026', period_end_date: '2026-03-15' }))],
   });
-  assert.equal(profile.payroll.overtimeTier1Premium.state, 'corroborated');
-  assert.equal(profile.payroll.overtimeTier1Premium.value, 25);
-  assert.deepEqual(profile.payroll.overtimeTier1Premium.sources.map((s) => s.documentIndex), [0, 1]);
-  assert.equal(profile.payroll.overtimeTier2Premium.state, 'corroborated');
+  assert.deepEqual(observed(profile), [[25, 'corroborated', ['pasek-10.pdf', 'pasek-11.pdf']], [50, 'corroborated', ['pasek-10.pdf', 'pasek-11.pdf']]]);
+  assertNoTierIdentity(profile);
 });
 
-test('P1.8 #7: two payslips with different overtime premiums -> conflict with both candidates', () => {
-  const later = overtimePeriod({
-    period_label: 'week 11/2026',
-    hour_lines: [hourLine({}), hourLine({ description: 'Overwerk uren 130%', hours: 4, percent: 130, amount: 84.24, category: 'overtime', adds_hours: true }), hourLine({ description: 'Overwerk uren 150%', hours: 6, percent: 150, amount: 145.8, category: 'overtime', adds_hours: true })],
-  });
-  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'a.pdf', overtimePeriod()), payslipDoc(1, 'b.pdf', later)] });
-  const tier1 = profile.payroll.overtimeTier1Premium;
-  assert.equal(tier1.state, 'conflict');
-  assert.equal(tier1.value, null);
-  assert.deepEqual(tier1.candidates.map((c) => [c.value, c.source.documentLabel]), [[25, 'a.pdf'], [30, 'b.pdf']]);
-  assert.equal(profile.payroll.overtimeTier2Premium.state, 'corroborated', 'the tier the two payslips agree on is unaffected by the other tier\'s conflict');
+test('P1.1 #6: a genuine overtime line with no printed percent is visible as excluded evidence (F8)', () => {
+  const p = period({ hour_lines: [hourLine({}), hourLine({ description: 'Overuren', hours: 3, percent: null, amount: 72.9, category: 'overtime', adds_hours: true })] });
+  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
+  assert.deepEqual(profile.observedOvertimePremiums.fields, []);
+  assert.equal(profile.observedOvertimePremiums.excluded.length, 1);
+  const [ex] = profile.observedOvertimePremiums.excluded;
+  assert.equal(ex?.reason, 'percent_not_printed');
+  assert.equal(ex?.source.documentLabel, 'pasek.pdf');
+  assert.equal(ex?.source.printedLabel, 'Overuren');
+  assert.equal(ex?.detail?.amount, 72.9);
+  assertNoTierIdentity(profile);
+  assert.deepEqual(profile.payroll.overtimeTier1Premium.reason, { code: 'tier_identity_not_evidenced' });
 });
 
 test('P1.8 #8: pension known while Sunday premium unknown -> pension remains usable', () => {
@@ -196,8 +237,7 @@ test('P1.8 #9: one conflict and several unknowns do not invalidate any other res
   // Everything else that has evidence still resolves.
   assert.ok(isUsable(profile.employment.hoursPerWeek));
   assert.ok(isUsable(profile.employment.overtimeThresholdHours));
-  assert.ok(isUsable(profile.payroll.overtimeTier1Premium));
-  assert.ok(isUsable(profile.payroll.overtimeTier2Premium));
+  assert.deepEqual(observed(profile).map(([v]) => v), [25, 50], 'observed overtime evidence is unaffected by the rate conflict');
   assert.ok(isUsable(profile.payroll.periodType));
 });
 
@@ -294,29 +334,28 @@ test('P1.4: a surcharge line (adds_hours false) stays surcharge evidence and nev
   });
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
   assert.equal(profile.payroll.overtimeTier1Premium.state, 'unknown');
+  assert.deepEqual(profile.observedOvertimePremiums.fields, [], 'a surcharge is never observed overtime');
   assert.deepEqual(profile.recurringItems.surcharges.map((f) => [f.key, f.value, f.unit]), [
     ['surcharge:irregular_surcharge:loon onregelm. uren 100%', 100, 'surcharge_percent'],
     ['surcharge:overtime_surcharge:toeslag overuren 50%', 50, 'surcharge_percent'],
   ]);
 });
 
-test('P1.4: an overtime line printed below 100% is excluded as ambiguous, not turned into a negative premium', () => {
-  const p = period({ hour_lines: [hourLine({}), hourLine({ description: 'Overuren 25%', hours: 2, percent: 25, amount: 8.1, category: 'overtime', adds_hours: true })] });
-  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
-  const tier1 = profile.payroll.overtimeTier1Premium;
-  assert.equal(tier1.state, 'unknown');
-  assert.equal(tier1.value, null);
-  assert.equal(tier1.excluded[0]?.reason, 'percent_semantics_ambiguous');
-});
-
-test('P1.4: a third distinct overtime percentage is kept as an additional tier, never dropped', () => {
-  const p = overtimePeriod({
-    hour_lines: [hourLine({}), ...[125, 150, 200].map((pct) => hourLine({ description: `Overwerk ${pct}%`, hours: 1, percent: pct, amount: 16.2 * pct / 100, category: 'overtime', adds_hours: true }))],
+test('P1.1 #7: overtime printed below 100% is excluded once as ambiguous - never a negative premium, never copied onto tier fields (F9)', () => {
+  const p = period({
+    hour_lines: [
+      hourLine({}),
+      hourLine({ description: 'Overuren 25%', hours: 2, percent: 25, amount: 8.1, category: 'overtime', adds_hours: true }),
+      hourLine({ description: 'Overuren 150%', hours: 1, percent: 150, amount: 24.3, category: 'overtime', adds_hours: true }),
+    ],
   });
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
-  assert.equal(profile.payroll.overtimeTier1Premium.value, 25);
-  assert.equal(profile.payroll.overtimeTier2Premium.value, 100);
-  assert.deepEqual(profile.payroll.overtimeAdditionalTierPremiums.value, [50]);
+  assert.deepEqual(profile.observedOvertimePremiums.fields, [], 'on a payslip printing a sub-100% overtime rate no percentage is trusted as a full multiplier');
+  assert.deepEqual(profile.observedOvertimePremiums.excluded.map((x) => [x.reason, x.value, x.source.printedLabel]), [
+    ['percent_semantics_ambiguous', 25, 'Overuren 25%'],
+    ['percent_semantics_ambiguous', 150, 'Overuren 150%'],
+  ], 'each line excluded exactly once');
+  assertNoTierIdentity(profile);
 });
 
 test('P1.4: recurring net items - same amount on two payslips corroborates; an unreadable amount is excluded, not a zero', () => {
@@ -347,8 +386,8 @@ test('P1.4: an unconfirmed period type is excluded; a payslip whose period type 
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
   assert.equal(profile.payroll.periodType.state, 'unknown');
   assert.equal(profile.payroll.periodType.excluded[0]?.reason, 'period_type_unconfirmed');
-  assert.equal(profile.payroll.overtimeTier1Premium.value, 25);
-  assert.equal(profile.payroll.overtimeTier1Premium.sources[0]?.payPeriod?.periodType, null);
+  assert.deepEqual(observed(profile).map(([v]) => v), [25, 50]);
+  assert.equal(profile.observedOvertimePremiums.fields[0]?.sources[0]?.payPeriod?.periodType, null);
 });
 
 test('P1: two lines of one payslip agreeing is still one document - document_exact, not corroborated', () => {
@@ -356,4 +395,32 @@ test('P1: two lines of one payslip agreeing is still one document - document_exa
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
   assert.equal(profile.employment.hourlyRate.state, 'document_exact');
   assert.equal(profile.employment.hourlyRate.sources.length, 2);
+});
+
+test('P1.1 #8: no structured P1 source carries an explicit tier identity, so no input can populate a tier field', () => {
+  // ZADANIE-P1.1 #8 asks for an explicit-tier test ONLY if the input schema genuinely supports one.
+  // It does not: HourLine has no tier field and ContractExtraction has no percentage fields. A label
+  // that merely reads like a tier ("1e schijf") is printed text, not a structured tier identity, and
+  // is deliberately NOT parsed - so even such a line stays tier-neutral evidence.
+  const p = period({ hour_lines: [hourLine({}), hourLine({ description: 'Overwerk 1e schijf 125%', hours: 2, percent: 125, amount: 40.5, category: 'overtime', adds_hours: true })] });
+  const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [contractDoc(0, 'umowa.pdf', { overtimeTierThresholdHours: 2 }), payslipDoc(1, 'pasek.pdf', p)] });
+  assertNoTierIdentity(profile);
+  assert.deepEqual(observed(profile), [[25, 'document_exact', ['pasek.pdf']]]);
+  assert.equal(profile.employment.overtimeThresholdHours.value, 2, 'the contract threshold is a separate, contract-stated field and still resolves');
+});
+
+test('P1.1 #9 (backend half): the same documents resolved for a new asOfDate move the contract timeline context and its fields', () => {
+  const documents = [
+    contractDoc(0, 'umowa.pdf', { hourlyRate: 15.55, hoursPerWeek: 40 }),
+    annexDoc(1, 'aneks.pdf', '2026-09-01', { hourlyRate: 16.2 }),
+  ];
+  const before = resolvePayrollProfile({ asOfDate: '2026-06-01', documents });
+  const after = resolvePayrollProfile({ asOfDate: '2026-10-01', documents });
+  assert.equal(before.asOfDate, '2026-06-01');
+  assert.equal(after.asOfDate, '2026-10-01');
+  assert.deepEqual(before.contractContext.annexesNotYetInForce.map((d) => d.label), ['aneks.pdf']);
+  assert.deepEqual(after.contractContext.annexesInForce.map((d) => d.label), ['aneks.pdf']);
+  assert.equal(before.employment.hourlyRate.value, 15.55);
+  assert.equal(after.employment.hourlyRate.value, 16.2);
+  assert.equal(after.employment.hourlyRate.sources[0]?.role, 'contract_annex');
 });

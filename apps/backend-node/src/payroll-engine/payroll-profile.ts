@@ -69,7 +69,6 @@ export type ProfileUnit =
   | 'weeks'
   /** Engine premium above the base rate: a printed 150% overtime line is +50. */
   | 'premium_percent'
-  | 'premium_percent_list'
   /** A surcharge on hours already counted elsewhere, as printed (amount = hours x rate x percent/100). */
   | 'surcharge_percent'
   /** A deduction percentage as printed, applied to the base the payslip itself prints. */
@@ -130,7 +129,10 @@ export type UnknownReasonCode =
   /** No document field establishes this switch; nothing is derived from printed credits in P1. */
   | 'no_evidence_source'
   /** Not a separate extraction field today (e.g. CAO phase may only appear inside the contract type text). */
-  | 'not_a_separate_extraction_field';
+  | 'not_a_separate_extraction_field'
+  /** P1.1: overtime premiums were observed (see `observedOvertimePremiums`) but no source explicitly
+   * identifies which overtime tier any of them is - the tier stays unknown rather than invented. */
+  | 'tier_identity_not_evidenced';
 
 export type ProfileReason =
   | { code: 'sources_disagree' }
@@ -207,7 +209,7 @@ export const EMPLOYMENT_FIELD_KEYS = [
 export type EmploymentFieldKey = (typeof EMPLOYMENT_FIELD_KEYS)[number];
 
 export const PAYROLL_FIELD_KEYS = [
-  'periodType', 'overtimeTier1Premium', 'overtimeTier2Premium', 'overtimeAdditionalTierPremiums',
+  'periodType', 'overtimeTier1Premium', 'overtimeTier2Premium',
   'saturdayPremium', 'sundayPremium', 'publicHolidayPremium', 'loonheffingskorting',
   'pensionEmployeePercent', 'pawwEmployeePercent', 'sectorPremiumPercent', 'wgaGatEmployeePercent',
   'wgaEmployeePercent', 'gediffWgaEmployeePercent', 'whkEmployeePercent', 'vakantiegeldAccrualPercent',
@@ -245,6 +247,16 @@ export interface CalibrationPayslipEvidence {
   };
 }
 
+/** P1.1: overtime premiums observed on payslips, tier position unknown. Neutral evidence - never a
+ * calculator tier prefill by itself; P2/P5 interpret it with stronger source semantics. */
+export interface ObservedOvertimePremiums {
+  /** One field per distinct observed premium (key `observed_overtime_premium:<premium>`). */
+  fields: ProfileField[];
+  /** Overtime lines seen but not usable (`percent_not_printed`, `percent_semantics_ambiguous`) -
+   * each line exactly once. */
+  excluded: ExcludedEvidence[];
+}
+
 export interface PayrollProfile {
   version: 1;
   asOfDate: string;
@@ -253,6 +265,7 @@ export interface PayrollProfile {
   employment: Record<EmploymentFieldKey, ProfileField>;
   payroll: Record<PayrollFieldKey, ProfileField>;
   recurringItems: RecurringItems;
+  observedOvertimePremiums: ObservedOvertimePremiums;
   calibrationOnly: { payslips: CalibrationPayslipEvidence[] };
 }
 
@@ -509,51 +522,66 @@ function regularRateEvidence(slips: PayslipDoc[]): ProfileCandidate[] {
 }
 
 interface OvertimeEvidence {
-  tier1: ProfileCandidate[];
-  tier2: ProfileCandidate[];
-  additional: ProfileCandidate[];
+  /** One candidate per genuine overtime line with a usable printed percent - tier position unknown. */
+  observed: ProfileCandidate[];
   excluded: ExcludedEvidence[];
 }
 
 /**
- * Backend home of `derivePayslipOvertimePercents`' semantics (pro-parameter-sourcing.ts), applied
- * PER PAYSLIP with no whole-payslip verdict:
- *   - only a genuine overtime line counts: `category: 'overtime'` AND `adds_hours: true` AND a percent;
- *   - its printed percent is the FULL paid multiplier, so the engine premium is `percent - 100`
+ * P1.1 (ZADANIE-P1.1-LOONTO-PRO.md, Cursor F1/F7-F9): what a payslip overtime line PROVES, and
+ * nothing more.
+ *   - only a genuine overtime line counts: `category: 'overtime'` AND `adds_hours: true`;
+ *   - its printed percent is the FULL paid multiplier, so the observed premium is `percent - 100`
  *     (printed 150% -> +50) - the conversion confirmed against PKF's fixture in 3.0a.5;
- *   - within one payslip the lowest distinct percent is tier 1, the highest tier 2, any in between
- *     are additional tiers (the grid has two slots - an extra tier is named, never dropped);
+ *   - the line proves that this premium was paid in that pay period. It does NOT prove which
+ *     overtime tier the premium is: no tier identity is derived from the percentage's size, from
+ *     lowest/highest ordering, from how many percentages the payslip prints, from recency or from
+ *     position. (P1 did exactly that - lowest -> tier 1, highest -> tier 2, a lone one -> tier 1 -
+ *     and it was rejected as invented: the same printed 150% landed in tier 1 on one payslip and
+ *     tier 2 on another.) Observed premiums are therefore neutral evidence only;
  *   - a surcharge line (`adds_hours: false`) is NOT overtime here - it is surcharge evidence;
- *   - P1 addition, reported: an overtime line printed BELOW 100% cannot be read either way (a
- *     premium-only print vs a sub-base multiplier), so that payslip's overtime lines are excluded as
- *     `percent_semantics_ambiguous` rather than turned into a negative premium.
+ *   - a genuine overtime line with no printed percent is excluded as `percent_not_printed`
+ *     (Cursor F8 - it used to vanish silently);
+ *   - an overtime line printed BELOW 100% cannot be read either way (premium-only print vs sub-base
+ *     multiplier). Unchanged conservative P1 rule: when a payslip prints one, none of that payslip's
+ *     overtime percentages can be trusted to be full multipliers, so each of its overtime lines is
+ *     excluded once as `percent_semantics_ambiguous` (Cursor F9 - once, on this evidence, never
+ *     copied onto tier fields).
  */
 function overtimeEvidence(slips: PayslipDoc[]): OvertimeEvidence {
-  const ev: OvertimeEvidence = { tier1: [], tier2: [], additional: [], excluded: [] };
+  const ev: OvertimeEvidence = { observed: [], excluded: [] };
   for (const { doc, period } of slips) {
-    const lines = period.hour_lines.filter((l) => l.category === 'overtime' && l.adds_hours === true && isFiniteNumber(l.percent));
-    if (lines.length === 0) continue;
-    if (lines.some((l) => (l.percent as number) < 100)) {
-      for (const l of lines) {
-        ev.excluded.push({ value: l.percent as number, source: payslipSource(doc, period, l.description || null), reason: 'percent_semantics_ambiguous', detail: detail({ hours: l.hours, amount: l.amount, printedPercent: l.percent }) });
-      }
-      continue;
+    const genuine = period.hour_lines.filter((l) => l.category === 'overtime' && l.adds_hours === true);
+    const withPercent = genuine.filter((l) => isFiniteNumber(l.percent));
+    for (const l of genuine.filter((x) => !isFiniteNumber(x.percent))) {
+      ev.excluded.push({ value: null, source: payslipSource(doc, period, l.description || null), reason: 'percent_not_printed', detail: detail({ hours: l.hours, amount: l.amount }) });
     }
-    const distinct = Array.from(new Set(lines.map((l) => round2(l.percent as number)))).sort((a, b) => a - b);
-    const lineFor = (percent: number) => lines.find((l) => Math.abs((l.percent as number) - percent) < NUMERIC_EQUALITY_EPSILON);
-    const candidateFor = (percent: number): ProfileCandidate => {
-      const line = lineFor(percent);
-      return { value: round2(percent - 100), source: payslipSource(doc, period, line?.description || null), detail: detail({ hours: line?.hours ?? null, amount: line?.amount ?? null, printedPercent: percent }) };
-    };
-    const lowest = distinct[0] as number;
-    ev.tier1.push(candidateFor(lowest));
-    if (distinct.length > 1) ev.tier2.push(candidateFor(distinct[distinct.length - 1] as number));
-    if (distinct.length > 2) {
-      const middle = distinct.slice(1, -1);
-      ev.additional.push({ value: middle.map((p) => round2(p - 100)), source: payslipSource(doc, period, null), detail: null });
+    const ambiguous = withPercent.some((l) => (l.percent as number) < 100);
+    for (const l of withPercent) {
+      const percent = l.percent as number;
+      const source = payslipSource(doc, period, l.description || null);
+      const d = detail({ hours: l.hours, amount: l.amount, printedPercent: percent });
+      if (ambiguous) ev.excluded.push({ value: percent, source, reason: 'percent_semantics_ambiguous', detail: d });
+      else ev.observed.push({ value: round2(percent - 100), source, detail: d });
     }
   }
   return ev;
+}
+
+/** One neutral field per distinct observed premium. Grouping by the premium itself means two
+ * payslips with different SETS of premiums never "conflict": +25 and +50 are two observations, not
+ * two candidates for one slot. The same premium on several documents is `corroborated`. */
+function observedOvertimeFields(observed: ProfileCandidate[]): ProfileField[] {
+  const byPremium = new Map<number, ProfileCandidate[]>();
+  for (const c of observed) {
+    const premium = c.value as number;
+    const existing = [...byPremium.keys()].find((k) => Math.abs(k - premium) < NUMERIC_EQUALITY_EPSILON);
+    const key = existing ?? premium;
+    byPremium.set(key, [...(byPremium.get(key) ?? []), c]);
+  }
+  return [...byPremium.entries()]
+    .sort(([x], [y]) => x - y) // display order only - carries no tier meaning
+    .map(([premium, members]) => resolveField(F(`observed_overtime_premium:${premium}`, 'overtime_premium_observed_tier_unknown', 'premium_percent'), members, [], 'not_on_payslips'));
 }
 
 function normalizeDescription(description: string): string {
@@ -745,6 +773,7 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
   }
 
   const ot = overtimeEvidence(slips);
+  const tierReason: UnknownReasonCode = ot.observed.length > 0 || ot.excluded.length > 0 ? 'tier_identity_not_evidenced' : slipReason;
 
   const vakantiegeldExcluded: ExcludedEvidence[] = slips.flatMap(({ doc, period, unreadable }) =>
     period.reservations
@@ -781,9 +810,11 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
 
   const payroll: Record<PayrollFieldKey, ProfileField> = {
     periodType: resolveField(F('periodType', 'pay_period_type', 'period_type'), periodCandidates, periodExcluded, slipReason),
-    overtimeTier1Premium: resolveField(F('overtimeTier1Premium', 'overtime_tier_1_premium_above_base', 'premium_percent'), ot.tier1, ot.excluded, slipReason),
-    overtimeTier2Premium: resolveField(F('overtimeTier2Premium', 'overtime_tier_2_premium_above_base', 'premium_percent'), ot.tier2, ot.excluded, slipReason),
-    overtimeAdditionalTierPremiums: resolveField(F('overtimeAdditionalTierPremiums', 'overtime_premiums_between_tier_1_and_tier_2', 'premium_percent_list'), ot.additional, [], slipReason),
+    // P1.1: no structured source in P1 carries an explicit tier identity (HourLine has no tier field;
+    // the contract schema has no percentages), so neither tier field has a candidate. When overtime was
+    // observed, the reason says exactly that - the premiums themselves live in observedOvertimePremiums.
+    overtimeTier1Premium: unknownField(F('overtimeTier1Premium', 'overtime_tier_1_premium_above_base', 'premium_percent'), tierReason),
+    overtimeTier2Premium: unknownField(F('overtimeTier2Premium', 'overtime_tier_2_premium_above_base', 'premium_percent'), tierReason),
     saturdayPremium: unknownField(F('saturdayPremium', 'saturday_premium_above_base', 'premium_percent'), 'no_weekday_evidence'),
     sundayPremium: unknownField(F('sundayPremium', 'sunday_premium_above_base', 'premium_percent'), 'no_weekday_evidence'),
     publicHolidayPremium: unknownField(F('publicHolidayPremium', 'public_holiday_premium_above_base', 'premium_percent'), 'no_weekday_evidence'),
@@ -847,6 +878,7 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
     employment,
     payroll,
     recurringItems,
+    observedOvertimePremiums: { fields: observedOvertimeFields(ot.observed), excluded: ot.excluded },
     calibrationOnly,
   };
 }

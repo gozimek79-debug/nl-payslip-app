@@ -50,6 +50,8 @@ export interface PayrollProfileView {
   employment: Record<string, ProfileFieldView>;
   payroll: Record<string, ProfileFieldView>;
   recurringItems: Record<string, ProfileFieldView[]>;
+  /** P1.1: overtime premiums seen on payslips, tier position unknown - shown, never prefilled. */
+  observedOvertimePremiums: { fields: ProfileFieldView[]; excluded: ProfileFieldView['excluded'] };
 }
 
 export function isUsableField(field: ProfileFieldView | undefined): field is ProfileFieldView & { value: ProfileValueView } {
@@ -82,6 +84,11 @@ export interface ProfilePrefill {
  * P1.5's required prefill fields, each taken from exactly one profile field. Saturday/Sunday/holiday
  * percentages are deliberately not mapped: the profile reports them `unknown` (P5), and an unknown
  * must stay an empty input.
+ *
+ * P1.1: the two overtime tier inputs come ONLY from `overtimeTier1Premium`/`overtimeTier2Premium`,
+ * which the backend fills only from a source that explicitly identifies the tier (none exists in P1,
+ * so they stay empty). `observedOvertimePremiums` is never read here - an observed premium does not
+ * say which tier it is, and choosing one would be exactly the inference P1.1 removed.
  */
 export function profilePrefill(profile: PayrollProfileView, badge: (field: ProfileFieldView) => string): ProfilePrefill {
   const pairs = [
@@ -113,4 +120,38 @@ export function unreadableFieldPathsFor(needsConfirmation: ConsistencyIssue[]): 
     if (issue.code === 'et_exchange_amount_unknown') paths.add('et.et_exchange_amount');
   }
   return [...paths];
+}
+
+/**
+ * P1.1 (Cursor F10): one document as sent to `POST /api/profile/resolve`. The client keeps the last
+ * submitted list of these - facts that were ALREADY read - so the profile can be re-resolved for a new
+ * as-of date without re-reading any document (no Gemini call). Extraction/period payloads are opaque
+ * here; the backend validates them.
+ */
+export type ProfileRequestDocument =
+  | { index: number; label: string; role: 'contract_base' | 'contract_annex'; effectiveDate: string | null; contractExtraction: unknown }
+  | { index: number; label: string; role: 'payslip'; effectiveDate: null; payslip: { period: unknown; unreadableFieldPaths: string[] } };
+
+/** Only a complete ISO date is a meaningful as-of date - a cleared or half-typed date input is not. */
+export function isResolvableAsOfDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/**
+ * The one call that turns already-read document facts into a profile - used both after a submit and
+ * when the as-of date changes. It calls exactly one endpoint, the pure profile resolver; it never
+ * touches a document-reading endpoint. `null` on any failure (the caller shows an error, never the
+ * previous profile under the new date).
+ */
+export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch): Promise<PayrollProfileView | null> {
+  try {
+    const res = await fetchImpl('/api/profile/resolve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asOfDate, documents }),
+    });
+    const data = await res.json() as { profile?: PayrollProfileView };
+    return res.ok && data.profile ? data.profile : null;
+  } catch {
+    return null;
+  }
 }

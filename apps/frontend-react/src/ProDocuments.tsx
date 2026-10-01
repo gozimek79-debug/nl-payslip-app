@@ -3,7 +3,7 @@ import { Trash2, Upload, AlertTriangle } from 'lucide-react';
 import { renderPageImages, extractTextItems } from './local-ocr.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
-import { isUsableField, profilePrefill, sourceDocumentLabels, unreadableFieldPathsFor, type PayrollProfileView, type ProfileFieldView, type ProfileSourceView } from './pro-profile-prefill.ts';
+import { isResolvableAsOfDate, profilePrefill, resolveProfile, sourceDocumentLabels, unreadableFieldPathsFor, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 import {
   issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
@@ -100,11 +100,6 @@ interface DocEntry {
   recomputingKey?: string | null;
 }
 
-/** P1: one document in a `POST /api/profile/resolve` request (profile.controller.ts's own schema). */
-type ProfileRequestDocument =
-  | { index: number; label: string; role: 'contract_base' | 'contract_annex'; effectiveDate: string | null; contractExtraction: ContractExtraction }
-  | { index: number; label: string; role: 'payslip'; effectiveDate: null; payslip: { period: TierCPeriodResponse; unreadableFieldPaths: string[] } };
-
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -136,6 +131,13 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   const [asOfDate, setAsOfDate] = useState(todayIso());
   // P1: the backend Payroll Profile for the last submission - the projection's only parameter source.
   const [profile, setProfile] = useState<PayrollProfileView | null>(null);
+  // P1.1 (Cursor F10): the already-read document facts of the last submission, so a new as-of date
+  // re-resolves the profile from them (pure endpoint, no document re-read, no Gemini call) instead of
+  // leaving the old date's profile on screen under the new date.
+  const [resolvedDocuments, setResolvedDocuments] = useState<ProfileRequestDocument[] | null>(null);
+  const [resolvingProfile, setResolvingProfile] = useState(false);
+  // Only the latest profile request may land - an older response arriving late is dropped.
+  const profileRequestId = useRef(0);
   const [globalError, setGlobalError] = useState('');
 
   function handleFilesAdded(files: FileList | null) {
@@ -242,21 +244,40 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       }
       return [];
     });
-    try {
-      const res = await fetch('/api/profile/resolve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asOfDate, documents: profileDocuments }),
-      });
-      const data = await res.json() as { profile?: PayrollProfileView };
-      if (res.ok && data.profile) setProfile(data.profile);
+    setResolvedDocuments(profileDocuments);
+    const requestId = ++profileRequestId.current;
+    const resolved = await resolveProfile(asOfDate, profileDocuments);
+    if (requestId === profileRequestId.current) {
+      if (resolved) setProfile(resolved);
       else setGlobalError(t.profileError);
-    } catch {
-      setGlobalError(t.profileError);
     }
 
     setSubmitting(false);
     setHasSubmitted(true);
     setSubmitCount((n) => n + 1);
+  }
+
+  /** P1.1 (Cursor F10): an as-of date change after documents were read re-resolves the profile from
+   * the cached facts (`resolvedDocuments`) - the same pure `/api/profile/resolve` call, never
+   * `processPayslip`/`processContract`, so no document is re-read and no Gemini call is made. The old
+   * profile is cleared at once and the calculator remounts (key bump) both when it is cleared and when
+   * the new profile lands, so a previous date's values are never shown under the new date. A cleared
+   * or half-typed date leaves no profile at all until a complete date is entered. */
+  function changeAsOfDate(value: string) {
+    setAsOfDate(value);
+    if (!resolvedDocuments) return; // nothing read yet - the next submit simply uses the new date
+    const requestId = ++profileRequestId.current;
+    setProfile(null);
+    setGlobalError('');
+    setSubmitCount((n) => n + 1);
+    if (!isResolvableAsOfDate(value)) { setResolvingProfile(false); return; }
+    setResolvingProfile(true);
+    void resolveProfile(value, resolvedDocuments).then((resolved) => {
+      if (requestId !== profileRequestId.current) return;
+      setResolvingProfile(false);
+      if (resolved) { setProfile(resolved); setSubmitCount((n) => n + 1); }
+      else setGlobalError(t.profileError);
+    });
   }
 
   /** Stage 2u (§2u.2): the restored field-specific correction path, now living on the actual live PRO
@@ -333,8 +354,9 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     return t.profileSourceLabel(field.state, sourceDocumentLabels(field).join(' + '));
   }
   const contractPrefill: TierAContractPrefill | undefined = hasSubmitted && profile ? profilePrefill(profile, profileBadge) : undefined;
-  const additionalTierField = profile?.payroll.overtimeAdditionalTierPremiums;
-  const additionalTierPremiums: number[] = isUsableField(additionalTierField) && Array.isArray(additionalTierField.value) ? additionalTierField.value : [];
+  // P1.1: overtime premiums seen on payslips with no tier identity - named on the projection so the
+  // user knows why the tier inputs are empty, never copied into either tier input.
+  const observedOvertimePremiums = profile ? profile.observedOvertimePremiums.fields.map((f) => f.value).filter((v): v is number => typeof v === 'number') : [];
 
   // P1 (§P1.6): minimal developer-facing inspection rows - every profile field, grouped, with its own
   // state, sources and reason exactly as the backend resolved them (nothing re-decided here).
@@ -343,6 +365,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
         ...Object.values(profile.employment).map((field) => ({ group: t.profileGroupEmployment, field })),
         ...Object.values(profile.payroll).map((field) => ({ group: t.profileGroupPayroll, field })),
         ...Object.values(profile.recurringItems).flat().map((field) => ({ group: t.profileGroupRecurring, field })),
+        ...profile.observedOvertimePremiums.fields.map((field) => ({ group: t.profileGroupObservedOvertime, field })),
       ]
     : [];
   function formatProfileValue(value: unknown): string {
@@ -511,7 +534,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
         <div className="pro-document-submit-row">
           <label className="pro-document-date">
             {t.asOfDateLabel}
-            <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)}/>
+            <input type="date" value={asOfDate} disabled={submitting} onChange={(event) => changeAsOfDate(event.target.value)}/>
           </label>
           <button type="button" className="primary" disabled={submitting} onClick={() => void submitAll()}>
             {submitting ? t.submitting : t.submit}
@@ -554,19 +577,23 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
               ))}
             </tbody>
           </table>
+          {/* P1.1 (Cursor F8/F9): overtime lines that could not become observed premiums - each listed
+              once, with its document, never silently dropped. */}
+          {profile.observedOvertimePremiums.excluded.length > 0 && (
+            <p className="form-note">{t.profileObservedOvertimeExcluded(profile.observedOvertimePremiums.excluded.map((x) => `${x.reason}: ${describeSource(x.source)}${x.source.printedLabel ? ` (${x.source.printedLabel})` : ''}`).join('; '))}</p>
+          )}
         </div>
       )}
+      {resolvingProfile && <p className="form-note">{t.profileResolving}</p>}
 
-      {hasSubmitted && (
+      {hasSubmitted && !resolvingProfile && (
         <div className="pro-projection">
           <h2>{t.projectionTitle}</h2>
           {/* P1 (§P1.5): no single payslip is "the" source any more - each prefilled field names its
               own document(s) in the calculator's badge, from the profile above. */}
           <p className="form-note">{t.projectionFromProfile}</p>
-          {/* Stage 3.0a.5 (§Fix 3), now from the profile: an overtime tier the grid has no slot for -
-              named, never silently dropped. */}
-          {additionalTierPremiums.length > 0 && (
-            <p className="form-note">{t.projectionAdditionalTiers(additionalTierPremiums.join(', '))}</p>
+          {observedOvertimePremiums.length > 0 && (
+            <p className="form-note">{t.projectionObservedOvertime(observedOvertimePremiums.map((v) => `+${v}%`).join(', '))}</p>
           )}
           <TierACalculator key={submitCount} lang={lang} tierMode="PRO" contractPrefill={contractPrefill} onNavigateToDictionary={onNavigateToDictionary}/>
         </div>

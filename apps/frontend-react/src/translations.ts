@@ -161,7 +161,11 @@ const pl = {
     profileSourceLabel: (state: string, documents: string) => `z profilu, ${state}: ${documents}`,
     profileError: 'Nie udało się zbudować profilu płacowego z tych dokumentów.',
     projectionFromProfile: 'Pola kalkulatora wypełnia profil płacowy powyżej - tylko wartości potwierdzone dokumentem (document_exact lub corroborated). Pole w konflikcie lub nieznane zostaje puste, do uzupełnienia przez Ciebie.',
-    projectionAdditionalTiers: (premiums: string) => `Dokumenty pokazują więcej niż dwa progi nadgodzin. Siatka ma miejsce tylko na dwa, więc dodatkowe progi nie są wypełnione: +${premiums}% ponad stawkę podstawową.`,
+    // P1.1: a payslip proves an overtime premium was paid, not which tier it is - so tier inputs stay empty.
+    projectionObservedOvertime: (premiums: string) => `Paski pokazują dopłaty za nadgodziny (${premiums} ponad stawkę podstawową), ale żaden dokument nie mówi, który to próg nadgodzin - pola progów zostają puste, do uzupełnienia przez Ciebie.`,
+    profileGroupObservedOvertime: 'Nadgodziny zaobserwowane (próg nieznany)',
+    profileObservedOvertimeExcluded: (list: string) => `Linie nadgodzin pominięte: ${list}`,
+    profileResolving: 'Przeliczanie profilu dla nowej daty (z już odczytanych dokumentów)…',
   },
   tierA: {
     title: 'Szybki kalkulator', lead: 'Szacunek na podstawie tego, co pracownik wie bez dokumentów - każda linia pokazuje, skąd wzięła się liczba.',
@@ -559,7 +563,10 @@ const en: typeof pl = {
     profileSourceLabel: (state: string, documents: string) => `from profile, ${state}: ${documents}`,
     profileError: 'Could not build the payroll profile from these documents.',
     projectionFromProfile: 'The calculator fields are filled from the payroll profile above - only values backed by a document (document_exact or corroborated). A field in conflict or unknown stays empty for you to fill in.',
-    projectionAdditionalTiers: (premiums: string) => `The documents show more than two overtime tiers. The grid has room for two, so the extra tiers are not filled in: +${premiums}% above the base rate.`,
+    projectionObservedOvertime: (premiums: string) => `Your payslips show overtime premiums (${premiums} above the base rate), but no document says which overtime tier each one is - the tier fields stay empty for you to fill in.`,
+    profileGroupObservedOvertime: 'Observed overtime (tier unknown)',
+    profileObservedOvertimeExcluded: (list: string) => `Overtime lines excluded: ${list}`,
+    profileResolving: 'Re-resolving the profile for the new date (from documents already read)…',
   },
   tierA: {
     title: 'Quick calculator', lead: 'An estimate from what any worker knows without documents - every line shows where its figure came from.',

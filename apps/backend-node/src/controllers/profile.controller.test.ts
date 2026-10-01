@@ -63,7 +63,7 @@ async function post(body: unknown): Promise<Response> {
 }
 
 type FieldJson = { state: string; value: unknown; sources: Array<{ role: string; documentLabel: string }> };
-type ProfileJson = { employment: Record<string, FieldJson>; payroll: Record<string, FieldJson> };
+type ProfileJson = { employment: Record<string, FieldJson>; payroll: Record<string, FieldJson>; observedOvertimePremiums: { fields: FieldJson[] } };
 
 test('P1: POST /api/profile/resolve builds a profile from a contract and a payslip over real HTTP', async () => {
   const res = await post({
@@ -77,8 +77,11 @@ test('P1: POST /api/profile/resolve builds a profile from a contract and a paysl
   const { profile } = (await res.json()) as { profile: ProfileJson };
   assert.equal(profile.employment.hourlyRate?.state, 'corroborated');
   assert.equal(profile.employment.hoursPerWeek?.state, 'document_exact');
-  assert.equal(profile.payroll.overtimeTier1Premium?.value, 50);
-  assert.equal(profile.payroll.overtimeTier1Premium?.sources[0]?.documentLabel, 'pasek.pdf');
+  // P1.1: a lone generic 150% line is observed +50 evidence, never a tier.
+  assert.equal(profile.payroll.overtimeTier1Premium?.state, 'unknown');
+  assert.equal(profile.payroll.overtimeTier1Premium?.value, null);
+  assert.equal(profile.observedOvertimePremiums.fields[0]?.value, 50);
+  assert.equal(profile.observedOvertimePremiums.fields[0]?.sources[0]?.documentLabel, 'pasek.pdf');
 });
 
 test('P1.7: audit state sent alongside a payslip is ignored - discrepancies/needsConfirmation/fullyReproduced cannot change the profile', async () => {

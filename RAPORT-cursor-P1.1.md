@@ -7,7 +7,7 @@
 **Base reviewed P1 commit:** `ff3700eb63c08172bf81338ad9a7630d3a680427`  
 **Main:** `b5847a02122b2fcf3383f1a1fabe95920ad45790`  
 **Date (UTC):** 2026-10-01  
-**Inputs:** `REVIEW-TASK-P1.1.md` (attached). `RAPORT-wykonawca-P1.1.md` and updated `LOONTO-PRO-P1-PAYROLL-PROFILE.md` were **not available** in this environment at review time — verdict is from source + prior `RAPORT-cursor-P1.md`.  
+**Inputs:** `REVIEW-TASK-P1.1.md`, `RAPORT-wykonawca-P1.1.md` (chat attachments). Updated design record `LOONTO-PRO-P1-PAYROLL-PROFILE.md` still not attached as a file; executor states it was updated locally “in place” (not part of commit `2b7e88c`).  
 **Production code modified:** no  
 **P2 started:** no  
 
@@ -73,9 +73,29 @@ Architecture from P1 remains intact: one backend-owned profile, old `fullyReprod
 
 **N3 — NOTE:** Printed label `"Overwerk 1e schijf 125%"` remains neutral observed +25; not parsed into tier identity (test P1.1 #8 + reconstruction).
 
-**N4 — NOTE:** `RAPORT-wykonawca-P1.1.md` / updated design record not attached here — contractor prose not claim-checked line-by-line; source acceptance does not depend on them.
+**N4 — NOTE:** Updated design record still not in git / not attached; executor §0 says it was edited locally. Does not affect code acceptance.
 
 No CRITICAL or MAJOR open findings on `2b7e88c`.
+
+---
+
+## 3a. CONTRACTOR CLAIM CHECK (`RAPORT-wykonawca-P1.1.md`)
+
+| Claim | Verdict |
+|---|---|
+| Ordinal OT tier inference removed; tiers `unknown` / `tier_identity_not_evidenced` when OT seen | **Verified** |
+| `observedOvertimePremiums` holds neutral premiums with provenance; different sets do not conflict | **Verified** |
+| F1/F7/F8/F9/F10 closed as described | **Verified** (matches this review’s closure matrix) |
+| Live prefill reads only tier fields; observed never prefilled | **Verified** |
+| `asOfDate` re-resolves from cached facts via pure `/api/profile/resolve` only | **Verified** |
+| One commit `2b7e88c` on `ff3700e`; 7 files +362/−118; pushed; `main` untouched | **Verified** |
+| Backend 335/335, frontend 55/55, typechecks + FE build green | **Verified** independently (FE tests via type-stripping on Node 22) |
+| Label “1e schijf” stays neutral; no invented schema signal for test #8 | **Verified** |
+| F2/F3/F4/F6 left out of scope | **Accurate** |
+| Design record updated in place | **Partial** — claimed locally; **not** in commit `2b7e88c` and not attached for inspection |
+| N1–N5 (empty tier prefill consequence; remount loses manual inputs; calculator visible during submit; Node 22/CI FE-test note; unused old translation keys) | **Accurate** as notes; N2/N4 already noted in this review |
+
+No material contradiction between executor report and source. Acceptance stands.
 
 ---
 
@@ -197,7 +217,7 @@ Changed only profile resolver/tests, profile HTTP test, `ProDocuments`, `pro-pro
 ## 13. WHAT WAS NOT VERIFIED
 
 - Browser/Gemini end-to-end PRO flow (out of scope).
-- Line-by-line contractor claim check against `RAPORT-wykonawca-P1.1.md` / updated design record (files not attached).
+- Updated `LOONTO-PRO-P1-PAYROLL-PROFILE.md` body (claimed local-only update; not in commit, not attached).
 - Whether future P2 will add structured tier identity to the schema (correctly absent today).
 
 ---
@@ -214,7 +234,8 @@ P2 may inherit the profile schema with honest unknown tiers and neutral observed
 
 - Review target: `p1-payroll-profile` @ `2b7e88c` (diff `ff3700e..2b7e88c`).
 - Prior P1 review: `RAPORT-cursor-P1.md` (NOT ACCEPTED) — blocker closed by this correction.
-- This report: `RAPORT-cursor-P1.1.md` on `cursor/p1-1-rereview-d62b`.
+- This report: `Loonto/RAPORT-cursor-P1.1.md` (and root copy) on `cursor/p1-1-rereview-d62b`.
+- Executor report claim-checked after late attach (§3a); verdict unchanged: **ACCEPTED**.
 - Production code untouched. P2 not started by this reviewer.
 
 **HOLD for auditor decision.**

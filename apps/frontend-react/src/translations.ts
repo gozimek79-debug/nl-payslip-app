@@ -148,6 +148,24 @@ const pl = {
     errorExtractionFailed: 'Nie udało się odczytać dokumentu przez AI. Spróbuj ponownie.',
     errorRateLimitUnknown: 'Ta funkcja jest chwilowo niedostępna (nie można zweryfikować limitu żądań). Spróbuj ponownie za chwilę.',
     errorRateLimitExceeded: 'Zbyt wiele żądań z tego adresu. Spróbuj ponownie za chwilę.',
+    // P1 (ZADANIE-P1-LOONTO-PRO.md §P1.5/§P1.6): the backend Payroll Profile and its developer-facing
+    // inspection table. Evidence-state names (document_exact, corroborated, ...) are shown as their
+    // own codes on purpose - this view is for verifying P1, not final customer UX.
+    profileTitle: (date: string) => `Profil płacowy na dzień ${date}`,
+    profileLead: 'Widok kontrolny: każdy parametr osobno, z własnym stanem dowodu i źródłem. Prognoza używa tylko parametrów w stanie document_exact lub corroborated - konflikt i brak danych zostają puste.',
+    profileGroupEmployment: 'Zatrudnienie', profileGroupPayroll: 'Płace', profileGroupRecurring: 'Pozycje z pasków',
+    profileColField: 'Parametr', profileColValue: 'Wartość', profileColState: 'Stan dowodu', profileColSources: 'Źródła', profileColReason: 'Powód',
+    profileConflict: 'konflikt', profileUnknown: 'nieznane',
+    profileEffectiveFrom: (date: string) => `od ${date}`,
+    profileExcluded: (list: string) => `pominięte: ${list}`,
+    profileSourceLabel: (state: string, documents: string) => `z profilu, ${state}: ${documents}`,
+    profileError: 'Nie udało się zbudować profilu płacowego z tych dokumentów.',
+    projectionFromProfile: 'Pola kalkulatora wypełnia profil płacowy powyżej - tylko wartości potwierdzone dokumentem (document_exact lub corroborated). Pole w konflikcie lub nieznane zostaje puste, do uzupełnienia przez Ciebie.',
+    // P1.1: a payslip proves an overtime premium was paid, not which tier it is - so tier inputs stay empty.
+    projectionObservedOvertime: (premiums: string) => `Paski pokazują dopłaty za nadgodziny (${premiums} ponad stawkę podstawową), ale żaden dokument nie mówi, który to próg nadgodzin - pola progów zostają puste, do uzupełnienia przez Ciebie.`,
+    profileGroupObservedOvertime: 'Nadgodziny zaobserwowane (próg nieznany)',
+    profileObservedOvertimeExcluded: (list: string) => `Linie nadgodzin pominięte: ${list}`,
+    profileResolving: 'Przeliczanie profilu dla nowej daty (z już odczytanych dokumentów)…',
   },
   tierA: {
     title: 'Szybki kalkulator', lead: 'Szacunek na podstawie tego, co pracownik wie bez dokumentów - każda linia pokazuje, skąd wzięła się liczba.',
@@ -534,6 +552,21 @@ const en: typeof pl = {
     errorExtractionFailed: 'Could not read the document via AI. Try again.',
     errorRateLimitUnknown: 'This feature is temporarily unavailable (could not verify the request limit). Try again shortly.',
     errorRateLimitExceeded: 'Too many requests from this address. Try again shortly.',
+    // P1 (ZADANIE-P1-LOONTO-PRO.md §P1.5/§P1.6): see the Polish block above.
+    profileTitle: (date: string) => `Payroll profile as of ${date}`,
+    profileLead: 'Inspection view: every parameter on its own, with its own evidence state and source. The forecast only uses parameters in state document_exact or corroborated - conflicts and missing data stay empty.',
+    profileGroupEmployment: 'Employment', profileGroupPayroll: 'Payroll', profileGroupRecurring: 'Payslip items',
+    profileColField: 'Parameter', profileColValue: 'Value', profileColState: 'Evidence state', profileColSources: 'Sources', profileColReason: 'Reason',
+    profileConflict: 'conflict', profileUnknown: 'unknown',
+    profileEffectiveFrom: (date: string) => `from ${date}`,
+    profileExcluded: (list: string) => `excluded: ${list}`,
+    profileSourceLabel: (state: string, documents: string) => `from profile, ${state}: ${documents}`,
+    profileError: 'Could not build the payroll profile from these documents.',
+    projectionFromProfile: 'The calculator fields are filled from the payroll profile above - only values backed by a document (document_exact or corroborated). A field in conflict or unknown stays empty for you to fill in.',
+    projectionObservedOvertime: (premiums: string) => `Your payslips show overtime premiums (${premiums} above the base rate), but no document says which overtime tier each one is - the tier fields stay empty for you to fill in.`,
+    profileGroupObservedOvertime: 'Observed overtime (tier unknown)',
+    profileObservedOvertimeExcluded: (list: string) => `Overtime lines excluded: ${list}`,
+    profileResolving: 'Re-resolving the profile for the new date (from documents already read)…',
   },
   tierA: {
     title: 'Quick calculator', lead: 'An estimate from what any worker knows without documents - every line shows where its figure came from.',

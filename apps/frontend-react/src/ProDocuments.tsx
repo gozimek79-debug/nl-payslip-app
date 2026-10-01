@@ -3,12 +3,12 @@ import { Trash2, Upload, AlertTriangle } from 'lucide-react';
 import { renderPageImages, extractTextItems } from './local-ocr.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
-import { derivePayslipOvertimePercents, selectMostRecentReproducedPayslip, type ReproducedPayslipCandidate } from './pro-parameter-sourcing.ts';
+import { isResolvableAsOfDate, profilePrefill, resolveProfile, sourceDocumentLabels, unreadableFieldPathsFor, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 import {
   issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
   correctableReadValue, correctableExpectedValue, outstandingAmountUnreadablePaths, recomputeWithPathCorrection,
-  openNeedsConfirmation, isPayslipFullyReproduced,
+  openNeedsConfirmation,
   money, type TierCPeriodResponse, type Outcome, type Discrepancy, type NetPosition, type TechnicalDetails, type ConsistencyIssue,
 } from './tier-c-shared.ts';
 
@@ -38,6 +38,14 @@ import {
  * absent value anywhere else in this codebase. `TierACalculator` itself is reused unchanged as the
  * projection surface (spec §5b: "the model does not change"), mounted with `tierMode="PRO"` once at
  * least one document has been analyzed.
+ *
+ * P1 (ZADANIE-P1-LOONTO-PRO.md §P1.5/§P1.7): the paragraph above describes the RETIRED sourcing
+ * chain. The projection's prefill no longer comes from "the most recent fully-reproduced payslip":
+ * after every document is read, the whole set goes to the backend Payroll Profile
+ * (`POST /api/profile/resolve`), which resolves each parameter independently (document_exact /
+ * corroborated / conflict / unknown), and `profilePrefill` copies only usable values into the
+ * calculator. The needsConfirmation panel below is kept as a diagnostic: confirming or correcting an
+ * item there no longer unlocks, blocks or changes any profile parameter.
  */
 
 interface ContractExtraction {
@@ -48,22 +56,6 @@ interface ContractExtraction {
   overtimeTierThresholdHours: number | null; guaranteedHours: number | null; guaranteedHoursPeriodWeeks: number | null;
   redactedFields: string[];
 }
-
-type EffectiveFieldReason = { code: 'disagreement'; documentLabels: string[]; asOfDate: string } | { code: 'undated_document'; documentLabel: string } | null;
-interface EffectiveField<T> { value: T | null; source: { documentIndex: number; role: 'base' | 'annex'; label: string; effectiveDate: string | null } | null; reason: EffectiveFieldReason }
-interface EffectiveContract {
-  contractType: EffectiveField<string>; employerName: EffectiveField<string>; functionTitle: EffectiveField<string>;
-  startDate: EffectiveField<string>; endDate: EffectiveField<string>; hoursPerWeek: EffectiveField<number>;
-  hourlyRate: EffectiveField<number>; monthlySalary: EffectiveField<number>; caoName: EffectiveField<string>;
-  pensionFund: EffectiveField<string>; probationPeriodWeeks: EffectiveField<number>; noticePeriodWeeks: EffectiveField<number>;
-  overtimeTierThresholdHours: EffectiveField<number>; guaranteedHours: EffectiveField<number>; guaranteedHoursPeriodWeeks: EffectiveField<number>;
-}
-
-const EFFECTIVE_CONTRACT_FIELDS = [
-  'contractType', 'employerName', 'functionTitle', 'startDate', 'endDate', 'hoursPerWeek', 'hourlyRate',
-  'monthlySalary', 'caoName', 'pensionFund', 'probationPeriodWeeks', 'noticePeriodWeeks',
-  'overtimeTierThresholdHours', 'guaranteedHours', 'guaranteedHoursPeriodWeeks',
-] as const satisfies readonly (keyof EffectiveContract)[];
 
 type DocStatus = 'pending' | 'processing' | 'done' | 'error';
 
@@ -91,7 +83,8 @@ interface DocEntry {
   effectiveDate: string | null;
   status: DocStatus;
   errorMessage?: string;
-  // Populated once status === 'done'.
+  // Populated once status === 'done'. P1 (§P1.3): the CANONICAL extraction (the document's own raw
+  // values) - never the display-translated `extraction` the same response also carries.
   contractExtraction?: ContractExtraction;
   /** Present only for a payslip whose read COMPUTED (status 'ok', possibly with needsConfirmation). */
   payslipAnalysis?: PayslipAnalysis;
@@ -115,17 +108,12 @@ function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Stage 2u (audit v53, §2u.1/§2u.3): thin, entry-shaped wrappers around the shared, pure, tested
- * `openNeedsConfirmation`/`isPayslipFullyReproduced` (tier-c-shared.ts) - see that module for why the
- * two must never be computed differently in two places. */
+/** Stage 2u (audit v53, §2u.1): thin, entry-shaped wrapper around the shared, pure, tested
+ * `openNeedsConfirmation` (tier-c-shared.ts). P1: drives the diagnostic panel's wording only - it no
+ * longer decides whether a payslip may feed the projection. */
 function visibleNeedsConfirmation(entry: DocEntry): ConsistencyIssue[] {
   if (!entry.payslipAnalysis) return [];
   return openNeedsConfirmation(entry.payslipAnalysis.needsConfirmation, entry.confirmedIssueKeys ?? new Set());
-}
-
-function isFullyReproduced(entry: DocEntry): boolean {
-  if (!entry.payslipAnalysis) return false;
-  return isPayslipFullyReproduced(entry.payslipAnalysis.discrepancies.length, entry.payslipAnalysis.needsConfirmation, entry.confirmedIssueKeys ?? new Set());
 }
 
 export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onNavigateToDictionary: () => void }) {
@@ -141,7 +129,15 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   // calculator with fresh values instead of silently keeping the first submission's stale prefill.
   const [submitCount, setSubmitCount] = useState(0);
   const [asOfDate, setAsOfDate] = useState(todayIso());
-  const [effectiveContract, setEffectiveContract] = useState<EffectiveContract | null>(null);
+  // P1: the backend Payroll Profile for the last submission - the projection's only parameter source.
+  const [profile, setProfile] = useState<PayrollProfileView | null>(null);
+  // P1.1 (Cursor F10): the already-read document facts of the last submission, so a new as-of date
+  // re-resolves the profile from them (pure endpoint, no document re-read, no Gemini call) instead of
+  // leaving the old date's profile on screen under the new date.
+  const [resolvedDocuments, setResolvedDocuments] = useState<ProfileRequestDocument[] | null>(null);
+  const [resolvingProfile, setResolvingProfile] = useState(false);
+  // Only the latest profile request may land - an older response arriving late is dropped.
+  const profileRequestId = useRef(0);
   const [globalError, setGlobalError] = useState('');
 
   function handleFilesAdded(files: FileList | null) {
@@ -210,14 +206,16 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ images, language: lang }),
     });
-    const data = await res.json() as { extraction?: ContractExtraction; error_code?: string };
-    if (!res.ok || !data.extraction) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
-    return { status: 'done', contractExtraction: data.extraction };
+    // P1 (§P1.3): `canonicalExtraction` (raw document values), never `extraction` (whose four string
+    // fields are display-translated) - a translation must never become a profile value.
+    const data = await res.json() as { canonicalExtraction?: ContractExtraction; error_code?: string };
+    if (!res.ok || !data.canonicalExtraction) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
+    return { status: 'done', contractExtraction: data.canonicalExtraction };
   }
 
   async function submitAll() {
     if (!isReadyToSubmit(docs)) { setGlobalError(t.effectiveDateRequired); return; }
-    setGlobalError(''); setSubmitting(true); setEffectiveContract(null);
+    setGlobalError(''); setSubmitting(true); setProfile(null);
     setDocs((current) => current.map((e) => ({ ...e, status: 'processing' as const })));
 
     const processed = await Promise.all(docs.map(async (entry) => {
@@ -231,35 +229,55 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     }));
     setDocs(processed);
 
-    // Stage 3.0 (§3.0.3): once every contract/annex entry has an extraction, resolve the timeline -
-    // a base contract with no annexes still goes through this (a one-document timeline is a valid,
-    // trivial case of the same resolver).
-    const contractEntries = processed.filter((e) => routeForDocument(e.documentType) === 'contract' && e.contractExtraction);
-    if (contractEntries.length > 0) {
-      try {
-        const res = await fetch('/api/contracts/resolve-timeline', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            asOfDate,
-            documents: contractEntries.map((e) => ({
-              role: e.documentType === 'contract_base' ? 'base' : 'annex',
-              effectiveDate: e.effectiveDate,
-              label: e.label,
-              extraction: e.contractExtraction,
-            })),
-          }),
-        });
-        const data = await res.json() as { effectiveContract?: EffectiveContract };
-        if (res.ok && data.effectiveContract) setEffectiveContract(data.effectiveContract);
-        else setGlobalError(t.error);
-      } catch {
-        setGlobalError(t.error);
+    // P1 (§P1.5): every successfully read document goes to the backend Payroll Profile as one set -
+    // contracts/annexes with their canonical extraction (the backend runs the unchanged contract
+    // timeline itself), payslips with their read `period`. Nothing about a payslip's audit state is
+    // sent: no discrepancies, no needsConfirmation list, no confirmed keys - only the field-level paths
+    // of amounts the read itself could not read. A payslip whose period type could not be read at all
+    // (`payslipBlocked`) has no analysed period here and is not sent (see the P1 report).
+    const profileDocuments = processed.flatMap((e, index): ProfileRequestDocument[] => {
+      if (routeForDocument(e.documentType) === 'contract' && e.contractExtraction) {
+        return [{ index, label: e.label, role: e.documentType === 'contract_annex' ? 'contract_annex' : 'contract_base', effectiveDate: e.effectiveDate, contractExtraction: e.contractExtraction }];
       }
+      if (routeForDocument(e.documentType) === 'tier_c' && e.payslipAnalysis) {
+        return [{ index, label: e.label, role: 'payslip', effectiveDate: null, payslip: { period: e.payslipAnalysis.period, unreadableFieldPaths: unreadableFieldPathsFor(e.payslipAnalysis.needsConfirmation) } }];
+      }
+      return [];
+    });
+    setResolvedDocuments(profileDocuments);
+    const requestId = ++profileRequestId.current;
+    const resolved = await resolveProfile(asOfDate, profileDocuments);
+    if (requestId === profileRequestId.current) {
+      if (resolved) setProfile(resolved);
+      else setGlobalError(t.profileError);
     }
 
     setSubmitting(false);
     setHasSubmitted(true);
     setSubmitCount((n) => n + 1);
+  }
+
+  /** P1.1 (Cursor F10): an as-of date change after documents were read re-resolves the profile from
+   * the cached facts (`resolvedDocuments`) - the same pure `/api/profile/resolve` call, never
+   * `processPayslip`/`processContract`, so no document is re-read and no Gemini call is made. The old
+   * profile is cleared at once and the calculator remounts (key bump) both when it is cleared and when
+   * the new profile lands, so a previous date's values are never shown under the new date. A cleared
+   * or half-typed date leaves no profile at all until a complete date is entered. */
+  function changeAsOfDate(value: string) {
+    setAsOfDate(value);
+    if (!resolvedDocuments) return; // nothing read yet - the next submit simply uses the new date
+    const requestId = ++profileRequestId.current;
+    setProfile(null);
+    setGlobalError('');
+    setSubmitCount((n) => n + 1);
+    if (!isResolvableAsOfDate(value)) { setResolvingProfile(false); return; }
+    setResolvingProfile(true);
+    void resolveProfile(value, resolvedDocuments).then((resolved) => {
+      if (requestId !== profileRequestId.current) return;
+      setResolvingProfile(false);
+      if (resolved) { setProfile(resolved); setSubmitCount((n) => n + 1); }
+      else setGlobalError(t.profileError);
+    });
   }
 
   /** Stage 2u (§2u.2): the restored field-specific correction path, now living on the actual live PRO
@@ -328,68 +346,44 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     setDocs((current) => current.map((e) => (e.id === entryId ? { ...e, correctionInputs: { ...(e.correctionInputs ?? {}), [key]: value } } : e)));
   }
 
-  function fieldLabel(field: keyof EffectiveContract): string {
-    const map: Record<keyof EffectiveContract, string> = {
-      contractType: t.fieldContractType, employerName: t.fieldEmployerName, functionTitle: t.fieldFunctionTitle,
-      startDate: t.fieldStartDate, endDate: t.fieldEndDate, hoursPerWeek: t.fieldHoursPerWeek,
-      hourlyRate: t.fieldHourlyRate, monthlySalary: t.fieldMonthlySalary, caoName: t.fieldCaoName,
-      pensionFund: t.fieldPensionFund, probationPeriodWeeks: t.fieldProbationPeriodWeeks,
-      noticePeriodWeeks: t.fieldNoticePeriodWeeks, overtimeTierThresholdHours: t.fieldOvertimeTierThresholdHours,
-      guaranteedHours: t.fieldGuaranteedHours, guaranteedHoursPeriodWeeks: t.fieldGuaranteedHoursPeriodWeeks,
-    };
-    return map[field];
+  // P1 (§P1.5): the projection's prefill is read off the backend Payroll Profile - only fields in a
+  // usable evidence state (document_exact / corroborated) ever reach the calculator; a conflict or
+  // unknown leaves the input empty (never a picked candidate, never a Basic default). Built once per
+  // submission, exactly like the calculator's own mount-time prefill (`key={submitCount}` below).
+  function profileBadge(field: ProfileFieldView): string {
+    return t.profileSourceLabel(field.state, sourceDocumentLabels(field).join(' + '));
   }
+  const contractPrefill: TierAContractPrefill | undefined = hasSubmitted && profile ? profilePrefill(profile, profileBadge) : undefined;
+  // P1.1: overtime premiums seen on payslips with no tier identity - named on the projection so the
+  // user knows why the tier inputs are empty, never copied into either tier input.
+  const observedOvertimePremiums = profile ? profile.observedOvertimePremiums.fields.map((f) => f.value).filter((v): v is number => typeof v === 'number') : [];
 
-  function reasonText(reason: EffectiveFieldReason): string | null {
-    if (!reason) return null;
-    if (reason.code === 'disagreement') return t.reasonDisagreement(reason.documentLabels.join(' / '));
-    return t.reasonUndated(reason.documentLabel);
+  // P1 (§P1.6): minimal developer-facing inspection rows - every profile field, grouped, with its own
+  // state, sources and reason exactly as the backend resolved them (nothing re-decided here).
+  const profileRows: Array<{ group: string; field: ProfileFieldView }> = profile
+    ? [
+        ...Object.values(profile.employment).map((field) => ({ group: t.profileGroupEmployment, field })),
+        ...Object.values(profile.payroll).map((field) => ({ group: t.profileGroupPayroll, field })),
+        ...Object.values(profile.recurringItems).flat().map((field) => ({ group: t.profileGroupRecurring, field })),
+        ...profile.observedOvertimePremiums.fields.map((field) => ({ group: t.profileGroupObservedOvertime, field })),
+      ]
+    : [];
+  function formatProfileValue(value: unknown): string {
+    return Array.isArray(value) ? value.join(', ') : String(value);
   }
-
-  // Stage 2u: recomputed fresh from `docs` on every render (not a snapshot taken once in submitAll) -
-  // so a correction applied AFTER submission (via the panel below) immediately re-evaluates PRO
-  // eligibility too, never leaving a stale "fully reproduced" verdict from before the correction.
-  const payslipEntries = docs.filter((e) => routeForDocument(e.documentType) === 'tier_c' && e.payslipAnalysis);
-  const candidates: ReproducedPayslipCandidate[] = payslipEntries.map((e) => ({
-    label: e.label,
-    periodLabel: e.payslipAnalysis?.period.period_label ?? null,
-    periodEndDate: e.payslipAnalysis?.period.period_end_date ?? null,
-    fullyReproduced: isFullyReproduced(e),
-    hourLines: e.payslipAnalysis?.period.hour_lines ?? [],
-  }));
-  const reproducedPayslip = selectMostRecentReproducedPayslip(candidates);
-
-  // Stage 3.0a.2/3.0a.3: the projection's own prefill - rate/hours/threshold from the resolved
-  // timeline (reused as-is, no new resolver), the two overtime tier percentages from the most
-  // recent fully-reproduced payslip (derived via the shared, tested function - never re-decided
-  // inline). Undefined fields stay genuinely blank in the calculator, never defaulted - exactly the
-  // same "unknown, never guessed" discipline every other resolver in this codebase already follows.
-  const derivedPercents = reproducedPayslip ? derivePayslipOvertimePercents(reproducedPayslip.hourLines) : { tier1: null, tier2: null, excludedPercents: [] as number[] };
-  function contractField(field: keyof EffectiveContract): number | undefined {
-    const value = effectiveContract?.[field]?.value;
-    return typeof value === 'number' ? value : undefined;
+  function describeSource(source: ProfileSourceView): string {
+    const parts = [source.documentLabel ?? source.role];
+    if (source.effectiveDate) parts.push(t.profileEffectiveFrom(source.effectiveDate));
+    if (source.payPeriod?.label) parts.push(source.payPeriod.label);
+    return parts.join(' · ');
   }
-  function contractSourceLabel(field: keyof EffectiveContract): string | undefined {
-    const source = effectiveContract?.[field]?.source;
-    return source ? t.sourceLabel(source.label) : undefined;
+  function describeValue(field: ProfileFieldView): string {
+    if (field.state === 'conflict') {
+      return `${t.profileConflict}: ${field.candidates.map((c) => `${formatProfileValue(c.value)} (${describeSource(c.source)})`).join('; ')}`;
+    }
+    if (field.value === null) return t.profileUnknown;
+    return formatProfileValue(field.value);
   }
-  const payslipSourceLabel = reproducedPayslip ? t.payslipSourceLabel(reproducedPayslip.label, reproducedPayslip.periodLabel ?? '—') : undefined;
-  const contractPrefill: TierAContractPrefill | undefined = hasSubmitted
-    ? {
-        hourly_rate: contractField('hourlyRate'),
-        hours_per_week: contractField('hoursPerWeek'),
-        overtime_tier_threshold_hours: contractField('overtimeTierThresholdHours'),
-        overtime_tier_1_percent: derivedPercents.tier1 ?? undefined,
-        overtime_tier_2_percent: derivedPercents.tier2 ?? undefined,
-        sourceLabels: {
-          hourlyRate: contractSourceLabel('hourlyRate'),
-          hoursPerWeek: contractSourceLabel('hoursPerWeek'),
-          threshold: contractSourceLabel('overtimeTierThresholdHours'),
-          tier1Percent: derivedPercents.tier1 !== null ? payslipSourceLabel : undefined,
-          tier2Percent: derivedPercents.tier2 !== null ? payslipSourceLabel : undefined,
-        },
-      }
-    : undefined;
 
   return (
     <section className="flow-page">
@@ -407,7 +401,6 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
           {docs.map((entry) => {
             const openIssues = visibleNeedsConfirmation(entry);
             const isProvisional = openIssues.length > 0;
-            const fullyReproduced = isFullyReproduced(entry);
             // Stage 2t (§2t.5): the DOCUMENT's own printed payout/net figure - never the engine's own
             // computed one (see the doc comment on the "computed differs" note below for why).
             const printedAmount = entry.payslipAnalysis ? entry.payslipAnalysis.period.printed_payout ?? entry.payslipAnalysis.period.printed_net : null;
@@ -531,14 +524,6 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                   </div>
                 </div>
               )}
-              {/* Stage 2u (§2u.3): a fully-resolved payslip becomes eligible as a PRO parameter source
-                  silently (no special notice needed) - but a CLEAN read that was never provisional at
-                  all gets no confirmation panel, matching the pre-2u compact behaviour exactly. This
-                  plain note only fires for the fully-reproduced case, so the user can tell the
-                  projection may now use this document. */}
-              {entry.status === 'done' && entry.payslipAnalysis && fullyReproduced && reproducedPayslip?.label === entry.label && (
-                <p className="form-note pro-payslip-eligible-note">{t.payslipEligibleForProjection}</p>
-              )}
             </li>
             );
           })}
@@ -549,7 +534,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
         <div className="pro-document-submit-row">
           <label className="pro-document-date">
             {t.asOfDateLabel}
-            <input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)}/>
+            <input type="date" value={asOfDate} disabled={submitting} onChange={(event) => changeAsOfDate(event.target.value)}/>
           </label>
           <button type="button" className="primary" disabled={submitting} onClick={() => void submitAll()}>
             {submitting ? t.submitting : t.submit}
@@ -559,43 +544,56 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
       {globalError && <div className="status error">{globalError}</div>}
 
-      {effectiveContract && (
-        <div className="pro-effective-contract">
-          <h2>{t.effectiveContractTitle} {asOfDate}</h2>
+      {/* P1 (§P1.6): developer-facing profile inspection - replaces the old contract-timeline table
+          (the timeline still runs, inside the backend profile, and its sources/dates show here). */}
+      {profile && (
+        <div className="pro-effective-contract pro-payroll-profile">
+          <h2>{t.profileTitle(profile.asOfDate)}</h2>
+          <p className="form-note">{t.profileLead}</p>
           <table>
+            <thead>
+              <tr>
+                <th scope="col">{t.profileColField}</th>
+                <th scope="col">{t.profileColValue}</th>
+                <th scope="col">{t.profileColState}</th>
+                <th scope="col">{t.profileColSources}</th>
+                <th scope="col">{t.profileColReason}</th>
+              </tr>
+            </thead>
             <tbody>
-              {EFFECTIVE_CONTRACT_FIELDS.map((field) => {
-                const f = effectiveContract[field];
-                const reason = reasonText(f.reason);
-                return (
-                  <tr key={field}>
-                    <th scope="row">{fieldLabel(field)}</th>
-                    <td>
-                      {f.value !== null ? String(f.value) : '—'}
-                      {f.source && <small className="form-note"> ({t.sourceLabel(f.source.label)})</small>}
-                      {reason && <small className="form-note pro-effective-reason"> {reason}</small>}
-                    </td>
-                  </tr>
-                );
-              })}
+              {profileRows.map(({ group, field }) => (
+                <tr key={field.key}>
+                  <th scope="row"><small className="form-note">{group}</small> <code>{field.key}</code></th>
+                  <td>{describeValue(field)}</td>
+                  <td><code>{field.state}</code></td>
+                  <td>{field.sources.map(describeSource).join('; ') || '—'}</td>
+                  <td>
+                    {field.reason ? <code>{field.reason.code}</code> : '—'}
+                    {field.excluded.length > 0 && (
+                      <small className="form-note"> ({t.profileExcluded(field.excluded.map((x) => `${x.reason}: ${describeSource(x.source)}`).join('; '))})</small>
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
+          {/* P1.1 (Cursor F8/F9): overtime lines that could not become observed premiums - each listed
+              once, with its document, never silently dropped. */}
+          {profile.observedOvertimePremiums.excluded.length > 0 && (
+            <p className="form-note">{t.profileObservedOvertimeExcluded(profile.observedOvertimePremiums.excluded.map((x) => `${x.reason}: ${describeSource(x.source)}${x.source.printedLabel ? ` (${x.source.printedLabel})` : ''}`).join('; '))}</p>
+          )}
         </div>
       )}
+      {resolvingProfile && <p className="form-note">{t.profileResolving}</p>}
 
-      {hasSubmitted && (
+      {hasSubmitted && !resolvingProfile && (
         <div className="pro-projection">
           <h2>{t.projectionTitle}</h2>
-          {/* Spec §5's own "Parameter source when several payslips exist" - silent selection is not
-              acceptable, so which payslip supplied the overtime percentages (if any did) is stated
-              plainly here, not left implicit in the calculator's own badges alone. */}
-          {reproducedPayslip
-            ? <p className="form-note">{t.projectionPayslipUsed(reproducedPayslip.label, reproducedPayslip.periodLabel ?? '—')}</p>
-            : <p className="form-note">{t.projectionNoPayslip}</p>}
-          {/* Stage 3.0a.5 (§Fix 3): a genuine third overtime tier the grid has no slot for - named,
-              never silently dropped (§2.1/§2.3). */}
-          {derivedPercents.excludedPercents.length > 0 && (
-            <p className="form-note">{t.projectionExcludedPercent(derivedPercents.excludedPercents.join(', '))}</p>
+          {/* P1 (§P1.5): no single payslip is "the" source any more - each prefilled field names its
+              own document(s) in the calculator's badge, from the profile above. */}
+          <p className="form-note">{t.projectionFromProfile}</p>
+          {observedOvertimePremiums.length > 0 && (
+            <p className="form-note">{t.projectionObservedOvertime(observedOvertimePremiums.map((v) => `+${v}%`).join(', '))}</p>
           )}
           <TierACalculator key={submitCount} lang={lang} tierMode="PRO" contractPrefill={contractPrefill} onNavigateToDictionary={onNavigateToDictionary}/>
         </div>

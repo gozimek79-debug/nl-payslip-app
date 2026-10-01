@@ -88,7 +88,11 @@ router.post('/analyze', aiRateLimit, async (req, res) => {
       console.error('Groq contract explain error', error);
     }
 
-    return res.json({ extraction: displayExtraction, analysis, explanation, implausibleFields, implausibleHoursPerPeriod });
+    // P1 (§P1.3): `extraction` keeps its display shape (four string fields replaced by
+    // "translated (original)" text) for the screens that render it. `canonicalExtraction` is the
+    // same read with the document's own raw values - the only shape the Payroll Profile may use, so
+    // a Groq translation never becomes a profile value or a false timeline disagreement.
+    return res.json({ extraction: displayExtraction, canonicalExtraction: extraction, analysis, explanation, implausibleFields, implausibleHoursPerPeriod });
   } catch (error) {
     console.error('Groq contract OCR error', error);
     return res.status(502).json({ error_code: 'extraction_failed' });
@@ -107,7 +111,7 @@ const contractDocumentRoleSchema = z.enum(['base', 'annex']);
 // coerced somewhere downstream - the type mirrors ContractExtraction exactly, nullable field by
 // nullable field, `redactedFields` included since it is part of the shape even though the resolver
 // itself ignores it.
-const contractExtractionSchema = z.object({
+export const contractExtractionSchema = z.object({
   contractType: z.string().nullable(),
   employerName: z.string().nullable(),
   functionTitle: z.string().nullable(),

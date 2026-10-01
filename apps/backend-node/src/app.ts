@@ -10,6 +10,7 @@ import aiRouter from './controllers/ai.controller.js';
 import maintenanceRouter from './controllers/maintenance.controller.js';
 import tierARouter from './controllers/tier-a.controller.js';
 import tierCRouter from './controllers/tier-c.controller.js';
+import profileRouter from './controllers/profile.controller.js';
 import { checkDatabase } from './database.js';
 import { readingProviderStatus } from './ai-service/gemini-client.js';
 
@@ -54,6 +55,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/maintenance', maintenanceRouter);
 app.use('/api/tier-a', tierARouter);
 app.use('/api/tier-c', tierCRouter);
+app.use('/api/profile', profileRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Nie znaleziono zasobu' });

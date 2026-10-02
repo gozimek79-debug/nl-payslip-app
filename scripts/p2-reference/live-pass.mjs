@@ -3,15 +3,23 @@
 // fact readers, the deterministic merge, the Payroll Profile resolver and the extraction table.
 // Every reader result is cached per (document, pages) so no document is ever read twice; a call log is
 // written next to the results. Requires GEMINI_API_KEY (and builds: `npm run build --workspace @nl-payslip/backend`).
-// Usage: node scripts/p2-reference/live-pass.mjs <corpusDir> <outDir> [--dry-run]
+// Usage: node scripts/p2-reference/live-pass.mjs <corpusDir> <outDir> [--dry-run | --freeze <module.ts> | --cache-only]
+//   --freeze <module.ts>  dry run that also writes the exact read requests (images + page text) as a TS module,
+//                         for the temporary Vercel Preview runner (ZADANIE-P2-LIVE-VERCEL.md); sends nothing.
+//   --cache-only          scores batches already in <outDir>/cache (e.g. returned by the Preview run); never
+//                         calls Gemini and does not need the key - a missing batch is reported, not read.
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 const [corpusDir, outDir] = process.argv.slice(2);
-const dryRun = process.argv.includes('--dry-run');
-if (!corpusDir || !outDir) throw new Error('usage: live-pass.mjs <corpusDir> <outDir> [--dry-run]');
+const freezeIndex = process.argv.indexOf('--freeze');
+const freezeFile = freezeIndex > 0 ? process.argv[freezeIndex + 1] : null;
+const dryRun = process.argv.includes('--dry-run') || freezeFile !== null;
+const cacheOnly = process.argv.includes('--cache-only');
+if (!corpusDir || !outDir || (freezeIndex > 0 && !freezeFile)) throw new Error('usage: live-pass.mjs <corpusDir> <outDir> [--dry-run | --freeze <module.ts> | --cache-only]');
 mkdirSync(path.join(outDir, 'cache'), { recursive: true });
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -124,7 +132,7 @@ const MUST_NOT_BE_CERTAIN = {
 // call. The credential is never read, printed or logged here - only whether one is configured.
 const EXPECTED_MODEL = 'gemini-3.1-pro-preview';
 const MAX_CALLS = 7;
-if (!dryRun) {
+if (!dryRun && !cacheOnly) {
   if (!process.env.GEMINI_API_KEY) { console.error('STOP: GEMINI_API_KEY is not configured in this environment.'); process.exit(2); }
   if (geminiModel() !== EXPECTED_MODEL) { console.error(`STOP: configured model is ${geminiModel()}, expected ${EXPECTED_MODEL}.`); process.exit(2); }
 }
@@ -132,6 +140,7 @@ let callsMade = 0;
 let stopped = null;
 const callLog = [];
 const facts = {};
+const frozen = [];
 for (const doc of DOCS) {
   const file = path.join(corpusDir, doc.file);
   const source = await readSource(file);
@@ -143,7 +152,9 @@ for (const doc of DOCS) {
     if (existsSync(cacheFile)) { batches.push(JSON.parse(readFileSync(cacheFile, 'utf-8'))); callLog.push({ doc: doc.id, pages: b.pages, model: 'cached', ms: 0, outcome: 'cached (not re-read)' }); continue; }
     const images = b.imagePages.length === 0 ? [] : source.isPdf ? await renderPages(source.pdf, b.imagePages, plan.mode === 'text') : [`data:image/jpeg;base64,${readFileSync(file).toString('base64')}`];
     const req = { images, imagePages: b.imagePages, pages: b.pages, totalPages: source.pageCount, textLines: source.lines.filter((l) => b.pages.includes(l.page)) };
+    if (freezeFile) frozen.push({ seq: frozen.length + 1, doc: doc.id, kind, pages: b.pages, imagePages: b.imagePages, totalPages: req.totalPages, textLines: req.textLines, images });
     if (dryRun) { callLog.push({ doc: doc.id, pages: b.pages, imagePages: b.imagePages, textLines: req.textLines.length, imageKb: Math.round(images.join('').length / 1024), outcome: 'dry-run (not sent)' }); continue; }
+    if (cacheOnly) { stopped = stopped ?? `${doc.id} pages ${b.pages.join(',')} has no cached batch (cache-only mode never reads)`; callLog.push({ doc: doc.id, pages: b.pages, model: 'none', ms: 0, outcome: 'not sent - cache-only mode, batch missing' }); continue; }
     if (stopped) { callLog.push({ doc: doc.id, pages: b.pages, model: geminiModel(), ms: 0, outcome: `not sent - stopped after: ${stopped}` }); continue; }
     if (callsMade >= MAX_CALLS) { stopped = `call budget of ${MAX_CALLS} reached`; callLog.push({ doc: doc.id, pages: b.pages, model: geminiModel(), ms: 0, outcome: `not sent - ${stopped}` }); continue; }
     callsMade += 1;
@@ -162,6 +173,19 @@ for (const doc of DOCS) {
   facts[doc.id] = { doc, plan, merged: batches.length === 0 ? null : kind === 'payslip' ? mergePayslipBatches(batches) : mergeContractBatches(batches) };
 }
 writeFileSync(path.join(outDir, 'call-log.json'), JSON.stringify(callLog, null, 1));
+if (freezeFile) {
+  const json = JSON.stringify(frozen);
+  const sha256 = createHash('sha256').update(json).digest('hex');
+  writeFileSync(freezeFile, [
+    '// GENERATED by scripts/p2-reference/live-pass.mjs --freeze from the synthetic corpus of',
+    '// scripts/p2-reference/generate-corpus.mjs - the exact read requests (page images + page text lines) of',
+    '// the P2 read plan. Temporary: used only by the Vercel Preview acceptance runner (ZADANIE-P2-LIVE-VERCEL.md).',
+    `export const FROZEN_REQUESTS_SHA256 = '${sha256}';`,
+    `export const FROZEN_REQUESTS_JSON = ${JSON.stringify(json)};`,
+    '',
+  ].join('\n'));
+  console.log(`frozen ${frozen.length} requests, sha256 ${sha256}, ${Math.round(json.length / 1024)} KB -> ${freezeFile}`);
+}
 if (dryRun) { console.log(JSON.stringify(callLog, null, 1)); process.exit(0); }
 
 // --- evaluate field by field ----------------------------------------------------------------------
@@ -209,7 +233,7 @@ const profileSummary = Object.fromEntries(
 profileSummary.observedOvertimePremiums = profile.observedOvertimePremiums.fields.map((f) => ({ value: f.value, state: f.state, sources: f.sources.map((s) => s.documentLabel) }));
 profileSummary.annexDates = profile.contractContext.annexDates;
 
-writeFileSync(path.join(outDir, 'results.json'), JSON.stringify({ model: geminiModel(), results, profileSummary }, null, 1));
+writeFileSync(path.join(outDir, 'results.json'), JSON.stringify({ model: cacheOnly ? 'see the call log of the run that produced the cached batches' : geminiModel(), source: cacheOnly ? 'cache-only' : 'live', results, profileSummary }, null, 1));
 for (const r of results) console.log(`${r.doc}: expected ${r.expected}, correct ${r.correct}, incorrect ${r.incorrect}, unknown ${r.unknown}, false-certain ${r.falseCertain}, page ${r.pageCorrect}/${r.pageChecked}, coverage ${JSON.stringify(r.coverage)}`);
 if (stopped) console.log(`STOPPED: ${stopped}`);
 console.log(`model: ${geminiModel()} | calls: ${callLog.filter((c) => c.outcome === 'ok').length} ok, ${callLog.filter((c) => c.outcome.startsWith('error')).length} failed, ${callLog.filter((c) => c.outcome.startsWith('cached')).length} cached`);

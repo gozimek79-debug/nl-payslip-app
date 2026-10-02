@@ -6,7 +6,8 @@
     { "source": "/api/(.*)", "destination": "/api" }
   ],
   "functions": {
-    "api/index.ts": { "maxDuration": 60 }
+    "api/index.ts": { "maxDuration": 60 },
+    "api/p2-live-acceptance.ts": { "maxDuration": 300 }
   },
   "crons": [
     { "path": "/api/maintenance/cleanup-expired", "schedule": "0 3 * * *" }

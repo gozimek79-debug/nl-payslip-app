@@ -30,6 +30,17 @@ test('P2.17 #6: a text-layer contract is read from its page-indexed text - all p
   assert.deepEqual(coveredPages(long), Array.from({ length: 25 }, (_, i) => i + 1));
 });
 
+test('P2.9: a thin text page (signature page, scanned page with a printed header) is always sent as an image too', () => {
+  const doc = { pageCount: 8, itemsPerPage: [80, 80, 2, 80, 80, 80, 80, 3], charsPerPage: [3000, 3000, 40, 3000, 3000, 3000, 3000, 25] };
+  const plan = planDocumentBatches(doc);
+  assert.equal(plan.mode, 'text');
+  assert.deepEqual(plan.batches, [{ pages: [1, 2, 3, 4, 5, 6, 7, 8], imagePages: [3, 8] }]);
+  const manyThin = planDocumentBatches({ pageCount: 8, itemsPerPage: Array(8).fill(2), charsPerPage: Array(8).fill(50) });
+  assert.ok(manyThin.batches.every((b) => b.imagePages.length <= IMAGE_PAGES_PER_BATCH), 'never more images per call than the request budget allows');
+  assert.ok(manyThin.batches.every((b) => b.pages.every((p) => b.imagePages.includes(p))), 'every thin page still gets its image');
+  assert.deepEqual(coveredPages(manyThin), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
 test('P2.9: a page with no text layer sends the whole document down the image path (a mixed document is never read text-only)', () => {
   const mixed = { pageCount: 4, itemsPerPage: [80, 80, 0, 80], charsPerPage: [3000, 3000, 0, 3000] };
   const plan = planDocumentBatches(mixed);

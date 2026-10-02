@@ -4,8 +4,10 @@
  *
  * The old path rendered `Math.min(pdf.numPages, 3)` pages and silently ignored the rest. Now:
  *   - a document whose every page carries an embedded text layer is read from its page-indexed text,
- *     up to TEXT_PAGES_PER_BATCH pages per call (page images are added as a layout aid only when the
- *     whole call is small enough to carry them);
+ *     up to TEXT_PAGES_PER_BATCH pages per call. A THIN page (little text - a signature page, or a
+ *     scanned page with only a printed header) is always sent as an image too, so nothing printed on
+ *     it can be lost to the text-only path; at most IMAGE_PAGES_PER_BATCH images per call. A call of
+ *     at most IMAGE_PAGES_PER_BATCH pages carries every page image as a layout aid;
  *   - anything else (a scan, a photo, a mixed document) is read from page images, IMAGE_PAGES_PER_BATCH
  *     pages per call - the measured budget under Vercel's 4.5 MB request-body limit - plus whatever
  *     text those pages do have;
@@ -18,8 +20,8 @@
 export const IMAGE_PAGES_PER_BATCH = 3;
 export const TEXT_PAGES_PER_BATCH = 20;
 export const MAX_PAGES_PER_DOCUMENT = 30;
-/** A page with fewer embedded text items than this is treated as having no usable text layer. */
-export const MIN_TEXT_ITEMS_PER_PAGE = 5;
+/** A page with less embedded text than this is "thin": it is also sent as an image. */
+export const THIN_PAGE_CHARS = 300;
 /** Kept under the server's 200 000-character per-call cap. */
 export const MAX_TEXT_CHARS_PER_BATCH = 180_000;
 
@@ -52,23 +54,32 @@ export function planDocumentBatches(input: PlanInput): DocumentPlan {
   const pages = Array.from({ length: readable }, (_, i) => i + 1);
   const notProcessedPages = Array.from({ length: total - readable }, (_, i) => readable + i + 1);
   const notProcessedReason = notProcessedPages.length > 0 ? 'document_too_long' : null;
-  const textMode = pages.length > 0 && pages.every((p) => (input.itemsPerPage[p - 1] ?? 0) >= MIN_TEXT_ITEMS_PER_PAGE);
+  // Text mode only when EVERY page has embedded text; one page without any sends the whole document
+  // down the image path (a mixed scan/text document is never read text-only).
+  const textMode = pages.length > 0 && pages.every((p) => (input.itemsPerPage[p - 1] ?? 0) > 0 && (input.charsPerPage[p - 1] ?? 0) > 0);
+  const isThin = (p: number) => (input.charsPerPage[p - 1] ?? 0) < THIN_PAGE_CHARS;
 
   const batches: DocumentBatch[] = [];
+  const close = (current: number[]) => {
+    const imagePages = current.length <= IMAGE_PAGES_PER_BATCH ? [...current] : current.filter(isThin);
+    batches.push({ pages: current, imagePages });
+  };
   if (textMode) {
     let current: number[] = [];
     let chars = 0;
     for (const p of pages) {
       const pageChars = input.charsPerPage[p - 1] ?? 0;
-      if (current.length > 0 && (current.length >= TEXT_PAGES_PER_BATCH || chars + pageChars > MAX_TEXT_CHARS_PER_BATCH)) {
-        batches.push({ pages: current, imagePages: current.length <= IMAGE_PAGES_PER_BATCH ? [...current] : [] });
+      const thinInBatch = current.filter(isThin).length + (isThin(p) ? 1 : 0);
+      const full = current.length >= TEXT_PAGES_PER_BATCH || chars + pageChars > MAX_TEXT_CHARS_PER_BATCH || (current.length >= IMAGE_PAGES_PER_BATCH && thinInBatch > IMAGE_PAGES_PER_BATCH);
+      if (current.length > 0 && full) {
+        close(current);
         current = [];
         chars = 0;
       }
       current.push(p);
       chars += pageChars;
     }
-    if (current.length > 0) batches.push({ pages: current, imagePages: current.length <= IMAGE_PAGES_PER_BATCH ? [...current] : [] });
+    if (current.length > 0) close(current);
   } else {
     for (let i = 0; i < pages.length; i += IMAGE_PAGES_PER_BATCH) {
       const chunk = pages.slice(i, i + IMAGE_PAGES_PER_BATCH);

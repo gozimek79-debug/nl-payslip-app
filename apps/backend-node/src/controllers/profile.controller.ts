@@ -1,19 +1,21 @@
 import express from 'express';
 import { z } from 'zod';
-import { contractExtractionSchema } from './contract.controller.js';
-import { isValidPayslipPeriodShape } from './tier-c.controller.js';
 import { resolvePayrollProfile, type ProfileDocumentInput } from '../payroll-engine/payroll-profile.js';
-import { normalizePeriodSigns } from '../payroll-engine/sign-policy.js';
+import { mergePayslipBatches, mergeContractBatches, type DocumentFacts } from '../payroll-engine/document-facts.js';
+import { buildExtractionTable } from '../payroll-engine/fact-table.js';
+import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
 
 /**
- * P1 (§P1.2/§P1.5): the Payroll Profile's HTTP boundary. Takes documents the client ALREADY has
- * (each contract's `canonicalExtraction` from /api/contracts/analyze, each payslip's `period` from
- * /api/tier-c/analyze) and returns the resolved profile - no AI call, no rules lookup, no storage
- * (owner decision 6: request-scoped only), same shape as /api/contracts/resolve-timeline.
+ * P1 (§P1.2/§P1.5): the Payroll Profile's HTTP boundary - request-scoped, no storage, no AI call.
+ *
+ * P2 (§P2.13): documents now arrive as the document-fact batches the client received from
+ * /api/pro/payslip-facts and /api/pro/contract-facts (each re-validated against the exact typed shape).
+ * The batches of one document are merged here, deterministically (document-facts.ts), and the merged
+ * facts are what the unchanged resolver consumes. The response also carries the developer extraction
+ * table (§P2.14) built from those same merged facts.
  *
  * Deliberately absent from the request: discrepancies, needsConfirmation, any "fully reproduced"
- * flag. A payslip's only audit-derived input is the field-level `unreadableFieldPaths` list, which
- * excludes exactly those amounts and nothing else.
+ * flag, any replay result. Unknown keys are stripped by the schema.
  */
 const router = express.Router();
 
@@ -23,19 +25,12 @@ const documentSchema = z.object({
   index: z.number().int().min(0),
   label: z.string().min(1).max(300),
   role: z.enum(['contract_base', 'contract_annex', 'payslip']),
-  effectiveDate: z.string().nullable(),
-  contractExtraction: contractExtractionSchema.optional(),
-  payslip: z
-    .object({
-      // Shape-checked below with the SAME validator /api/tier-c/recompute uses for a client-echoed period.
-      period: z.unknown(),
-      unreadableFieldPaths: z.array(z.string().max(200)).max(200),
-    })
-    .optional(),
+  effectiveDate: z.string().max(40).nullable(),
+  factBatches: z.unknown(),
 });
 
 const resolveProfileSchema = z.object({
-  asOfDate: z.string().min(1),
+  asOfDate: z.string().min(1).max(40),
   documents: z.array(documentSchema).max(MAX_DOCUMENTS),
 });
 
@@ -48,22 +43,23 @@ router.post('/resolve', (req, res) => {
   for (const d of parsed.data.documents) {
     if (seen.has(d.index)) return res.status(400).json({ error_code: 'invalid_input' });
     seen.add(d.index);
+    let facts: DocumentFacts;
     if (d.role === 'payslip') {
-      if (!d.payslip || !isValidPayslipPeriodShape(d.payslip.period)) return res.status(400).json({ error_code: 'invalid_input' });
-      documents.push({
-        index: d.index,
-        label: d.label,
-        role: d.role,
-        effectiveDate: null,
-        payslip: { period: normalizePeriodSigns(d.payslip.period), unreadableFieldPaths: d.payslip.unreadableFieldPaths },
-      });
+      const batches = parsePayslipBatches(d.factBatches);
+      if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
+      facts = mergePayslipBatches(batches);
     } else {
-      if (!d.contractExtraction) return res.status(400).json({ error_code: 'invalid_input' });
-      documents.push({ index: d.index, label: d.label, role: d.role, effectiveDate: d.effectiveDate, contractExtraction: d.contractExtraction });
+      const batches = parseContractBatches(d.factBatches);
+      if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
+      facts = mergeContractBatches(batches);
     }
+    documents.push({ index: d.index, label: d.label, role: d.role, effectiveDate: d.role === 'contract_annex' ? d.effectiveDate : null, facts });
   }
 
-  return res.json({ profile: resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents }) });
+  const profile = resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents });
+  const extractionTable = buildExtractionTable(documents.map((d) => ({ documentIndex: d.index, documentLabel: d.label, role: d.role, facts: d.facts })));
+  const coverage = documents.map((d) => ({ index: d.index, ...d.facts.coverage }));
+  return res.json({ profile, extractionTable, coverage });
 });
 
 export default router;

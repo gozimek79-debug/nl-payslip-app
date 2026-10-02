@@ -4,6 +4,11 @@ import { TIER_C_EXTRACTION_SCHEMA, toGeminiResponseSchema } from '../ocr-service
 import type { TierCExtraction } from '../payroll-engine/tier-c.js';
 import type { DocumentTextItem } from '../payroll-engine/document-text-guard.js';
 import type { ContractExtraction } from '../payroll-engine/contract.js';
+import {
+  pageTextBlock, batchInstruction, PAYSLIP_FACTS_PROMPT, CONTRACT_FACTS_PROMPT, PAYSLIP_FACTS_SCHEMA, CONTRACT_FACTS_SCHEMA,
+  mapPayslipFactsResponse, mapContractFactsResponse, type PageTextLine,
+} from '../ocr-service/fact-extraction.js';
+import type { PayslipFactsBatch, ContractFactsBatch } from '../payroll-engine/document-facts.js';
 
 /**
  * Stage 2t (audit v52, §2t.1/§2t.2, owner's 29 September decision): "use a stronger Gemini model for
@@ -108,4 +113,37 @@ export async function extractContract(imageDataUrls: string[]): Promise<Contract
     parsed = match ? (JSON.parse(match[0]) as Record<string, unknown>) : {};
   }
   return mapRawContractExtraction(parsed);
+}
+
+/**
+ * P2 (ZADANIE-P2-LOONTO-PRO.md §P2.7): the fact-oriented reads - the SAME transport and model as above
+ * (`callGemini`, `geminiModel()`), with the typed fact schemas and prompts from fact-extraction.ts.
+ * One call reads one page batch of one document; the caller says which pages the images are and
+ * which pages the text layer covers, and the reader is told to report facts for those pages only.
+ * The page-indexed text layer goes in through `pageTextBlock` - the same random-boundary,
+ * data-not-instructions construction as `documentTextBlock`.
+ */
+export interface FactReadRequest {
+  images: string[];
+  /** The 1-based page each image is, in image order. */
+  imagePages: number[];
+  /** Every page this call covers (images and/or text). */
+  pages: number[];
+  totalPages: number;
+  textLines: PageTextLine[];
+}
+
+function factPrompt(basePrompt: string, kind: 'payslip' | 'contract', req: FactReadRequest): string {
+  const textBlock = pageTextBlock(req.textLines);
+  return [basePrompt, `\n\n${batchInstruction(kind, req.pages, req.totalPages, req.imagePages)}`, ...(textBlock ? [textBlock] : [])].join('\n');
+}
+
+export async function extractPayslipFacts(req: FactReadRequest): Promise<PayslipFactsBatch> {
+  const result = await callGemini(factPrompt(PAYSLIP_FACTS_PROMPT, 'payslip', req), req.images, toGeminiResponseSchema(PAYSLIP_FACTS_SCHEMA));
+  return mapPayslipFactsResponse(JSON.parse(result.text) as unknown, req.pages, req.totalPages);
+}
+
+export async function extractContractFacts(req: FactReadRequest): Promise<ContractFactsBatch> {
+  const result = await callGemini(factPrompt(CONTRACT_FACTS_PROMPT, 'contract', req), req.images, toGeminiResponseSchema(CONTRACT_FACTS_SCHEMA));
+  return mapContractFactsResponse(JSON.parse(result.text) as unknown, req.pages, req.totalPages);
 }

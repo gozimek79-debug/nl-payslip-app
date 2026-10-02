@@ -1,5 +1,3 @@
-import type { ConsistencyIssue } from './tier-c-shared.ts';
-
 /**
  * P1 (ZADANIE-P1-LOONTO-PRO.md §P1.5): PRO's calculator prefill now comes from the backend-owned
  * Payroll Profile (`POST /api/profile/resolve`, apps/backend-node/src/payroll-engine/payroll-profile.ts).
@@ -28,6 +26,8 @@ export interface ProfileSourceView {
   printedLabel: string | null;
   page: number | null;
   line: number | null;
+  /** P2: the printed text fragment the value was read from. */
+  rawValue?: string | null;
 }
 
 export type ProfileValueView = number | string | number[] | boolean;
@@ -40,7 +40,7 @@ export interface ProfileFieldView {
   state: EvidenceState;
   sources: ProfileSourceView[];
   candidates: Array<{ value: ProfileValueView; source: ProfileSourceView }>;
-  excluded: Array<{ value: ProfileValueView | null; source: ProfileSourceView; reason: string }>;
+  excluded: Array<{ value: ProfileValueView | null; source: ProfileSourceView; reason: string; factReason?: string }>;
   reason: { code: string; asOfDate?: string } | null;
 }
 
@@ -52,6 +52,28 @@ export interface PayrollProfileView {
   recurringItems: Record<string, ProfileFieldView[]>;
   /** P1.1: overtime premiums seen on payslips, tier position unknown - shown, never prefilled. */
   observedOvertimePremiums: { fields: ProfileFieldView[]; excluded: ProfileFieldView['excluded'] };
+  /** P2: annex effective dates - the user-entered and the printed one side by side. */
+  contractContext: { annexDates: Array<{ index: number; label: string; userEnteredDate: string | null; documentDate: string | null; state: string }> };
+}
+
+/** P2 (§P2.14): one row of the developer extraction table, exactly as the backend built it. */
+export interface ExtractionRowView {
+  documentIndex: number;
+  documentLabel: string;
+  role: string;
+  key: string;
+  value: string | number | null;
+  rawValue: string | null;
+  page: number | null;
+  printedLabel: string | null;
+  status: string;
+  reason: string | null;
+  destination: string;
+}
+
+export interface ResolvedProfileView {
+  profile: PayrollProfileView;
+  extractionTable: ExtractionRowView[];
 }
 
 export function isUsableField(field: ProfileFieldView | undefined): field is ProfileFieldView & { value: ProfileValueView } {
@@ -109,28 +131,20 @@ export function profilePrefill(profile: PayrollProfileView, badge: (field: Profi
 }
 
 /**
- * Field-level only (§P1.4): the PayslipPeriod paths whose stored amount is a non-reading, taken from
- * the specific issues that name them. This is never a count and never a gate - the backend excludes
- * exactly these amounts and still uses every other fact on the payslip.
- */
-export function unreadableFieldPathsFor(needsConfirmation: ConsistencyIssue[]): string[] {
-  const paths = new Set<string>();
-  for (const issue of needsConfirmation) {
-    if (issue.code === 'amount_unreadable') paths.add(issue.field);
-    if (issue.code === 'et_exchange_amount_unknown') paths.add('et.et_exchange_amount');
-  }
-  return [...paths];
-}
-
-/**
  * P1.1 (Cursor F10): one document as sent to `POST /api/profile/resolve`. The client keeps the last
  * submitted list of these - facts that were ALREADY read - so the profile can be re-resolved for a new
  * as-of date without re-reading any document (no Gemini call). Extraction/period payloads are opaque
  * here; the backend validates them.
  */
-export type ProfileRequestDocument =
-  | { index: number; label: string; role: 'contract_base' | 'contract_annex'; effectiveDate: string | null; contractExtraction: unknown }
-  | { index: number; label: string; role: 'payslip'; effectiveDate: null; payslip: { period: unknown; unreadableFieldPaths: string[] } };
+export interface ProfileRequestDocument {
+  index: number;
+  label: string;
+  role: 'contract_base' | 'contract_annex' | 'payslip';
+  /** User-entered annex effective date (null for anything else). */
+  effectiveDate: string | null;
+  /** P2: the document-fact batches /api/pro/*-facts returned for this document (all its pages). */
+  factBatches: unknown[];
+}
 
 /** Only a complete ISO date is a meaningful as-of date - a cleared or half-typed date input is not. */
 export function isResolvableAsOfDate(value: string): boolean {
@@ -143,14 +157,14 @@ export function isResolvableAsOfDate(value: string): boolean {
  * touches a document-reading endpoint. `null` on any failure (the caller shows an error, never the
  * previous profile under the new date).
  */
-export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch): Promise<PayrollProfileView | null> {
+export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch): Promise<ResolvedProfileView | null> {
   try {
     const res = await fetchImpl('/api/profile/resolve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ asOfDate, documents }),
     });
-    const data = await res.json() as { profile?: PayrollProfileView };
-    return res.ok && data.profile ? data.profile : null;
+    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[] };
+    return res.ok && data.profile ? { profile: data.profile, extractionTable: data.extractionTable ?? [] } : null;
   } catch {
     return null;
   }

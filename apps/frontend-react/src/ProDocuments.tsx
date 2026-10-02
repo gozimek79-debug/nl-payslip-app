@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
 import { Trash2, Upload, AlertTriangle } from 'lucide-react';
-import { renderPageImages, extractTextItems } from './local-ocr.ts';
+import { renderPageImages, readDocumentSource, photoWithinBudget } from './local-ocr.ts';
+import { planDocumentBatches } from './document-batches.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
-import { isResolvableAsOfDate, profilePrefill, resolveProfile, sourceDocumentLabels, unreadableFieldPathsFor, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
+import { isResolvableAsOfDate, profilePrefill, resolveProfile, sourceDocumentLabels, type ExtractionRowView, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 import {
   issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
@@ -46,16 +47,14 @@ import {
  * corroborated / conflict / unknown), and `profilePrefill` copies only usable values into the
  * calculator. The needsConfirmation panel below is kept as a diagnostic: confirming or correcting an
  * item there no longer unlocks, blocks or changes any profile parameter.
+ *
+ * P2 (ZADANIE-P2-LOONTO-PRO.md): documents are now read as PAYROLL FACTS, page batch by page batch
+ * (`readDocument`: document-batches.ts plans the batches, `/api/pro/payslip-facts` and
+ * `/api/pro/contract-facts` read them - one Gemini call per batch, no Groq). Every page is covered or
+ * named as not read. The fact batches go to the profile as they are; the diagnostic replay
+ * (`/api/pro/payslip-replay`, no AI) is computed from the same facts and can only ever affect the
+ * diagnostic panel - a payslip whose period type is unknown still contributes all its other facts.
  */
-
-interface ContractExtraction {
-  contractType: string | null; employerName: string | null; functionTitle: string | null;
-  startDate: string | null; endDate: string | null; hoursPerWeek: number | null; hourlyRate: number | null;
-  monthlySalary: number | null; caoName: string | null; pensionFund: string | null;
-  probationPeriodWeeks: number | null; noticePeriodWeeks: number | null; thirtyPercentRuling: boolean;
-  overtimeTierThresholdHours: number | null; guaranteedHours: number | null; guaranteedHoursPeriodWeeks: number | null;
-  redactedFields: string[];
-}
 
 type DocStatus = 'pending' | 'processing' | 'done' | 'error';
 
@@ -83,13 +82,14 @@ interface DocEntry {
   effectiveDate: string | null;
   status: DocStatus;
   errorMessage?: string;
-  // Populated once status === 'done'. P1 (§P1.3): the CANONICAL extraction (the document's own raw
-  // values) - never the display-translated `extraction` the same response also carries.
-  contractExtraction?: ContractExtraction;
+  // P2: populated once status === 'done' - the document-fact batches of every page read (what the
+  // profile consumes) and which pages, if any, were not read and why.
+  factBatches?: unknown[];
+  coverage?: { totalPages: number; notProcessedPages: number[]; reason: 'document_too_long' | 'batch_failed' | null };
   /** Present only for a payslip whose read COMPUTED (status 'ok', possibly with needsConfirmation). */
   payslipAnalysis?: PayslipAnalysis;
-  /** True for the one payslip hard-block left (period_type_unknown) - no analysis exists to show or
-   * correct at all (§2.3: there is no period to compute against without a period type). */
+  /** True when the diagnostic replay cannot run (period type not established by the facts). P2: this
+   * blocks only the replay - the payslip's facts still go to the profile. */
   payslipBlocked?: boolean;
   // Stage 2u: per-entry confirm/correct UI state - a client-side "confirmed" set (no recompute; see
   // `confirmNeedsConfirmationIssue` below), the in-progress numeric correction inputs, and which
@@ -139,6 +139,8 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   // Only the latest profile request may land - an older response arriving late is dropped.
   const profileRequestId = useRef(0);
   const [globalError, setGlobalError] = useState('');
+  // P2 (§P2.14): the developer extraction table returned with the profile.
+  const [extractionTable, setExtractionTable] = useState<ExtractionRowView[]>([]);
 
   function handleFilesAdded(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -161,94 +163,105 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       : t.error;
   }
 
-  async function processPayslip(entry: DocEntry): Promise<Partial<DocEntry>> {
-    let documentText: Awaited<ReturnType<typeof extractTextItems>> = [];
-    try { documentText = await extractTextItems(entry.file); } catch { /* falls back to image-only */ }
-    const { images, renderStep } = await renderPageImages(entry.file, documentText.length > 0);
-    const res = await fetch('/api/tier-c/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images, documentText, renderStep }),
-    });
-    const data = await res.json() as {
-      status?: 'ok' | 'unreliable';
-      outcome?: Outcome;
-      discrepancies?: Discrepancy[];
-      needsConfirmation?: ConsistencyIssue[];
-      period?: TierCPeriodResponse;
-      net_position?: NetPosition;
-      technicalDetails?: TechnicalDetails;
-      taxRatesSource?: 'database' | 'static';
-      error_code?: string;
-    };
-    if (!res.ok || !data.status) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
-    if (data.status === 'unreliable') {
-      return { status: 'done', payslipBlocked: true };
+  /** P2: the diagnostic historical replay, from the payslip's facts (no AI call). Its result only
+   * feeds the diagnostic panel below; it never decides what the profile receives. */
+  async function replayPayslip(factBatches: unknown[]): Promise<Partial<DocEntry>> {
+    try {
+      const res = await fetch('/api/pro/payslip-replay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batches: factBatches }) });
+      const data = await res.json() as {
+        status?: 'ok' | 'unavailable'; outcome?: Outcome; discrepancies?: Discrepancy[]; needsConfirmation?: ConsistencyIssue[];
+        period?: TierCPeriodResponse; net_position?: NetPosition; technicalDetails?: TechnicalDetails; taxRatesSource?: 'database' | 'static';
+      };
+      if (!res.ok || !data.status) return {};
+      if (data.status === 'unavailable') return { payslipBlocked: true };
+      if (!data.period || !data.outcome || !data.discrepancies || !data.net_position || !data.technicalDetails || !data.taxRatesSource) return {};
+      return {
+        payslipAnalysis: {
+          period: data.period, outcome: data.outcome, discrepancies: data.discrepancies,
+          net_position: data.net_position, technicalDetails: data.technicalDetails,
+          needsConfirmation: data.needsConfirmation ?? [], taxRatesSource: data.taxRatesSource,
+        },
+        confirmedIssueKeys: new Set(),
+        correctionInputs: {},
+        recomputingKey: null,
+      };
+    } catch {
+      return {};
     }
-    if (!data.period || !data.outcome || !data.discrepancies || !data.net_position || !data.technicalDetails || !data.taxRatesSource) {
-      return { status: 'error', errorMessage: t.error };
-    }
-    return {
-      status: 'done',
-      payslipAnalysis: {
-        period: data.period, outcome: data.outcome, discrepancies: data.discrepancies,
-        net_position: data.net_position, technicalDetails: data.technicalDetails,
-        needsConfirmation: data.needsConfirmation ?? [], taxRatesSource: data.taxRatesSource,
-      },
-      confirmedIssueKeys: new Set(),
-      correctionInputs: {},
-      recomputingKey: null,
-    };
   }
 
-  async function processContract(entry: DocEntry): Promise<Partial<DocEntry>> {
-    const { images } = await renderPageImages(entry.file, true);
-    const res = await fetch('/api/contracts/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images, language: lang }),
-    });
-    // P1 (§P1.3): `canonicalExtraction` (raw document values), never `extraction` (whose four string
-    // fields are display-translated) - a translation must never become a profile value.
-    const data = await res.json() as { canonicalExtraction?: ContractExtraction; error_code?: string };
-    if (!res.ok || !data.canonicalExtraction) return { status: 'error', errorMessage: translateErrorCode(data.error_code) };
-    return { status: 'done', contractExtraction: data.canonicalExtraction };
+  /**
+   * P2 (§P2.3/§P2.5/§P2.8/§P2.9): reads one document as payroll facts. Its pages are planned into
+   * batches (document-batches.ts - text-layer documents from their page-indexed text, scans and photos
+   * from page images), each batch is one reader call, and every page is either read or reported as
+   * not read. A failed batch does not discard the others: its pages are reported, the rest are used.
+   */
+  async function readDocument(entry: DocEntry): Promise<Partial<DocEntry>> {
+    const kind = routeForDocument(entry.documentType) === 'tier_c' ? 'payslip' : 'contract';
+    const source = await readDocumentSource(entry.file);
+    const plan = planDocumentBatches(source);
+    const hasTextLayer = plan.mode === 'text';
+    const factBatches: unknown[] = [];
+    const failedPages: number[] = [];
+    let lastError: string | undefined;
+    for (const batch of plan.batches) {
+      try {
+        const images = batch.imagePages.length === 0 ? []
+          : source.isPdf ? (await renderPageImages(entry.file, hasTextLayer, batch.imagePages)).images
+            : [(await photoWithinBudget(entry.file)).image];
+        const textLines = source.lines.filter((l) => batch.pages.includes(l.page));
+        const res = await fetch(`/api/pro/${kind}-facts`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pages: batch.pages, totalPages: source.pageCount, images, imagePages: batch.imagePages, textLines }),
+        });
+        const data = await res.json() as { batch?: unknown; error_code?: string };
+        if (!res.ok || !data.batch) { failedPages.push(...batch.pages); lastError = data.error_code; continue; }
+        factBatches.push(data.batch);
+      } catch {
+        failedPages.push(...batch.pages);
+      }
+    }
+    if (factBatches.length === 0) return { status: 'error', errorMessage: translateErrorCode(lastError) };
+    const notProcessedPages = [...plan.notProcessedPages, ...failedPages].sort((x, y) => x - y);
+    const coverage = {
+      totalPages: source.pageCount,
+      notProcessedPages,
+      reason: failedPages.length > 0 ? ('batch_failed' as const) : plan.notProcessedReason,
+    };
+    const replay = kind === 'payslip' ? await replayPayslip(factBatches) : {};
+    return { status: 'done', factBatches, coverage, ...replay };
   }
 
   async function submitAll() {
     if (!isReadyToSubmit(docs)) { setGlobalError(t.effectiveDateRequired); return; }
-    setGlobalError(''); setSubmitting(true); setProfile(null);
+    setGlobalError(''); setSubmitting(true); setProfile(null); setExtractionTable([]);
     setDocs((current) => current.map((e) => ({ ...e, status: 'processing' as const })));
 
     const processed = await Promise.all(docs.map(async (entry) => {
-      const route = routeForDocument(entry.documentType);
       try {
-        const patch = route === 'tier_c' ? await processPayslip(entry) : await processContract(entry);
-        return { ...entry, ...patch };
+        const patch = await readDocument(entry);
+        return { ...entry, payslipAnalysis: undefined, payslipBlocked: false, ...patch };
       } catch (error) {
         return { ...entry, status: 'error' as const, errorMessage: error instanceof Error ? error.message : t.error };
       }
     }));
     setDocs(processed);
 
-    // P1 (§P1.5): every successfully read document goes to the backend Payroll Profile as one set -
-    // contracts/annexes with their canonical extraction (the backend runs the unchanged contract
-    // timeline itself), payslips with their read `period`. Nothing about a payslip's audit state is
-    // sent: no discrepancies, no needsConfirmation list, no confirmed keys - only the field-level paths
-    // of amounts the read itself could not read. A payslip whose period type could not be read at all
-    // (`payslipBlocked`) has no analysed period here and is not sent (see the P1 report).
+    // P1 (§P1.5) / P2 (§P2.13): every successfully read document goes to the backend Payroll Profile
+    // as one set - each with the fact batches its own pages produced. Nothing about a payslip's audit
+    // state is sent: no discrepancies, no needsConfirmation list, no confirmed keys, no replay result.
+    // P2 (§P2.4): a payslip whose replay is unavailable (`payslipBlocked`, period type unknown) is sent
+    // like any other - its period type is unknown, its other facts are not.
     const profileDocuments = processed.flatMap((e, index): ProfileRequestDocument[] => {
-      if (routeForDocument(e.documentType) === 'contract' && e.contractExtraction) {
-        return [{ index, label: e.label, role: e.documentType === 'contract_annex' ? 'contract_annex' : 'contract_base', effectiveDate: e.effectiveDate, contractExtraction: e.contractExtraction }];
-      }
-      if (routeForDocument(e.documentType) === 'tier_c' && e.payslipAnalysis) {
-        return [{ index, label: e.label, role: 'payslip', effectiveDate: null, payslip: { period: e.payslipAnalysis.period, unreadableFieldPaths: unreadableFieldPathsFor(e.payslipAnalysis.needsConfirmation) } }];
-      }
-      return [];
+      if (e.status !== 'done' || !e.factBatches) return [];
+      const role = e.documentType === 'payslip' ? 'payslip' : e.documentType === 'contract_annex' ? 'contract_annex' : 'contract_base';
+      return [{ index, label: e.label, role, effectiveDate: role === 'contract_annex' ? e.effectiveDate : null, factBatches: e.factBatches }];
     });
     setResolvedDocuments(profileDocuments);
     const requestId = ++profileRequestId.current;
     const resolved = await resolveProfile(asOfDate, profileDocuments);
     if (requestId === profileRequestId.current) {
-      if (resolved) setProfile(resolved);
+      if (resolved) { setProfile(resolved.profile); setExtractionTable(resolved.extractionTable); }
       else setGlobalError(t.profileError);
     }
 
@@ -259,7 +272,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
   /** P1.1 (Cursor F10): an as-of date change after documents were read re-resolves the profile from
    * the cached facts (`resolvedDocuments`) - the same pure `/api/profile/resolve` call, never
-   * `processPayslip`/`processContract`, so no document is re-read and no Gemini call is made. The old
+   * `readDocument`, so no document is re-read and no Gemini call is made. The old
    * profile is cleared at once and the calculator remounts (key bump) both when it is cleared and when
    * the new profile lands, so a previous date's values are never shown under the new date. A cleared
    * or half-typed date leaves no profile at all until a complete date is entered. */
@@ -268,6 +281,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     if (!resolvedDocuments) return; // nothing read yet - the next submit simply uses the new date
     const requestId = ++profileRequestId.current;
     setProfile(null);
+    setExtractionTable([]);
     setGlobalError('');
     setSubmitCount((n) => n + 1);
     if (!isResolvableAsOfDate(value)) { setResolvingProfile(false); return; }
@@ -275,7 +289,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     void resolveProfile(value, resolvedDocuments).then((resolved) => {
       if (requestId !== profileRequestId.current) return;
       setResolvingProfile(false);
-      if (resolved) { setProfile(resolved); setSubmitCount((n) => n + 1); }
+      if (resolved) { setProfile(resolved.profile); setExtractionTable(resolved.extractionTable); setSubmitCount((n) => n + 1); }
       else setGlobalError(t.profileError);
     });
   }
@@ -375,6 +389,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     const parts = [source.documentLabel ?? source.role];
     if (source.effectiveDate) parts.push(t.profileEffectiveFrom(source.effectiveDate));
     if (source.payPeriod?.label) parts.push(source.payPeriod.label);
+    if (source.page !== null && source.page !== undefined) parts.push(t.profilePage(source.page));
     return parts.join(' · ');
   }
   function describeValue(field: ProfileFieldView): string {
@@ -436,7 +451,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                       ? t.payslipSummaryNeedsConfirmation(printedAmount !== null ? money(printedAmount) : '—')
                       : t.payslipSummaryOk(printedAmount !== null ? money(printedAmount) : '—')
                   )}
-                  {entry.status === 'done' && entry.payslipBlocked && t.payslipSummaryUnreliable}
+                  {entry.status === 'done' && entry.payslipBlocked && t.payslipReplayUnavailable}
                   {/* Stage 2t (§2t.5): "the engine's own discrepancy explicitly shown separately when it
                       differs" - never folded into the headline figure above, which is always the
                       document's own printed one. Stage 2u: only shown for a CLEAN (non-provisional)
@@ -450,7 +465,8 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                       {t.payslipSummaryComputedDiffers(money(entry.payslipAnalysis.outcome.result.payout_amount))}
                     </span>
                   )}
-                  {entry.status === 'done' && entry.contractExtraction && t.statusDone}
+                  {entry.status === 'done' && entry.documentType !== 'payslip' && t.statusDone}
+                  {entry.status === 'done' && entry.documentType === 'payslip' && !entry.payslipAnalysis && !entry.payslipBlocked && t.statusDone}
                 </span>
                 <button type="button" className="plain-button" disabled={submitting} aria-label={t.remove}
                   onClick={() => setDocs((current) => removeDocument(current, entry.id))}>
@@ -524,6 +540,12 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                   </div>
                 </div>
               )}
+              {/* P2 (§P2.9): a page not read is said, by number - a document is never shown as fully read when it was not. */}
+              {entry.status === 'done' && entry.coverage && entry.coverage.notProcessedPages.length > 0 && (
+                <p className="form-note pro-document-pages-warning">
+                  {t.pagesNotProcessed(entry.coverage.notProcessedPages.join(', '), entry.coverage.totalPages, entry.coverage.reason === 'batch_failed' ? t.pagesReasonBatchFailed : t.pagesReasonTooLong)}
+                </p>
+              )}
             </li>
             );
           })}
@@ -570,7 +592,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                   <td>
                     {field.reason ? <code>{field.reason.code}</code> : '—'}
                     {field.excluded.length > 0 && (
-                      <small className="form-note"> ({t.profileExcluded(field.excluded.map((x) => `${x.reason}: ${describeSource(x.source)}`).join('; '))})</small>
+                      <small className="form-note"> ({t.profileExcluded(field.excluded.map((x) => `${x.reason}${x.factReason ? `/${x.factReason}` : ''}: ${describeSource(x.source)}`).join('; '))})</small>
                     )}
                   </td>
                 </tr>
@@ -581,6 +603,45 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
               once, with its document, never silently dropped. */}
           {profile.observedOvertimePremiums.excluded.length > 0 && (
             <p className="form-note">{t.profileObservedOvertimeExcluded(profile.observedOvertimePremiums.excluded.map((x) => `${x.reason}: ${describeSource(x.source)}${x.source.printedLabel ? ` (${x.source.printedLabel})` : ''}`).join('; '))}</p>
+          )}
+          {/* P2 (§P2.6): both annex date sources side by side; a dispute is shown, never resolved here. */}
+          {profile.contractContext.annexDates.map((a) => (
+            <p key={a.index} className="form-note">{t.annexDateLine(a.label, a.userEnteredDate ?? '—', a.documentDate ?? '—', a.state)}</p>
+          ))}
+          {/* P2 (§P2.14): developer/reference extraction table - every fact as read, with its page, raw
+              text, status and the profile field it feeds. Not customer UX. */}
+          {extractionTable.length > 0 && (
+            <details className="pro-extraction-table">
+              <summary>{t.extractionTableTitle(extractionTable.length)}</summary>
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">{t.extractionColDocument}</th>
+                    <th scope="col">{t.extractionColKey}</th>
+                    <th scope="col">{t.extractionColValue}</th>
+                    <th scope="col">{t.extractionColRaw}</th>
+                    <th scope="col">{t.extractionColPage}</th>
+                    <th scope="col">{t.extractionColLabel}</th>
+                    <th scope="col">{t.extractionColStatus}</th>
+                    <th scope="col">{t.extractionColDestination}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {extractionTable.map((r, i) => (
+                    <tr key={`${r.documentIndex}-${r.key}-${i}`}>
+                      <td>{r.documentLabel}</td>
+                      <td><code>{r.key}</code></td>
+                      <td>{r.value === null ? '—' : String(r.value)}</td>
+                      <td>{r.rawValue ?? '—'}</td>
+                      <td>{r.page ?? '—'}</td>
+                      <td>{r.printedLabel ?? '—'}</td>
+                      <td><code>{r.status}</code>{r.reason ? <small className="form-note"> {r.reason}</small> : null}</td>
+                      <td><code>{r.destination}</code></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
           )}
         </div>
       )}

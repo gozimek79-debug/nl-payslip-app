@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
+import { contractBatch, payslipBatch, rawContract, rawPayslip, found, hourLine, overtimeLine } from '../test-support/fact-fixtures.js';
 
 /**
  * P1 (§P1.2/§P1.5): `POST /api/profile/resolve` over real HTTP. Pure recombination of data the
@@ -24,38 +25,13 @@ after(async () => {
   await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
 });
 
-function blankExtraction(overrides: Record<string, unknown> = {}) {
-  return {
-    contractType: null, employerName: null, functionTitle: null, startDate: null, endDate: null,
-    hoursPerWeek: null, hourlyRate: null, monthlySalary: null, caoName: null, pensionFund: null,
-    probationPeriodWeeks: null, noticePeriodWeeks: null, thirtyPercentRuling: false,
-    overtimeTierThresholdHours: null, guaranteedHours: null, guaranteedHoursPeriodWeeks: null,
-    redactedFields: [],
-    ...overrides,
-  };
+/** P2: documents now arrive as document-fact batches (built through the real reader mapping). */
+function contractDocJson(index: number, label: string, overrides: Record<string, unknown> = {}) {
+  return { index, label, role: 'contract_base', effectiveDate: null, factBatches: [contractBatch(rawContract(overrides))] };
 }
 
-/** The exact JSON shape /api/tier-c/analyze returns as `period` (every PayslipPeriod key present). */
-function periodJson(overrides: Record<string, unknown> = {}) {
-  return {
-    period_label: 'week 10/2026', period_type: 'week', period_type_confirmed: true, period_end_date: '2026-03-08',
-    is_correction: false, version: 1, employers: [{ name: 'Synthetic Uitzend B.V.', franchise_bearing: true }], hirer: null,
-    contract_hours: null,
-    hour_lines: [
-      { employer_index: 0, description: 'Uren', hours: 40, rate: 16.2, percent: null, amount: 648, category: 'regular', tax_treatment: 'table', adds_hours: true },
-      { employer_index: 0, description: 'Overwerk 150%', hours: 10, rate: 16.2, percent: 150, amount: 243, category: 'overtime', adds_hours: true },
-    ],
-    pre_tax_deductions: [],
-    bijzonder_tarief: { jaarloon_bt: null, bt_state: 'not_applicable', tarief_bt: { printed: null, computed: null } },
-    et: null, post_tax_social: [], net_additions: [], net_deductions: [], payout_adjustments: [], reservations: [],
-    wml_printed: null, wml_applicable: null,
-    printed_table_tax: null, printed_bt_tax: null, printed_algemene_heffingskorting: null, printed_arbeidskorting: null,
-    printed_net: null, printed_payout: null, printed_gross_total: null, printed_loon_voor_heffingen: null,
-    printed_taxable_base_normal: null, printed_taxable_base_special: null,
-    printed_table_tax_label: null, printed_bt_tax_label: null, printed_algemene_heffingskorting_label: null,
-    printed_arbeidskorting_label: null, printed_net_label: null, printed_payout_label: null,
-    ...overrides,
-  };
+function payslipDocJson(index: number, label: string, overrides: Record<string, unknown> = {}) {
+  return { index, label, role: 'payslip', effectiveDate: null, factBatches: [payslipBatch(rawPayslip(overrides))] };
 }
 
 async function post(body: unknown): Promise<Response> {
@@ -69,8 +45,8 @@ test('P1: POST /api/profile/resolve builds a profile from a contract and a paysl
   const res = await post({
     asOfDate: '2026-06-01',
     documents: [
-      { index: 0, label: 'umowa.pdf', role: 'contract_base', effectiveDate: null, contractExtraction: blankExtraction({ hourlyRate: 16.2, hoursPerWeek: 40 }) },
-      { index: 1, label: 'pasek.pdf', role: 'payslip', effectiveDate: null, payslip: { period: periodJson(), unreadableFieldPaths: [] } },
+      contractDocJson(0, 'umowa.pdf', { hourly_rate: found(16.2, 'Uurloon: € 16,20', 1, 'Uurloon'), hours_per_week: found(40, '40 uur per week', 1, 'Arbeidsduur') }),
+      payslipDocJson(1, 'pasek.pdf', { hour_lines: [hourLine(), overtimeLine(150)] }),
     ],
   });
   assert.equal(res.status, 200);
@@ -85,7 +61,7 @@ test('P1: POST /api/profile/resolve builds a profile from a contract and a paysl
 });
 
 test('P1.7: audit state sent alongside a payslip is ignored - discrepancies/needsConfirmation/fullyReproduced cannot change the profile', async () => {
-  const documents = [{ index: 0, label: 'pasek.pdf', role: 'payslip', effectiveDate: null, payslip: { period: periodJson(), unreadableFieldPaths: [] } }];
+  const documents = [payslipDocJson(0, 'pasek.pdf', { hour_lines: [hourLine(), overtimeLine(150)] })];
   const plain = (await (await post({ asOfDate: '2026-06-01', documents })).json()) as { profile: unknown };
   const withAudit = await post({
     asOfDate: '2026-06-01',
@@ -101,18 +77,27 @@ test('P1.7: audit state sent alongside a payslip is ignored - discrepancies/need
   assert.deepEqual(((await withAudit.json()) as { profile: unknown }).profile, plain.profile);
 });
 
-test('P1: a malformed payslip period or a contract entry without an extraction is rejected with invalid_input', async () => {
-  const badPeriod = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'p.pdf', role: 'payslip', effectiveDate: null, payslip: { period: { hour_lines: [] }, unreadableFieldPaths: [] } }] });
-  assert.equal(badPeriod.status, 400);
-  assert.deepEqual(await badPeriod.json(), { error_code: 'invalid_input' });
-  const noExtraction = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'u.pdf', role: 'contract_base', effectiveDate: null }] });
-  assert.equal(noExtraction.status, 400);
-  const duplicateIndex = await post({
-    asOfDate: '2026-06-01',
-    documents: [
-      { index: 0, label: 'u.pdf', role: 'contract_base', effectiveDate: null, contractExtraction: blankExtraction() },
-      { index: 0, label: 'u2.pdf', role: 'contract_base', effectiveDate: null, contractExtraction: blankExtraction() },
-    ],
-  });
+test('P1/P2: malformed fact batches, a role/kind mismatch or a missing batch list is rejected with invalid_input', async () => {
+  const badBatch = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'p.pdf', role: 'payslip', effectiveDate: null, factBatches: [{ kind: 'payslip', pages: [1] }] }] });
+  assert.equal(badBatch.status, 400);
+  assert.deepEqual(await badBatch.json(), { error_code: 'invalid_input' });
+  const kindMismatch = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'u.pdf', role: 'contract_base', effectiveDate: null, factBatches: [payslipBatch()] }] });
+  assert.equal(kindMismatch.status, 400);
+  const noBatches = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'u.pdf', role: 'contract_base', effectiveDate: null }] });
+  assert.equal(noBatches.status, 400);
+  const samePageTwice = await post({ asOfDate: '2026-06-01', documents: [{ index: 0, label: 'p.pdf', role: 'payslip', effectiveDate: null, factBatches: [payslipBatch(), payslipBatch()] }] });
+  assert.equal(samePageTwice.status, 400, 'one page read by two batches of one document is not a valid batch set');
+  const duplicateIndex = await post({ asOfDate: '2026-06-01', documents: [contractDocJson(0, 'u.pdf'), contractDocJson(0, 'u2.pdf')] });
   assert.equal(duplicateIndex.status, 400);
+});
+
+test('P2.14: the response carries the extraction table and page coverage built from the same facts', async () => {
+  const res = await post({ asOfDate: '2026-06-01', documents: [payslipDocJson(0, 'pasek.pdf', { hour_lines: [hourLine(), overtimeLine(150)] })] });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { extractionTable: Array<{ key: string; page: number | null; rawValue: string | null; destination: string; status: string }>; coverage: Array<{ index: number; processedPages: number[]; notProcessedPages: number[] }> };
+  const overtime = body.extractionTable.find((r) => r.key === 'payslip.hourLine.overtime.percent');
+  assert.deepEqual([overtime?.page, overtime?.destination, overtime?.status], [1, 'observedOvertimePremiums', 'exact']);
+  assert.equal(overtime?.rawValue, 'Overwerk 150% 4,00 16,20 97,20');
+  assert.ok(body.extractionTable.some((r) => r.key === 'payslip.printedNet' && r.status === 'absent' && r.destination === 'calibrationOnly'));
+  assert.deepEqual(body.coverage, [{ index: 0, totalPages: 1, processedPages: [1], notProcessedPages: [] }]);
 });

@@ -166,6 +166,17 @@ const pl = {
     profileGroupObservedOvertime: 'Nadgodziny zaobserwowane (próg nieznany)',
     profileObservedOvertimeExcluded: (list: string) => `Linie nadgodzin pominięte: ${list}`,
     profileResolving: 'Przeliczanie profilu dla nowej daty (z już odczytanych dokumentów)…',
+    // P2 (ZADANIE-P2-LOONTO-PRO.md): page coverage, the replay-unavailable status, annex dates and the
+    // developer extraction table. Status/reason/destination codes are shown as codes (developer view).
+    pagesNotProcessed: (pages: string, total: number, reason: string) => `Nie odczytano stron: ${pages} (z ${total}) - ${reason}. Fakty z tych stron nie trafiły do profilu.`,
+    pagesReasonTooLong: 'dokument dłuższy niż limit stron na jeden dokument',
+    pagesReasonBatchFailed: 'odczyt tych stron się nie powiódł',
+    payslipReplayUnavailable: 'Fakty odczytane. Typ okresu nie jest ustalony, więc historycznego przeliczenia tego paska nie da się wykonać - pozostałe fakty trafiają do profilu.',
+    profilePage: (page: number) => `str. ${page}`,
+    annexDateLine: (label: string, user: string, printed: string, state: string) => `Aneks ${label}: data wpisana ${user}, data na dokumencie ${printed} (${state})`,
+    extractionTableTitle: (count: number) => `Tabela odczytu (deweloperska) - ${count} pozycji`,
+    extractionColDocument: 'Dokument', extractionColKey: 'Klucz', extractionColValue: 'Wartość', extractionColRaw: 'Tekst z dokumentu',
+    extractionColPage: 'Strona', extractionColLabel: 'Etykieta', extractionColStatus: 'Stan odczytu', extractionColDestination: 'Pole profilu',
   },
   tierA: {
     title: 'Szybki kalkulator', lead: 'Szacunek na podstawie tego, co pracownik wie bez dokumentów - każda linia pokazuje, skąd wzięła się liczba.',
@@ -567,6 +578,15 @@ const en: typeof pl = {
     profileGroupObservedOvertime: 'Observed overtime (tier unknown)',
     profileObservedOvertimeExcluded: (list: string) => `Overtime lines excluded: ${list}`,
     profileResolving: 'Re-resolving the profile for the new date (from documents already read)…',
+    pagesNotProcessed: (pages: string, total: number, reason: string) => `Pages not read: ${pages} (of ${total}) - ${reason}. No facts from these pages are in the profile.`,
+    pagesReasonTooLong: 'the document is longer than the per-document page limit',
+    pagesReasonBatchFailed: 'reading these pages failed',
+    payslipReplayUnavailable: 'Facts read. The period type is not established, so this payslip cannot be recomputed historically - its other facts still go to the profile.',
+    profilePage: (page: number) => `p. ${page}`,
+    annexDateLine: (label: string, user: string, printed: string, state: string) => `Annex ${label}: entered date ${user}, date on the document ${printed} (${state})`,
+    extractionTableTitle: (count: number) => `Extraction table (developer) - ${count} rows`,
+    extractionColDocument: 'Document', extractionColKey: 'Key', extractionColValue: 'Value', extractionColRaw: 'Text on the document',
+    extractionColPage: 'Page', extractionColLabel: 'Label', extractionColStatus: 'Status', extractionColDestination: 'Profile field',
   },
   tierA: {
     title: 'Quick calculator', lead: 'An estimate from what any worker knows without documents - every line shows where its figure came from.',

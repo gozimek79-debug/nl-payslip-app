@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { profilePrefill, unreadableFieldPathsFor, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState } from './pro-profile-prefill.ts';
+import { profilePrefill, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState } from './pro-profile-prefill.ts';
 import { translations } from './translations.ts';
 
 /**
@@ -23,7 +23,7 @@ function field(key: string, state: EvidenceState, value: ProfileFieldView['value
 }
 
 function profile(employment: Record<string, ProfileFieldView>, payroll: Record<string, ProfileFieldView>, observed: ProfileFieldView[] = []): PayrollProfileView {
-  return { version: 1, asOfDate: '2026-06-01', employment, payroll, recurringItems: {}, observedOvertimePremiums: { fields: observed, excluded: [] } };
+  return { version: 1, asOfDate: '2026-06-01', employment, payroll, recurringItems: {}, observedOvertimePremiums: { fields: observed, excluded: [] }, contractContext: { annexDates: [] } };
 }
 
 const badge = (f: ProfileFieldView) => `${f.state}:${f.sources.map((s) => s.documentLabel).join('+')}`;
@@ -57,18 +57,6 @@ test('P1.8 #14: a usable state with no value is still not prefilled - and an emp
   assert.deepEqual(empty, { sourceLabels: {} }, 'no field -> no value and no badge, never a Basic default');
 });
 
-test('P1.4: unreadable paths are taken field-by-field from the issues that name them - nothing else', () => {
-  assert.deepEqual(
-    unreadableFieldPathsFor([
-      { code: 'amount_unreadable', field: 'net_additions[0].amount' },
-      { code: 'et_exchange_amount_unknown' },
-      { code: 'period_length_mismatch', period_type: 'week', implied_days: 14, expected_min_days: 6, expected_max_days: 8 },
-      { code: 'totals_do_not_reconcile_payout', implied_payout: 1, printed_payout: 2, residual: 1 },
-    ]),
-    ['net_additions[0].amount', 'et.et_exchange_amount'],
-  );
-});
-
 const here = path.dirname(fileURLToPath(import.meta.url));
 const proDocumentsSource = readFileSync(path.join(here, 'ProDocuments.tsx'), 'utf-8');
 /** Source without comments - the file's own history comments still NAME the retired functions. */
@@ -95,7 +83,7 @@ test('P1.8 #13: live ProDocuments sources the projection prefill from the backen
 });
 
 test('P1.8 #15: every new profile label exists in both PL and EN', () => {
-  const keys = ['profileTitle', 'profileLead', 'profileGroupEmployment', 'profileGroupPayroll', 'profileGroupRecurring', 'profileColField', 'profileColValue', 'profileColState', 'profileColSources', 'profileColReason', 'profileConflict', 'profileUnknown', 'profileEffectiveFrom', 'profileExcluded', 'profileSourceLabel', 'profileError', 'projectionFromProfile', 'projectionObservedOvertime', 'profileGroupObservedOvertime', 'profileObservedOvertimeExcluded', 'profileResolving'] as const;
+  const keys = ['profileTitle', 'profileLead', 'profileGroupEmployment', 'profileGroupPayroll', 'profileGroupRecurring', 'profileColField', 'profileColValue', 'profileColState', 'profileColSources', 'profileColReason', 'profileConflict', 'profileUnknown', 'profileEffectiveFrom', 'profileExcluded', 'profileSourceLabel', 'profileError', 'projectionFromProfile', 'projectionObservedOvertime', 'profileGroupObservedOvertime', 'profileObservedOvertimeExcluded', 'profileResolving', 'pagesNotProcessed', 'pagesReasonTooLong', 'pagesReasonBatchFailed', 'payslipReplayUnavailable', 'profilePage', 'annexDateLine', 'extractionTableTitle', 'extractionColDocument', 'extractionColKey', 'extractionColValue', 'extractionColRaw', 'extractionColPage', 'extractionColLabel', 'extractionColStatus', 'extractionColDestination'] as const;
   for (const key of keys) {
     assert.ok(key in translations.pl.proDocuments, `pl.proDocuments.${key} missing`);
     assert.ok(key in translations.en.proDocuments, `en.proDocuments.${key} missing`);
@@ -123,26 +111,28 @@ test('P1.1 #1/#4: observed overtime premiums never fill a tier input - tier inpu
 test('P1.1: the prefill module does not read observedOvertimePremiums at all', () => {
   const here2 = path.dirname(fileURLToPath(import.meta.url));
   const code = readFileSync(path.join(here2, 'pro-profile-prefill.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  const body = code.slice(code.indexOf('export function profilePrefill'), code.indexOf('export function unreadableFieldPathsFor'));
+  const body = code.slice(code.indexOf('export function profilePrefill'), code.indexOf('export function isResolvableAsOfDate'));
   assert.ok(body.length > 0);
   assert.ok(!body.includes('observedOvertimePremiums'), 'profilePrefill must not map an observed premium into a tier');
 });
 
+// P2: the cached facts are each document's fact batches, exactly as /api/pro/*-facts returned them.
 const cachedDocuments: ProfileRequestDocument[] = [
-  { index: 0, label: 'umowa.pdf', role: 'contract_base', effectiveDate: null, contractExtraction: { hourlyRate: 15.55 } },
-  { index: 1, label: 'pasek.pdf', role: 'payslip', effectiveDate: null, payslip: { period: { period_label: 'week 10/2026' }, unreadableFieldPaths: [] } },
+  { index: 0, label: 'umowa.pdf', role: 'contract_base', effectiveDate: null, factBatches: [{ kind: 'contract', pages: [1], totalPages: 1 }] },
+  { index: 1, label: 'pasek.pdf', role: 'payslip', effectiveDate: null, factBatches: [{ kind: 'payslip', pages: [1], totalPages: 1 }] },
 ];
 
 test('P1.1 #9: re-resolving for a new as-of date calls only the pure profile endpoint, with the cached facts and the new date', async () => {
   const calls: Array<{ url: string; body: unknown }> = [];
   const fakeFetch = (async (url: string, init?: RequestInit) => {
     calls.push({ url, body: JSON.parse(String(init?.body)) });
-    return new Response(JSON.stringify({ profile: { ...profile({}, {}), asOfDate: '2026-10-01' } }), { status: 200 });
+    return new Response(JSON.stringify({ profile: { ...profile({}, {}), asOfDate: '2026-10-01' }, extractionTable: [{ key: 'contract.hourlyRate' }] }), { status: 200 });
   }) as typeof fetch;
   const resolved = await resolveProfile('2026-10-01', cachedDocuments, fakeFetch);
   assert.deepEqual(calls.map((c) => c.url), ['/api/profile/resolve'], 'exactly one call, to the pure resolver - no document-reading endpoint');
   assert.deepEqual(calls[0]?.body, { asOfDate: '2026-10-01', documents: cachedDocuments }, 'the already-read facts are sent unchanged, with the new date');
-  assert.equal(resolved?.asOfDate, '2026-10-01');
+  assert.equal(resolved?.profile.asOfDate, '2026-10-01');
+  assert.equal(resolved?.extractionTable.length, 1, 'P2: the extraction table comes back with the profile');
 });
 
 test('P1.1 #9: a failed re-resolve returns null (the caller shows an error, never the old profile)', async () => {
@@ -160,10 +150,38 @@ test('P1.1 #9: live ProDocuments re-resolves on an as-of date change from cached
   assert.ok(handler.includes('resolveProfile(value, resolvedDocuments)'), 'the handler re-resolves from the cached document facts with the new date');
   assert.ok(handler.includes('setProfile(null)'), 'the old profile is cleared at once - never shown under the new date');
   assert.ok(/setSubmitCount/.test(handler), 'the calculator remounts so its prefill follows the new profile');
-  for (const reread of ['processPayslip', 'processContract', 'renderPageImages', 'extractTextItems', '/api/tier-c/analyze', '/api/contracts/analyze']) {
+  for (const reread of ['readDocument', 'renderPageImages', 'readDocumentSource', '/api/pro/', '/api/tier-c/analyze', '/api/contracts/analyze']) {
     assert.ok(!handler.includes(reread), `the date handler must not re-read documents (${reread})`);
   }
   assert.ok(/type="date" value=\{asOfDate\} disabled=\{submitting\} onChange=\{\(event\) => changeAsOfDate\(event\.target\.value\)\}/.test(proDocumentsCode), 'the as-of date input goes through changeAsOfDate and is locked while documents are being read');
   assert.ok(proDocumentsCode.includes('setResolvedDocuments(profileDocuments)'), 'submitAll caches the facts it resolved');
   assert.ok(proDocumentsCode.includes('hasSubmitted && !resolvingProfile'), 'the calculator is not shown while a re-resolution is in flight');
+});
+
+// --- P2 ---------------------------------------------------------------------------------------
+
+test('P2.17 #18/#3: the live PRO read path uses the fact routes only - no Tier C reader, no contract-analysis (Groq) route', () => {
+  assert.ok(proDocumentsCode.includes('/api/pro/${kind}-facts'), 'documents are read through the PRO fact routes');
+  assert.ok(proDocumentsCode.includes('planDocumentBatches(source)'), 'every document is planned into page batches');
+  assert.ok(!proDocumentsCode.includes('/api/tier-c/analyze'), 'the whole-payslip reader is no longer on the PRO path');
+  assert.ok(!proDocumentsCode.includes('/api/contracts/analyze'), 'the contract route that adds Groq translation/explanation is no longer on the PRO path');
+  assert.ok(proDocumentsCode.includes("fetch('/api/pro/payslip-replay'"), 'the diagnostic replay is computed from the same facts, without a second read');
+});
+
+test('P2.4: a payslip whose replay is unavailable is still sent to the profile - only read status and its own facts decide', () => {
+  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveProfile(asOfDate, profileDocuments)'));
+  assert.ok(block.includes("e.status !== 'done' || !e.factBatches"), 'membership depends only on the document having been read');
+  for (const auditOrReplay of ['payslipBlocked', 'payslipAnalysis', 'discrepancies', 'needsConfirmation', 'confirmedIssueKeys']) {
+    assert.ok(!block.includes(auditOrReplay), `the profile request must not depend on ${auditOrReplay}`);
+  }
+  assert.ok(block.includes('factBatches: e.factBatches'));
+});
+
+test('P2.17 #15: local-ocr reads every page of a document; the old three-page cap applies only to callers that pass no pages', () => {
+  const ocr = readFileSync(path.join(here, 'local-ocr.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const source = ocr.slice(ocr.indexOf('export async function readDocumentSource'), ocr.indexOf('export async function photoWithinBudget'));
+  assert.ok(source.includes('pageNumber <= pdf.numPages'), 'text/page discovery covers every page');
+  assert.ok(!source.includes('Math.min(pdf.numPages, 3)'));
+  assert.ok(/const wanted = pageNumbers \?\? /.test(ocr), 'an explicit page list (PRO batches) is rendered as given');
+  assert.ok(proDocumentsCode.includes('renderPageImages(entry.file, hasTextLayer, batch.imagePages)'), 'PRO always passes the batch pages explicitly');
 });

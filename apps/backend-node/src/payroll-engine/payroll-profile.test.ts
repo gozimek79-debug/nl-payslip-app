@@ -5,11 +5,108 @@ import { computePayslipPeriod, known, unknownField, type HourLine, type PayslipC
 import { comparePeriodToDocument } from './discrepancy.js';
 import { checkExtractionConsistency } from './extraction-consistency.js';
 import type { ContractExtraction } from './contract.js';
+import {
+  PAYSLIP_SCALAR_KEYS, CONTRACT_SCALAR_KEYS, PAYSLIP_SCALAR_UNITS, CONTRACT_SCALAR_UNITS,
+  type PayslipDocumentFacts, type ContractDocumentFacts, type PayrollFact, type PayslipScalarKey, type ContractScalarKey, type LineIssue,
+} from './document-facts.js';
 
 /**
  * P1 (ZADANIE-P1-LOONTO-PRO.md §P1.8): the Payroll Profile resolver. Every fixture here is
  * synthetic - no real owner document, no AI call. Numbered tests map 1:1 onto §P1.8's list.
+ *
+ * P2: the resolver's input boundary is now document facts. These P1/P1.1 tests keep their original
+ * fixtures (a ContractExtraction / PayslipPeriod) and convert them with the two local helpers below
+ * into exactly the facts a clean read would produce (status exact, no page) - so every P1/P1.1
+ * assertion still runs against the same semantics. P2-specific evidence (pages, raw values,
+ * ambiguity, batches) is tested in payroll-profile.p2.test.ts.
  */
+
+function exactFact(key: string, unit: PayrollFact['unit'], value: string | number, printedLabel: string | null = null): PayrollFact {
+  return { key, unit, value, status: 'exact', reason: null, evidence: { page: null, line: null, printedLabel, rawValue: null } };
+}
+
+function emptyCoverage() {
+  return { totalPages: 1, processedPages: [1], notProcessedPages: [] };
+}
+
+const CONTRACT_EXTRACTION_KEYS: Partial<Record<ContractScalarKey, keyof ContractExtraction>> = {
+  employerName: 'employerName', contractType: 'contractType', functionTitle: 'functionTitle', caoName: 'caoName',
+  pensionFund: 'pensionFund', startDate: 'startDate', endDate: 'endDate', hourlyRate: 'hourlyRate', monthlySalary: 'monthlySalary',
+  hoursPerWeek: 'hoursPerWeek', guaranteedHours: 'guaranteedHours', guaranteedHoursPeriodWeeks: 'guaranteedHoursPeriodWeeks',
+  overtimeThresholdHours: 'overtimeTierThresholdHours',
+};
+
+function factsFromExtraction(ext: ContractExtraction): ContractDocumentFacts {
+  const scalars = {} as Record<ContractScalarKey, PayrollFact[]>;
+  for (const key of CONTRACT_SCALAR_KEYS) {
+    const source = CONTRACT_EXTRACTION_KEYS[key];
+    const value = source ? ext[source] : null;
+    scalars[key] = typeof value === 'number' || typeof value === 'string' ? [exactFact(`contract.${key}`, CONTRACT_SCALAR_UNITS[key], value)] : [];
+  }
+  return { kind: 'contract', coverage: emptyCoverage(), scalars, premiums: [], redactedFields: [] };
+}
+
+/** The facts a clean read of `p` produces. `unreadableFieldPaths` (P1's old field-level input)
+ * becomes the equivalent line issues / ambiguous facts. */
+function factsFromPeriod(p: PayslipPeriod, unreadableFieldPaths: string[] = []): PayslipDocumentFacts {
+  const unreadable = new Set(unreadableFieldPaths);
+  const amountIssue = (path: string): LineIssue[] => (unreadable.has(path) ? [{ field: 'amount', status: 'ambiguous', reason: 'reader_marked_ambiguous' }] : []);
+  const scalars = {} as Record<PayslipScalarKey, PayrollFact[]>;
+  for (const key of PAYSLIP_SCALAR_KEYS) scalars[key] = [];
+  const put = (key: PayslipScalarKey, value: string | number | null, label: string | null = null) => {
+    if (value !== null) scalars[key] = [exactFact(`payslip.${key}`, PAYSLIP_SCALAR_UNITS[key], value, label)];
+  };
+  put('periodLabel', p.period_label);
+  put('periodEnd', p.period_end_date);
+  if (p.period_type_confirmed) put('periodType', p.period_type);
+  else scalars.periodType = [{ key: 'payslip.periodType', unit: 'period_type', value: null, status: 'ambiguous', reason: 'reader_marked_ambiguous', evidence: { page: null, line: null, printedLabel: null, rawValue: null } }];
+  put('hirerName', p.hirer?.name ?? null);
+  put('bijzonderTariefPercent', p.bijzonder_tarief.tarief_bt.printed);
+  put('jaarloonBt', p.bijzonder_tarief.jaarloon_bt);
+  if (p.et?.et_applicable) {
+    if (unreadable.has('et.et_exchange_amount')) scalars.etExchangeAmount = [{ key: 'payslip.etExchangeAmount', unit: 'eur_per_period', value: null, status: 'ambiguous', reason: 'reader_marked_ambiguous', evidence: { page: null, line: null, printedLabel: null, rawValue: null } }];
+    else put('etExchangeAmount', p.et.et_exchange_amount);
+  }
+  put('minimumWagePrinted', p.wml_printed);
+  put('printedTableTax', p.printed_table_tax, p.printed_table_tax_label);
+  put('printedBtTax', p.printed_bt_tax, p.printed_bt_tax_label);
+  put('printedAlgemeneHeffingskorting', p.printed_algemene_heffingskorting, p.printed_algemene_heffingskorting_label);
+  put('printedArbeidskorting', p.printed_arbeidskorting, p.printed_arbeidskorting_label);
+  put('printedGrossTotal', p.printed_gross_total);
+  put('printedLoonVoorHeffingen', p.printed_loon_voor_heffingen);
+  put('printedTaxableBaseNormal', p.printed_taxable_base_normal);
+  put('printedTaxableBaseSpecial', p.printed_taxable_base_special);
+  put('printedNet', p.printed_net, p.printed_net_label);
+  put('printedPayout', p.printed_payout, p.printed_payout_label);
+  const ev = (label: string) => ({ page: null, line: null, printedLabel: label, rawValue: null });
+  return {
+    kind: 'payslip',
+    coverage: emptyCoverage(),
+    scalars,
+    employerNames: p.employers.filter((e) => e.name).map((e) => exactFact('payslip.employerName', 'text', e.name as string)),
+    hourLines: p.hour_lines.map((l, i) => ({
+      kind: l.category, addsHours: l.adds_hours, taxTreatment: l.tax_treatment, employerIndex: l.employer_index,
+      hours: l.hours, rate: l.rate, percent: l.percent, amount: unreadable.has(`hour_lines[${i}].amount`) ? null : l.amount,
+      explicitTier: null, tierWording: null, issues: amountIssue(`hour_lines[${i}].amount`), evidence: ev(l.description),
+    })),
+    deductionLines: [
+      ...p.pre_tax_deductions.map((d) => ({ placement: 'pre_tax' as const, category: d.category, percent: d.percent, base: d.base, amount: d.amount.value, issues: [], evidence: ev(d.description) })),
+      ...p.post_tax_social.map((d) => ({ placement: 'post_tax' as const, category: d.category, percent: d.percent, base: null, amount: d.amount.value, issues: [], evidence: ev(d.description) })),
+    ],
+    netLines: [
+      ...p.net_additions.map((l, i) => ({ category: l.category, amount: unreadable.has(`net_additions[${i}].amount`) ? null : l.amount, issues: amountIssue(`net_additions[${i}].amount`), evidence: ev(l.description) })),
+      ...p.net_deductions.map((l, i) => ({ category: l.category, amount: unreadable.has(`net_deductions[${i}].amount`) ? null : l.amount, issues: amountIssue(`net_deductions[${i}].amount`), evidence: ev(l.description) })),
+    ],
+    etReimbursementLines: (p.et?.et_reimbursements ?? []).map((l, i) => ({ amount: l.amount, issues: amountIssue(`et.et_reimbursements[${i}].amount`), evidence: ev(l.description) })),
+    payoutAdjustmentLines: p.payout_adjustments.map((l) => ({ amount: l.amount, issues: [], evidence: ev(l.description) })),
+    reservationLines: p.reservations.map((r, i) => ({
+      type: r.type, accrued: r.opgebouwd_this_period, paidOut: r.paid_out_this_period,
+      issues: unreadable.has(`reservations[${i}].opgebouwd_this_period`) ? [{ field: 'accrued' as const, status: 'ambiguous' as const, reason: 'reader_marked_ambiguous' as const }] : [],
+      evidence: ev(r.type),
+    })),
+    redactedFields: [],
+  };
+}
 
 function extraction(overrides: Partial<ContractExtraction> = {}): ContractExtraction {
   return {
@@ -44,13 +141,13 @@ function period(overrides: Partial<PayslipPeriod> = {}): PayslipPeriod {
 }
 
 function contractDoc(index: number, label: string, overrides: Partial<ContractExtraction>): ProfileDocumentInput {
-  return { index, label, role: 'contract_base', effectiveDate: null, contractExtraction: extraction(overrides) };
+  return { index, label, role: 'contract_base', effectiveDate: null, facts: factsFromExtraction(extraction(overrides)) };
 }
 function annexDoc(index: number, label: string, effectiveDate: string | null, overrides: Partial<ContractExtraction>): ProfileDocumentInput {
-  return { index, label, role: 'contract_annex', effectiveDate, contractExtraction: extraction(overrides) };
+  return { index, label, role: 'contract_annex', effectiveDate, facts: factsFromExtraction(extraction(overrides)) };
 }
 function payslipDoc(index: number, label: string, p: PayslipPeriod, unreadableFieldPaths: string[] = []): ProfileDocumentInput {
-  return { index, label, role: 'payslip', effectiveDate: null, payslip: { period: p, unreadableFieldPaths } };
+  return { index, label, role: 'payslip', effectiveDate: null, facts: factsFromPeriod(p, unreadableFieldPaths) };
 }
 
 const AS_OF = '2026-06-01';
@@ -283,10 +380,14 @@ test('P1.8 #14: unknown never silently becomes a default value', () => {
     if (field.state === 'unknown') assert.notEqual(field.reason, null, `${field.key} is unknown with no stated reason`);
   }
   assert.deepEqual(profile.employment.hourlyRate.reason, { code: 'not_on_documents' });
-  assert.deepEqual(profile.employment.hoursPerWeek.reason, { code: 'not_in_contract_extraction' });
-  assert.deepEqual(profile.payroll.overtimeTier1Premium.reason, { code: 'no_payslip_document' });
+  // P2: hours per week also takes payslip evidence (a printed contract-hours figure), so its empty reason is document-wide.
+  assert.deepEqual(profile.employment.hoursPerWeek.reason, { code: 'not_on_documents' });
+  assert.deepEqual(profile.employment.guaranteedHours.reason, { code: 'not_in_contract_extraction' });
+  // P2: a contract can now state an explicit tier, so the empty reason covers every document.
+  assert.deepEqual(profile.payroll.overtimeTier1Premium.reason, { code: 'not_on_documents' });
   assert.deepEqual(profile.payroll.loonheffingskorting.reason, { code: 'no_evidence_source' });
-  assert.deepEqual(profile.employment.phase.reason, { code: 'not_a_separate_extraction_field' });
+  // P2: the CAO phase is now its own extraction field; this contract does not print one.
+  assert.deepEqual(profile.employment.phase.reason, { code: 'not_in_contract_extraction' });
 });
 
 // --- further P1 semantics -------------------------------------------------------------------
@@ -385,7 +486,9 @@ test('P1.4: an unconfirmed period type is excluded; a payslip whose period type 
   const p = overtimePeriod({ period_type_confirmed: false });
   const profile = resolvePayrollProfile({ asOfDate: AS_OF, documents: [payslipDoc(0, 'pasek.pdf', p)] });
   assert.equal(profile.payroll.periodType.state, 'unknown');
-  assert.equal(profile.payroll.periodType.excluded[0]?.reason, 'period_type_unconfirmed');
+  // P2: an unreadable period type is an ambiguous fact like any other; only periodType is affected.
+  assert.equal(profile.payroll.periodType.excluded[0]?.reason, 'ambiguous_on_document');
+  assert.equal(profile.payroll.periodType.excluded[0]?.factReason, 'reader_marked_ambiguous');
   assert.deepEqual(observed(profile).map(([v]) => v), [25, 50]);
   assert.equal(profile.observedOvertimePremiums.fields[0]?.sources[0]?.payPeriod?.periodType, null);
 });

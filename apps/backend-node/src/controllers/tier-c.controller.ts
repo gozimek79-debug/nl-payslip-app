@@ -125,7 +125,7 @@ const aiRateLimit = ipRateLimit('tier-c-ai', 10, 300, 'deny');
 // carries a concrete period_type by type) only reach this function once a real period type is known.
 // The old `periodType ?? 'week'` default lived here and is gone; there is no longer a call site where
 // an unknown period type silently becomes a computed rate.
-async function fetchRates(periodType: TierCPeriodType): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
+export async function fetchRates(periodType: TierCPeriodType): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
   const rawDbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
   const dbRates = rawDbRates && isCompleteTaxRatesFile(rawDbRates) ? rawDbRates : null;
   const staticRates = dbRates ? null : loadStaticTaxRatesAt(new Date());
@@ -143,7 +143,7 @@ async function fetchRates(periodType: TierCPeriodType): Promise<{ rates: Payslip
 
 // Resolves the payslip's own reference date for the minimum-wage rules-DB lookup (audit BP1 point
 // 4/N4) - falls back to today only when the extraction could not read a usable period-end date.
-function resolveReferenceDate(periodEndDate: string | null): Date {
+export function resolveReferenceDate(periodEndDate: string | null): Date {
   if (periodEndDate) {
     const parsed = new Date(periodEndDate);
     if (!Number.isNaN(parsed.getTime())) return parsed;

@@ -147,11 +147,14 @@ async function pdfPages(file: File): Promise<Blob[]> {
  * it, stepping down (quality first, then scale) until the total fits under `TARGET_MAX_BYTES` or the
  * step list is exhausted (the floor is used regardless, rather than failing the upload outright).
  */
-async function renderPdfPages(file: File, hasTextLayer: boolean): Promise<{ blobs: Blob[]; renderStep: string }> {
+async function renderPdfPages(file: File, hasTextLayer: boolean, pageNumbers?: number[]): Promise<{ blobs: Blob[]; renderStep: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const pdf = await getDocument({ data: bytes }).promise;
-  const pageCount = Math.min(pdf.numPages, 3);
-  const pages = await Promise.all(Array.from({ length: pageCount }, (_, i) => pdf.getPage(i + 1)));
+  // P2 (§P2.9): PRO passes the exact 1-based pages of one batch - every page of a document is read
+  // across its batches. Callers that pass nothing (Analiza, the retired Tier B/C screens) keep their
+  // existing first-three-pages behaviour unchanged; that legacy cap is reported, not hidden.
+  const wanted = pageNumbers ?? Array.from({ length: Math.min(pdf.numPages, 3) }, (_, i) => i + 1);
+  const pages = await Promise.all(wanted.filter((n) => n >= 1 && n <= pdf.numPages).map((n) => pdf.getPage(n)));
 
   // Stage 2j (§2j.3): the SAME decision `render-step-policy.test.ts` exercises under plain Node - never
   // a second, inline re-derivation of "which step(s) apply" that could drift from what was tested.
@@ -181,11 +184,11 @@ async function renderPdfPages(file: File, hasTextLayer: boolean): Promise<{ blob
  *
  * Stage 2i (§2i.0d): `hasTextLayer` picks the fixed low-cost setting or the adaptive, measured one -
  * see `renderPdfPages`. `renderStep` is returned so the caller can report it on the technical line. */
-export async function renderPageImages(file: File, hasTextLayer: boolean): Promise<{ images: string[]; renderStep: string }> {
+export async function renderPageImages(file: File, hasTextLayer: boolean, pageNumbers?: number[]): Promise<{ images: string[]; renderStep: string }> {
   if (file.type !== 'application/pdf') {
     return { images: [await blobToBase64(file)], renderStep: 'non-pdf' };
   }
-  const { blobs, renderStep } = await renderPdfPages(file, hasTextLayer);
+  const { blobs, renderStep } = await renderPdfPages(file, hasTextLayer, pageNumbers);
   const images = await Promise.all(blobs.map((blob) => blobToBase64(blob)));
   return { images, renderStep };
 }
@@ -245,4 +248,83 @@ export async function recognizePayslip(file: File, onProgress: (progress: number
   } finally {
     await worker.terminate();
   }
+}
+
+/**
+ * P2 (ZADANIE-P2-LOONTO-PRO.md §P2.8/§P2.9): what the PRO reader needs to plan a document's page
+ * batches - its page count and its embedded text, page by page, as reading-order lines (items on the
+ * same baseline joined left to right). EVERY page is read here; nothing is capped. A photo/image file
+ * is one page with no text layer.
+ */
+export interface DocumentSource {
+  isPdf: boolean;
+  pageCount: number;
+  /** Page-indexed text lines (1-based pages), empty for a scan or a photo. */
+  lines: Array<{ page: number; text: string }>;
+  /** Embedded text items per page (index 0 = page 1). */
+  itemsPerPage: number[];
+  /** Characters of text per page (index 0 = page 1). */
+  charsPerPage: number[];
+}
+
+export async function readDocumentSource(file: File): Promise<DocumentSource> {
+  if (file.type !== 'application/pdf') return { isPdf: false, pageCount: 1, lines: [], itemsPerPage: [0], charsPerPage: [0] };
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await getDocument({ data: bytes }).promise;
+  const lines: Array<{ page: number; text: string }> = [];
+  const itemsPerPage: number[] = [];
+  const charsPerPage: number[] = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const rows = new Map<number, Array<{ x: number; text: string }>>();
+    let items = 0;
+    for (const raw of content.items) {
+      if (!('str' in raw) || typeof raw.str !== 'string') continue;
+      const item = raw as TextItem;
+      const text = item.str.trim();
+      if (text === '') continue;
+      items += 1;
+      const y = Math.round(item.transform[5] ?? 0);
+      const row = rows.get(y) ?? [];
+      row.push({ x: Math.round(item.transform[4] ?? 0), text });
+      rows.set(y, row);
+    }
+    let chars = 0;
+    for (const y of [...rows.keys()].sort((a, b) => b - a)) {
+      const text = (rows.get(y) ?? []).sort((a, b) => a.x - b.x).map((r) => r.text).join(' ').slice(0, 1000);
+      chars += text.length;
+      lines.push({ page: pageNumber, text });
+    }
+    itemsPerPage.push(items);
+    charsPerPage.push(chars);
+  }
+  return { isPdf: true, pageCount: pdf.numPages, lines, itemsPerPage, charsPerPage };
+}
+
+/** P2 (§P2.8): a phone photo can be far larger than one request may carry (Vercel's 4.5 MB body
+ * limit). Re-encode it as JPEG, stepping down quality and then size until it fits the same budget the
+ * PDF image ladder uses - the one image is the only source of a photo, so it starts high. */
+const PHOTO_STEPS: Array<{ maxSide: number; quality: number }> = [
+  { maxSide: 2400, quality: 0.9 }, { maxSide: 2400, quality: 0.75 }, { maxSide: 1800, quality: 0.75 }, { maxSide: 1400, quality: 0.6 },
+];
+
+export async function photoWithinBudget(file: File): Promise<{ image: string; renderStep: string }> {
+  if (file.size <= TARGET_MAX_BYTES * 0.7) return { image: await blobToBase64(file), renderStep: 'non-pdf' };
+  const bitmap = await createImageBitmap(file);
+  let last: Blob | null = null;
+  let lastStep = 'photo-floor';
+  for (const step of PHOTO_STEPS) {
+    const scale = Math.min(1, step.maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) throw new Error('Przeglądarka nie może przygotować zdjęcia.');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    last = await new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Nie udało się przetworzyć zdjęcia.'))), 'image/jpeg', step.quality));
+    lastStep = `photo-${step.maxSide}-${step.quality}`;
+    if (last.size <= TARGET_MAX_BYTES * 0.7) break;
+  }
+  return { image: await blobToBase64(last as Blob), renderStep: lastStep };
 }

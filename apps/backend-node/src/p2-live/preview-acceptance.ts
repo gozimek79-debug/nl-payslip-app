@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { FactReadRequest } from '../ai-service/gemini-client.js';
+import type { FactReadRequest, FactReadOptions } from '../ai-service/gemini-client.js';
 import type { PayslipFactsBatch, ContractFactsBatch } from '../payroll-engine/document-facts.js';
+import type { OneShotStore } from './one-shot-store.js';
 
 /**
  * P2 LIVE (ZADANIE-P2-LIVE-VERCEL.md) - TEMPORARY core of the Preview-only acceptance runner
@@ -11,8 +12,12 @@ import type { PayslipFactsBatch, ContractFactsBatch } from '../payroll-engine/do
  * - it never reads the environment: the handler passes only the facts the gate needs (environment name,
  *   whether a key is configured, the resolved model) - never a value;
  * - the only documents it can send are the frozen synthetic read requests (integrity-checked by hash);
+ * - ONE authorized run in total: before Gemini call #1 the run atomically claims an external one-shot lock
+ *   (`authorizeRun`); a repeated, concurrent or retried request - or any store failure - is refused first;
  * - every Gemini request takes a slot from a 7-slot budget first - call #8 is refused, nothing retries;
- * - no new call starts after the first failure;
+ * - a timeout aborts the request itself (the signal reaches `fetch`) and the runner waits for it to settle,
+ *   so no request can finish later in the background;
+ * - no new call starts after the first failure or timeout;
  * - it emits only allowlisted fields: call metadata and the mapped synthetic fact batch - never an error
  *   message (a transport error can carry a URL), a header or an environment value.
  */
@@ -23,6 +28,18 @@ export const MAX_GEMINI_CALLS = 7;
 export const RUNNER_EXPIRES_AT = '2026-10-02T23:15:00Z';
 export const CONFIRM_HEADER = 'x-p2-live-confirm';
 export const CONFIRM_VALUE = 'run-synthetic-corpus-once';
+/**
+ * The identity of the ONE authorized live acceptance run. Fixed in reviewed source and deliberately NOT
+ * derived from the commit or deployment, so a redeploy or the later expiry-only commit cannot mint a
+ * fresh run. Changed only on a new explicit CTO approval of a second run.
+ */
+export const P2_LIVE_RUN_ID = 'p2-live-acceptance-2026-10-a';
+/** The lock marker outlives the disposable (72 h) lock database itself; it is never released. */
+export const ONE_SHOT_TTL_SECONDS = 72 * 60 * 60;
+
+export function oneShotKey(corpusSha256: string): string {
+  return `loonto:p2-live:${P2_LIVE_RUN_ID}:${corpusSha256}`;
+}
 /** The one synthetic corpus this runner may read (scripts/p2-reference/generate-corpus.mjs) and each document's reader. */
 export const SYNTHETIC_DOCUMENTS = {
   'payslip-text': 'payslip',
@@ -63,6 +80,8 @@ export interface RuntimeFacts {
   model: string;
   /** Presence only of the temporary dummy variable proving a value-less env edit keeps a Sensitive value. */
   sensitivePatchProbePresent: boolean;
+  /** Whether both one-shot lock store settings are present (never their values). */
+  oneShotStoreConfigured: boolean;
   now: Date;
 }
 
@@ -85,6 +104,8 @@ export function preflight(rt: RuntimeFacts, requests: FrozenRequest[], corpusSha
     environment: KNOWN_ENVIRONMENTS.includes(rt.vercelEnv ?? '') ? rt.vercelEnv : 'unknown',
     geminiKeyPresent: rt.geminiKeyPresent,
     sensitivePatchProbePresent: rt.sensitivePatchProbePresent,
+    oneShotStoreConfigured: rt.oneShotStoreConfigured,
+    runId: P2_LIVE_RUN_ID,
     model: rt.model,
     modelLocked: rt.model === EXPECTED_MODEL,
     plannedCalls: requests.length,
@@ -95,6 +116,45 @@ export function preflight(rt: RuntimeFacts, requests: FrozenRequest[], corpusSha
     corpus: requests.map((r) => ({ seq: r.seq, doc: r.doc, kind: r.kind, pages: r.pages, imagePages: r.imagePages, images: r.images.length, textLines: r.textLines.length })),
     gate: gate(rt, requests.length) ?? 'ready',
   };
+}
+
+export type RunRefusal =
+  | { status: 403; refused: 'not_preview' }
+  | { status: 405; refused: 'method_not_allowed' }
+  | { status: 400; refused: 'confirmation_missing' }
+  | { status: 412; refused: Exclude<GateRefusal, 'not_preview'> | 'one_shot_store_not_configured' }
+  | { status: 409; refused: 'run_already_consumed' }
+  | { status: 503; refused: 'one_shot_store_unavailable' };
+
+/**
+ * Decides whether this POST may start the run. Every cheap check runs first, so an invalid request, a
+ * missing key, a wrong model, an expired runner or a missing store never consumes the one-shot; then the
+ * lock is claimed atomically, and only an explicit 'acquired' lets the run (Gemini call #1) begin. A store
+ * error, timeout or unexpected reply fails closed. Preflight (GET) never comes here.
+ */
+export async function authorizeRun(p: {
+  rt: RuntimeFacts;
+  method: string | undefined;
+  confirmation: string | string[] | undefined;
+  plannedCalls: number;
+  corpusSha256: string;
+  store: OneShotStore | null;
+}): Promise<{ ok: true } | ({ ok: false } & RunRefusal)> {
+  if (p.rt.vercelEnv !== 'preview') return { ok: false, status: 403, refused: 'not_preview' };
+  if (p.method !== 'POST') return { ok: false, status: 405, refused: 'method_not_allowed' };
+  if (p.confirmation !== CONFIRM_VALUE) return { ok: false, status: 400, refused: 'confirmation_missing' };
+  const refusal = gate(p.rt, p.plannedCalls);
+  if (refusal && refusal !== 'not_preview') return { ok: false, status: 412, refused: refusal };
+  if (!p.rt.oneShotStoreConfigured || !p.store) return { ok: false, status: 412, refused: 'one_shot_store_not_configured' };
+  let claim: unknown;
+  try {
+    claim = await p.store.acquire(oneShotKey(p.corpusSha256), ONE_SHOT_TTL_SECONDS);
+  } catch {
+    return { ok: false, status: 503, refused: 'one_shot_store_unavailable' };
+  }
+  if (claim === 'already_consumed') return { ok: false, status: 409, refused: 'run_already_consumed' };
+  if (claim !== 'acquired') return { ok: false, status: 503, refused: 'one_shot_store_unavailable' };
+  return { ok: true };
 }
 
 /** Hands out at most `max` call slots; the slot is taken BEFORE the request is sent. */
@@ -111,20 +171,13 @@ export class CallBudget {
   }
 }
 
-export type FactReader = (req: FactReadRequest) => Promise<PayslipFactsBatch | ContractFactsBatch>;
+export type FactReader = (req: FactReadRequest, options: FactReadOptions) => Promise<PayslipFactsBatch | ContractFactsBatch>;
 
 export type ErrorKind = 'http' | 'no_content' | 'invalid_json' | 'network' | 'timeout' | 'other';
 export interface SanitizedError {
   name: string;
   kind: ErrorKind;
   httpStatus: number | null;
-}
-
-class RunnerWaitTimeout extends Error {
-  constructor() {
-    super('runner wait timeout');
-    this.name = 'TimeoutError';
-  }
 }
 
 const ERROR_NAMES = ['Error', 'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'TimeoutError'];
@@ -134,8 +187,7 @@ export function sanitizeError(error: unknown): SanitizedError {
   const name = error instanceof Error && ERROR_NAMES.includes(error.name) ? error.name : 'Error';
   const message = error instanceof Error ? error.message : '';
   const status = /\bHTTP (\d{3})\b/.exec(message);
-  const kind: ErrorKind = error instanceof RunnerWaitTimeout ? 'timeout'
-    : status ? 'http'
+  const kind: ErrorKind = status ? 'http'
     : message.startsWith('Gemini returned no extractable content') ? 'no_content'
     : error instanceof SyntaxError ? 'invalid_json'
     : error instanceof TypeError && message === 'fetch failed' ? 'network'
@@ -155,7 +207,7 @@ export interface RunDeps {
   model: () => string;
   emit: (event: RunEvent) => void;
   now?: () => number;
-  /** Longest wait for one reader call before the runner gives up on it and stops. */
+  /** Longest one reader call may run before the runner aborts it (the abort cancels the request itself). */
   callWaitMs?: number;
   /** Wall-clock budget of the whole run (the function's maxDuration is 300 s). */
   runBudgetMs?: number;
@@ -167,8 +219,9 @@ export interface RunDeps {
 /**
  * Runs the frozen plan once. The first request is a canary sent alone (it surfaces a key, model or quota
  * failure after one call); the remaining requests then run as one sequential chain per document, the
- * chains concurrently, so the run fits the 300 s function limit. A failure anywhere stops every chain
- * before its next call; calls already in flight finish and are reported.
+ * chains concurrently, so the run fits the 300 s function limit. A failure or timeout anywhere stops every
+ * chain before its next call; calls already in flight finish (a timed-out one is cancelled) and are
+ * reported - the end event is emitted only after every started request has settled.
  */
 export async function runAcceptance(requests: FrozenRequest[], deps: RunDeps): Promise<Extract<RunEvent, { type: 'end' }>> {
   const now = deps.now ?? Date.now;
@@ -198,22 +251,36 @@ export async function runAcceptance(requests: FrozenRequest[], deps: RunDeps): P
     }
     const read = r.kind === 'payslip' ? deps.readPayslip : deps.readContract;
     const request: FactReadRequest = { images: r.images, imagePages: r.imagePages, pages: r.pages, totalPages: r.totalPages, textLines: r.textLines };
+    const label = `${r.doc} pages ${r.pages.join(',')}`;
+    const controller = new AbortController();
     const started = now();
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    // On timeout: stop every chain at once, then cancel the request itself; the same reader promise is
+    // still awaited below, so it settles here and never completes later in the background.
+    const timer = setTimeout(() => {
+      stoppedBy = stoppedBy ?? `${label} timeout`;
+      controller.abort();
+    }, Math.min(callWaitMs, left));
+    let settled: { batch: PayslipFactsBatch | ContractFactsBatch } | { error: unknown };
     try {
-      const batch = await Promise.race([
-        read(request),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new RunnerWaitTimeout()), Math.min(callWaitMs, left)); }),
-      ]);
-      callsOk += 1;
-      deps.emit({ type: 'call', seq: r.seq, doc: r.doc, kind: r.kind, pages: r.pages, imagePages: r.imagePages, callNumber, model: deps.model(), ms: now() - started, outcome: 'ok', error: null, batch });
+      settled = { batch: await read(request, { signal: controller.signal }) };
     } catch (error) {
-      callsFailed += 1;
-      const safe = sanitizeError(error);
-      stoppedBy = stoppedBy ?? `${r.doc} pages ${r.pages.join(',')} ${safe.kind}${safe.httpStatus ? ` ${safe.httpStatus}` : ''}`;
-      deps.emit({ type: 'call', seq: r.seq, doc: r.doc, kind: r.kind, pages: r.pages, imagePages: r.imagePages, callNumber, model: deps.model(), ms: now() - started, outcome: 'failed', error: safe, batch: null });
+      settled = { error };
     } finally {
       clearTimeout(timer);
+    }
+    const base = { type: 'call' as const, seq: r.seq, doc: r.doc, kind: r.kind, pages: r.pages, imagePages: r.imagePages, callNumber, model: deps.model(), ms: now() - started };
+    if (controller.signal.aborted) {
+      // Whatever the aborted request settled with, a timed-out call never reports a result.
+      callsFailed += 1;
+      deps.emit({ ...base, outcome: 'failed', error: { name: 'AbortError', kind: 'timeout', httpStatus: null }, batch: null });
+    } else if ('batch' in settled) {
+      callsOk += 1;
+      deps.emit({ ...base, outcome: 'ok', error: null, batch: settled.batch });
+    } else {
+      callsFailed += 1;
+      const safe = sanitizeError(settled.error);
+      stoppedBy = stoppedBy ?? `${label} ${safe.kind}${safe.httpStatus ? ` ${safe.httpStatus}` : ''}`;
+      deps.emit({ ...base, outcome: 'failed', error: safe, batch: null });
     }
   };
 

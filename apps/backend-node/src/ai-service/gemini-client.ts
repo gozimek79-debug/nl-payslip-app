@@ -50,7 +50,9 @@ interface GeminiCallResult {
   finishReason?: string;
 }
 
-async function callGemini(promptText: string, imageDataUrls: string[], schema: unknown): Promise<GeminiCallResult> {
+/** `signal` is optional cancellation only: without one the request behaves exactly as before. With one,
+ * aborting it cancels the actual network request (and the body read), so nothing finishes later. */
+async function callGemini(promptText: string, imageDataUrls: string[], schema: unknown, signal?: AbortSignal): Promise<GeminiCallResult> {
   if (!isGeminiConfigured()) throw new Error('GEMINI_API_KEY is not configured.');
   const apiKey = process.env.GEMINI_API_KEY as string;
   const model = geminiModel();
@@ -68,6 +70,7 @@ async function callGemini(promptText: string, imageDataUrls: string[], schema: u
       contents: [{ parts: [{ text: promptText }, ...imageParts] }],
       generationConfig: { response_mime_type: 'application/json', response_schema: schema },
     }),
+    ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw new Error(`Gemini generateContent call failed: HTTP ${res.status}`);
   const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }> };
@@ -138,12 +141,17 @@ function factPrompt(basePrompt: string, kind: 'payslip' | 'contract', req: FactR
   return [basePrompt, `\n\n${batchInstruction(kind, req.pages, req.totalPages, req.imagePages)}`, ...(textBlock ? [textBlock] : [])].join('\n');
 }
 
-export async function extractPayslipFacts(req: FactReadRequest): Promise<PayslipFactsBatch> {
-  const result = await callGemini(factPrompt(PAYSLIP_FACTS_PROMPT, 'payslip', req), req.images, toGeminiResponseSchema(PAYSLIP_FACTS_SCHEMA));
+/** Optional per-call cancellation (P2 LIVE.1, Cursor P2LR-02); callers that pass nothing are unchanged. */
+export interface FactReadOptions {
+  signal?: AbortSignal;
+}
+
+export async function extractPayslipFacts(req: FactReadRequest, options: FactReadOptions = {}): Promise<PayslipFactsBatch> {
+  const result = await callGemini(factPrompt(PAYSLIP_FACTS_PROMPT, 'payslip', req), req.images, toGeminiResponseSchema(PAYSLIP_FACTS_SCHEMA), options.signal);
   return mapPayslipFactsResponse(JSON.parse(result.text) as unknown, req.pages, req.totalPages);
 }
 
-export async function extractContractFacts(req: FactReadRequest): Promise<ContractFactsBatch> {
-  const result = await callGemini(factPrompt(CONTRACT_FACTS_PROMPT, 'contract', req), req.images, toGeminiResponseSchema(CONTRACT_FACTS_SCHEMA));
+export async function extractContractFacts(req: FactReadRequest, options: FactReadOptions = {}): Promise<ContractFactsBatch> {
+  const result = await callGemini(factPrompt(CONTRACT_FACTS_PROMPT, 'contract', req), req.images, toGeminiResponseSchema(CONTRACT_FACTS_SCHEMA), options.signal);
   return mapContractFactsResponse(JSON.parse(result.text) as unknown, req.pages, req.totalPages);
 }

@@ -25,7 +25,7 @@ import type { OneShotStore } from './one-shot-store.js';
 export const EXPECTED_MODEL = 'gemini-3.1-pro-preview';
 export const MAX_GEMINI_CALLS = 7;
 /** After this instant the runner refuses to run, so the immutable Preview deployment cannot be reused. */
-export const RUNNER_EXPIRES_AT = '2026-10-04T14:00:00Z';
+export const RUNNER_EXPIRES_AT = '2026-10-05T12:00:00Z';
 export const CONFIRM_HEADER = 'x-p2-live-confirm';
 export const CONFIRM_VALUE = 'run-synthetic-corpus-once';
 /**

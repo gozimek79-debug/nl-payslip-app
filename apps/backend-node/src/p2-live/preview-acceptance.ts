@@ -25,7 +25,7 @@ import type { OneShotStore } from './one-shot-store.js';
 export const EXPECTED_MODEL = 'gemini-3.1-pro-preview';
 export const MAX_GEMINI_CALLS = 7;
 /** After this instant the runner refuses to run, so the immutable Preview deployment cannot be reused. */
-export const RUNNER_EXPIRES_AT = '2026-10-04T01:30:00Z';
+export const RUNNER_EXPIRES_AT = '2026-10-04T14:00:00Z';
 export const CONFIRM_HEADER = 'x-p2-live-confirm';
 export const CONFIRM_VALUE = 'run-synthetic-corpus-once';
 /**
@@ -39,6 +39,18 @@ export const ONE_SHOT_TTL_SECONDS = 72 * 60 * 60;
 
 export function oneShotKey(corpusSha256: string): string {
   return `loonto:p2-live:${P2_LIVE_RUN_ID}:${corpusSha256}`;
+}
+
+/**
+ * P2 LIVE.6: SHA-256 of the deterministic, NON-secret dummy marker stored in the Sensitive Vercel variable
+ * `P2_PATCH_PROBE`. Comparing against it proves - as a boolean only - that a value-less metadata edit kept
+ * the exact stored value. Only the dummy is ever hashed; no real secret is.
+ */
+export const P2_PATCH_PROBE_EXPECTED_SHA256 = '49a543a49cec921d3f93e4d8eb08e4ea399e1446255d9c71cdf1490a86b870f7';
+
+export function patchProbeMatches(probeValue: string | undefined): boolean {
+  return typeof probeValue === 'string' && probeValue.length > 0
+    && createHash('sha256').update(probeValue).digest('hex') === P2_PATCH_PROBE_EXPECTED_SHA256;
 }
 /** The one synthetic corpus this runner may read (scripts/p2-reference/generate-corpus.mjs) and each document's reader. */
 export const SYNTHETIC_DOCUMENTS = {
@@ -80,6 +92,8 @@ export interface RuntimeFacts {
   model: string;
   /** Presence only of the temporary dummy variable proving a value-less env edit keeps a Sensitive value. */
   sensitivePatchProbePresent: boolean;
+  /** Whether that dummy's value hashes to `P2_PATCH_PROBE_EXPECTED_SHA256` (never the value or its hash). */
+  sensitivePatchProbeMatches: boolean;
   /** Whether both one-shot lock store settings are present (never their values). */
   oneShotStoreConfigured: boolean;
   now: Date;
@@ -104,6 +118,7 @@ export function preflight(rt: RuntimeFacts, requests: FrozenRequest[], corpusSha
     environment: KNOWN_ENVIRONMENTS.includes(rt.vercelEnv ?? '') ? rt.vercelEnv : 'unknown',
     geminiKeyPresent: rt.geminiKeyPresent,
     sensitivePatchProbePresent: rt.sensitivePatchProbePresent,
+    sensitivePatchProbeMatches: rt.sensitivePatchProbeMatches,
     oneShotStoreConfigured: rt.oneShotStoreConfigured,
     runId: P2_LIVE_RUN_ID,
     model: rt.model,

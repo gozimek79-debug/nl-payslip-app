@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   CallBudget, EXPECTED_MODEL, MAX_GEMINI_CALLS, RUNNER_EXPIRES_AT, gate, loadFrozenRequests, preflight, runAcceptance, sanitizeError,
-  authorizeRun, oneShotKey, CONFIRM_VALUE, ONE_SHOT_TTL_SECONDS, P2_LIVE_RUN_ID,
+  authorizeRun, oneShotKey, CONFIRM_VALUE, ONE_SHOT_TTL_SECONDS, P2_LIVE_RUN_ID, patchProbeMatches, P2_PATCH_PROBE_EXPECTED_SHA256,
   type FrozenRequest, type RunEvent, type RuntimeFacts,
 } from './preview-acceptance.js';
 import { upstashOneShotStore, OneShotStoreError, type OneShotStore, type AcquireResult } from './one-shot-store.js';
@@ -19,7 +19,7 @@ import { extractPayslipFacts, extractContractFacts, type FactReadRequest, type F
 
 const SECRET = 'test-only-fake-key-value-must-never-leave';
 const before = new Date(Date.parse(RUNNER_EXPIRES_AT) - 60_000);
-const ready: RuntimeFacts = { vercelEnv: 'preview', geminiKeyPresent: true, model: EXPECTED_MODEL, sensitivePatchProbePresent: false, oneShotStoreConfigured: true, now: before };
+const ready: RuntimeFacts = { vercelEnv: 'preview', geminiKeyPresent: true, model: EXPECTED_MODEL, sensitivePatchProbePresent: false, sensitivePatchProbeMatches: false, oneShotStoreConfigured: true, now: before };
 const frozen = () => loadFrozenRequests(FROZEN_REQUESTS_JSON, FROZEN_REQUESTS_SHA256);
 
 function fakeReaders(fail?: (seq: number) => Error | null) {
@@ -458,4 +458,50 @@ test('P2 LIVE.3 source assertion: the lock adapter logs nothing, reads no enviro
   const handler = readFileSync(new URL('../../../../api/p2-live-acceptance.ts', import.meta.url), 'utf-8');
   assert.equal(handler.split('process.env.P2_LOCK_REDIS_TOKEN').length, 3, 'the token is read for the presence boolean and for the adapter, nowhere else');
   assert.ok(handler.indexOf('authorizeRun(') < handler.indexOf('runAcceptance('), 'the run starts only after authorization');
+});
+
+// --- P2 LIVE.6 (ZADANIE-P2-LIVE.6-PROBE-EXPIRY.md §3/§4): dummy-probe exact-value proof, boolean only ---
+
+const PROBE_MARKER = 'p2-patch-probe-v1-cd99a44d3600da9e5fb52ebb5eddaf76a297f47af879bd6ad84f48604f4fe830';
+
+test('P2 LIVE.6 probe #1-#3: the exact dummy marker matches; any other value or a missing value does not', () => {
+  assert.equal(createHash('sha256').update(PROBE_MARKER).digest('hex'), P2_PATCH_PROBE_EXPECTED_SHA256, 'the committed hash is the task-defined marker hash');
+  assert.equal(patchProbeMatches(PROBE_MARKER), true);
+  for (const other of [`${PROBE_MARKER} `, PROBE_MARKER.toUpperCase(), PROBE_MARKER.slice(0, -1), 'p2-patch-probe-v1', P2_PATCH_PROBE_EXPECTED_SHA256]) {
+    assert.equal(patchProbeMatches(other), false, 'a different value never matches');
+  }
+  for (const missing of [undefined, '']) {
+    assert.equal(Boolean(missing), false, 'presence is false for a missing probe');
+    assert.equal(patchProbeMatches(missing), false, 'and so is the match');
+  }
+});
+
+test('P2 LIVE.6 probe #4/#5: the preflight carries two booleans only - never the marker or any hash of it', () => {
+  for (const [present, matches] of [[true, true], [true, false], [false, false]] as const) {
+    const pre = preflight({ ...ready, sensitivePatchProbePresent: present, sensitivePatchProbeMatches: matches }, frozen(), FROZEN_REQUESTS_SHA256);
+    assert.deepEqual([pre.sensitivePatchProbePresent, pre.sensitivePatchProbeMatches], [present, matches]);
+    assert.equal(typeof pre.sensitivePatchProbeMatches, 'boolean');
+    const json = JSON.stringify(pre);
+    for (const forbidden of [PROBE_MARKER, 'p2-patch-probe', P2_PATCH_PROBE_EXPECTED_SHA256, 'P2_PATCH_PROBE']) assert.ok(!json.includes(forbidden), `preflight must not contain ${forbidden}`);
+  }
+});
+
+test('P2 LIVE.6 probe #7: POST authorization ignores the probe - same decision whether it matches or not', async () => {
+  for (const matches of [true, false]) {
+    const lock = atomicFakeStore();
+    assert.deepEqual(await authorizeRun({ rt: { ...ready, sensitivePatchProbePresent: matches, sensitivePatchProbeMatches: matches }, method: 'POST', confirmation: CONFIRM_VALUE, plannedCalls: 7, corpusSha256: FROZEN_REQUESTS_SHA256, store: lock.store }), { ok: true });
+    assert.deepEqual(await authorizeRun({ rt: { ...ready, geminiKeyPresent: false, sensitivePatchProbeMatches: matches }, method: 'POST', confirmation: CONFIRM_VALUE, plannedCalls: 7, corpusSha256: FROZEN_REQUESTS_SHA256, store: lock.store }), { ok: false, status: 412, refused: 'gemini_key_missing' });
+  }
+});
+
+test('P2 LIVE.6 probe #6/#8/#9 source assertion: only the dummy is hashed, in the handler, and GET returns before any lock or reader', () => {
+  const handler = readFileSync(new URL('../../../../api/p2-live-acceptance.ts', import.meta.url), 'utf-8');
+  const core = readFileSync(new URL('../../src/p2-live/preview-acceptance.ts', import.meta.url), 'utf-8');
+  assert.equal([...handler.matchAll(/patchProbeMatches\(([^)]*)\)/g)].map((m) => m[1]).join('|'), 'process.env.P2_PATCH_PROBE', 'the hash check receives the dummy and nothing else');
+  assert.equal(handler.split('process.env.P2_PATCH_PROBE').length, 3, 'the dummy is read for presence and for the match, nowhere else');
+  assert.ok(!/createHash/.test(handler), 'the handler hashes nothing itself');
+  assert.equal(core.split('createHash(').length, 3, 'the core hashes only the frozen corpus and the dummy probe');
+  const getBranch = handler.indexOf("req.method === 'GET'");
+  assert.ok(getBranch > 0 && getBranch < handler.indexOf('authorizeRun(') && getBranch < handler.indexOf('runAcceptance('), 'GET returns the preflight before the lock and before any reader');
+  assert.ok(!/Object\.(keys|entries|values)\(process\.env|\.\.\.process\.env|JSON\.stringify\(process\.env/.test(handler + core), 'no environment enumeration');
 });

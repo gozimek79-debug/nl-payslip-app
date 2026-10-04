@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extractPayslipFacts, extractContractFacts, geminiModel } from '../apps/backend-node/src/ai-service/gemini-client.js';
 import {
-  CONFIRM_HEADER, authorizeRun, loadFrozenRequests, preflight, runAcceptance, type FrozenRequest, type RuntimeFacts,
+  CONFIRM_HEADER, authorizeRun, loadFrozenRequests, patchProbeMatches, preflight, runAcceptance, type FrozenRequest, type RuntimeFacts,
 } from '../apps/backend-node/src/p2-live/preview-acceptance.js';
 import { upstashOneShotStore, type OneShotStore } from '../apps/backend-node/src/p2-live/one-shot-store.js';
 import { FROZEN_REQUESTS_JSON, FROZEN_REQUESTS_SHA256 } from '../apps/backend-node/src/p2-live/frozen-requests.js';
@@ -21,6 +21,7 @@ function runtimeFacts(): RuntimeFacts {
     geminiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
     model: geminiModel(),
     sensitivePatchProbePresent: Boolean(process.env.P2_PATCH_PROBE),
+    sensitivePatchProbeMatches: patchProbeMatches(process.env.P2_PATCH_PROBE),
     oneShotStoreConfigured: Boolean(process.env.P2_LOCK_REDIS_URL && process.env.P2_LOCK_REDIS_TOKEN),
     now: new Date(),
   };

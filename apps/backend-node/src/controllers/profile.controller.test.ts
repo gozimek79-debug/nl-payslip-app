@@ -2,6 +2,8 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { contractBatch, payslipBatch, rawContract, rawPayslip, found, hourLine, overtimeLine } from '../test-support/fact-fixtures.js';
+import { profileFieldFingerprint } from '../payroll-engine/profile-decisions.js';
+import type { PayrollProfile } from '../payroll-engine/payroll-profile.js';
 
 /**
  * P1 (§P1.2/§P1.5): `POST /api/profile/resolve` over real HTTP. Pure recombination of data the
@@ -124,4 +126,61 @@ test('P3.1 S2: an optional opaque documentId (1-64 chars) is accepted and carrie
     const res = await post({ asOfDate: '2026-06-01', documents: [{ ...payslipDocJson(0, 'pasek.pdf'), documentId: bad }] });
     assert.equal(res.status, 400, `documentId ${JSON.stringify(bad)} is rejected`);
   }
+});
+
+test('P3.1 S3: decisions over real HTTP - fingerprint from the documentary profile, decision applied, decisionResults in request order, table and coverage unchanged', async () => {
+  const documents = [
+    { ...contractDocJson(0, 'umowa.pdf', { hourly_rate: found(15.55, 'Uurloon: € 15,55', 1, 'Uurloon') }), documentId: 'u-base' },
+    { ...payslipDocJson(1, 'pasek.pdf'), documentId: 'u-slip' },
+  ];
+  const plain = await post({ asOfDate: '2026-06-01', documents });
+  assert.equal(plain.status, 200);
+  const first = (await plain.json()) as { profile: PayrollProfile; extractionTable: unknown[]; coverage: unknown[]; decisionResults: unknown[] };
+  assert.deepEqual(first.decisionResults, [], 'no decisions: an empty result list');
+  assert.deepEqual([first.profile.employment.hourlyRate.state, first.profile.employment.hourlyRate.resolution], ['conflict', null]);
+  const evidenceFingerprint = profileFieldFingerprint(first.profile, 'employment.hourlyRate');
+  const decisions = [
+    { kind: 'confirm_candidate', decisionId: 'd-rate', fieldPath: 'employment.hourlyRate', value: 16.2, evidenceFingerprint, decidedAt: '2026-10-05T10:00:00Z' },
+    { kind: 'correct_value', decisionId: 'd-hpw', fieldPath: 'employment.hoursPerWeek', value: -40, unit: 'hours_per_week', evidenceFingerprint, decidedAt: '2026-10-05' },
+  ];
+  const res = await post({ asOfDate: '2026-06-01', documents, decisions });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as typeof first;
+  assert.deepEqual(body.decisionResults, [
+    { decisionId: 'd-rate', fieldPath: 'employment.hourlyRate', status: 'applied', problem: null },
+    { decisionId: 'd-hpw', fieldPath: 'employment.hoursPerWeek', status: 'rejected', problem: 'invalid_value' },
+  ], 'a value problem is a per-decision result, not a request error');
+  const rate = body.profile.employment.hourlyRate;
+  assert.deepEqual([rate.state, rate.value, rate.sources.map((s) => s.role), rate.candidates.length], ['user_confirmed', 16.2, ['payslip', 'user'], 2]);
+  assert.deepEqual([body.extractionTable, body.coverage], [first.extractionTable, first.coverage], 'facts as read are untouched by decisions');
+});
+
+test('P3.1 S3 #41: request validation - more than 200 decisions, a malformed decision or a duplicate documentId is invalid_input', async () => {
+  const documents = [{ ...payslipDocJson(0, 'pasek.pdf'), documentId: 'u-slip' }];
+  const decision = { kind: 'confirm_candidate', decisionId: 'd-1', fieldPath: 'employment.hourlyRate', value: 16.2, evidenceFingerprint: '0123456789abcdef', decidedAt: '2026-10-05T10:00:00Z' };
+  const atLimit = await post({ asOfDate: '2026-06-01', documents, decisions: Array.from({ length: 200 }, (_, i) => ({ ...decision, decisionId: `d-${i}` })) });
+  assert.equal(atLimit.status, 200, '200 decisions are allowed');
+  const limitResults = ((await atLimit.json()) as { decisionResults: Array<{ problem: string | null }> }).decisionResults;
+  assert.equal(limitResults.length, 200);
+  assert.equal(limitResults.filter((r) => r.problem === 'duplicate_field_decision').length, 199);
+  const tooMany = await post({ asOfDate: '2026-06-01', documents, decisions: Array.from({ length: 201 }, (_, i) => ({ ...decision, decisionId: `d-${i}` })) });
+  assert.equal(tooMany.status, 400);
+  const { unit: _noUnit, ...correctWithoutUnit } = { ...decision, kind: 'correct_value', unit: 'eur_per_hour' };
+  for (const bad of [
+    { ...decision, kind: 'approve' }, { ...decision, fieldPath: 'employment.nope' }, { ...decision, fieldPath: 'calibrationOnly.payslips.0' },
+    { ...decision, fieldPath: 'observedOvertimePremiums.fields.0' }, { ...decision, evidenceFingerprint: 'NOT-A-FINGERPRINT' }, { ...decision, evidenceFingerprint: undefined },
+    { ...decision, decisionId: '' }, { ...decision, decisionId: 'x'.repeat(65) }, { ...decision, decidedAt: 'yesterday' }, { ...decision, value: null }, { ...decision, value: { amount: 1 } },
+    correctWithoutUnit, { ...decision, kind: 'correct_value', unit: 'eur' },
+  ]) {
+    const res = await post({ asOfDate: '2026-06-01', documents, decisions: [bad] });
+    assert.equal(res.status, 400, `malformed decision ${JSON.stringify(bad)}`);
+    assert.equal(((await res.json()) as { error_code: string }).error_code, 'invalid_input');
+  }
+  assert.equal((await post({ asOfDate: '2026-06-01', documents, decisions: decision })).status, 400, 'decisions must be a list');
+  const duplicateIds = await post({ asOfDate: '2026-06-01', documents: [{ ...contractDocJson(0, 'umowa.pdf'), documentId: 'same' }, { ...payslipDocJson(1, 'pasek.pdf'), documentId: 'same' }] });
+  assert.equal(duplicateIds.status, 400, 'two documents with one identity are rejected before anything is fingerprinted');
+  assert.equal(((await duplicateIds.json()) as { error_code: string }).error_code, 'invalid_input');
+  for (const documentId of ['', 'x'.repeat(65)]) assert.equal((await post({ asOfDate: '2026-06-01', documents: [{ ...payslipDocJson(0, 'pasek.pdf'), documentId }] })).status, 400);
+  const differentIds = await post({ asOfDate: '2026-06-01', documents: [{ ...contractDocJson(0, 'pasek.pdf'), documentId: 'a' }, { ...payslipDocJson(1, 'pasek.pdf'), documentId: 'b' }] });
+  assert.equal(differentIds.status, 200, 'the same label with different ids is fine');
 });

@@ -1,6 +1,10 @@
 import express from 'express';
 import { z } from 'zod';
 import { resolvePayrollProfile, type ProfileDocumentInput } from '../payroll-engine/payroll-profile.js';
+import {
+  applyUserDecisions, duplicateDocumentIds, isProfileFieldPath, MAX_DECISIONS, MAX_FIELD_PATH_LENGTH, PROFILE_UNITS,
+  type UserProfileDecision,
+} from '../payroll-engine/profile-decisions.js';
 import { mergePayslipBatches, mergeContractBatches, type DocumentFacts } from '../payroll-engine/document-facts.js';
 import { buildExtractionTable } from '../payroll-engine/fact-table.js';
 import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
@@ -20,6 +24,12 @@ import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
  * P3.1 S2: each document may carry an optional `documentId` - the client's per-upload `DocEntry.id`,
  * an opaque non-empty string of at most 64 characters (no format is imposed, nothing reads meaning
  * into it). It is carried into the profile's provenance; older requests without it stay valid.
+ *
+ * P3.1 S3: two documents with the same `documentId` are rejected (400) before anything is resolved or
+ * fingerprinted - document identity must be unambiguous. The request may carry up to 200 field-level
+ * `decisions` (default none); the response profile is the documentary profile with those decisions
+ * overlaid (profile-decisions.ts, stateless - nothing is stored), plus one `decisionResults` entry per
+ * decision in request order.
  */
 const router = express.Router();
 
@@ -34,14 +44,33 @@ const documentSchema = z.object({
   factBatches: z.unknown(),
 });
 
+/** ISO calendar date or date-time; echoed only. */
+const ISO_DATE_OR_DATETIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+const decisionCommon = {
+  decisionId: z.string().min(1).max(64),
+  fieldPath: z.string().min(1).max(MAX_FIELD_PATH_LENGTH).refine(isProfileFieldPath),
+  // Shape only; the value's range for the field's unit is judged by the overlay (rejected/invalid_value).
+  value: z.union([z.number(), z.string().max(1000), z.boolean(), z.array(z.number()).max(50)]),
+  evidenceFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
+  decidedAt: z.string().max(40).regex(ISO_DATE_OR_DATETIME),
+};
+
+const decisionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('confirm_candidate'), ...decisionCommon }),
+  z.object({ kind: z.literal('correct_value'), ...decisionCommon, unit: z.enum(PROFILE_UNITS as [string, ...string[]]) }),
+]);
+
 const resolveProfileSchema = z.object({
   asOfDate: z.string().min(1).max(40),
   documents: z.array(documentSchema).max(MAX_DOCUMENTS),
+  decisions: z.array(decisionSchema).max(MAX_DECISIONS).optional(),
 });
 
 router.post('/resolve', (req, res) => {
   const parsed = resolveProfileSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error_code: 'invalid_input', details: parsed.error.flatten() });
+  if (duplicateDocumentIds(parsed.data.documents).length > 0) return res.status(400).json({ error_code: 'invalid_input' });
 
   const seen = new Set<number>();
   const documents: ProfileDocumentInput[] = [];
@@ -61,10 +90,11 @@ router.post('/resolve', (req, res) => {
     documents.push({ index: d.index, documentId: d.documentId ?? null, label: d.label, role: d.role, effectiveDate: d.role === 'contract_annex' ? d.effectiveDate : null, facts });
   }
 
-  const profile = resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents });
+  const documentary = resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents });
+  const { profile, decisionResults } = applyUserDecisions(documentary, (parsed.data.decisions ?? []) as UserProfileDecision[]);
   const extractionTable = buildExtractionTable(documents.map((d) => ({ documentIndex: d.index, documentLabel: d.label, role: d.role, facts: d.facts })));
   const coverage = documents.map((d) => ({ index: d.index, ...d.facts.coverage }));
-  return res.json({ profile, extractionTable, coverage });
+  return res.json({ profile, extractionTable, coverage, decisionResults });
 });
 
 export default router;

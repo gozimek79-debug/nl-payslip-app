@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { profilePrefill, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState } from './pro-profile-prefill.ts';
+import { profilePrefill, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState, type ProfileDecisionView } from './pro-profile-prefill.ts';
 import { translations } from './translations.ts';
 
 /**
@@ -201,4 +201,34 @@ test('P3.1 S2: each profile request document carries its per-upload DocEntry.id 
   const resolved = await resolveProfile('2026-10-01', withIds, fakeFetch);
   assert.deepEqual(bodies[0]?.documents.map((d) => d.documentId), ['upload-0', 'upload-1']);
   assert.equal(resolved?.profile.version, 2);
+});
+
+// --- P3.1 S3 ----------------------------------------------------------------------------------
+
+test('P3.1 S3: resolveProfile sends field-level decisions only when given and returns decisionResults; ProDocuments has no decision flow yet', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ profile: profile({}, {}), extractionTable: [], decisionResults: [{ decisionId: 'd-1', fieldPath: 'employment.hourlyRate', status: 'applied', problem: null }] }), { status: 200 });
+  }) as typeof fetch;
+  const decision: ProfileDecisionView = { kind: 'confirm_candidate', decisionId: 'd-1', fieldPath: 'employment.hourlyRate', value: 16.2, evidenceFingerprint: '0123456789abcdef', decidedAt: '2026-10-05T10:00:00Z' };
+  const resolved = await resolveProfile('2026-10-01', cachedDocuments, fakeFetch, [decision]);
+  assert.deepEqual(bodies[0], { asOfDate: '2026-10-01', documents: cachedDocuments, decisions: [decision] });
+  assert.deepEqual(resolved?.decisionResults, [{ decisionId: 'd-1', fieldPath: 'employment.hourlyRate', status: 'applied', problem: null }]);
+  await resolveProfile('2026-10-01', cachedDocuments, fakeFetch);
+  assert.deepEqual(bodies[1], { asOfDate: '2026-10-01', documents: cachedDocuments }, 'without decisions the request body is exactly as before');
+  for (const marker of ['confirm_candidate', 'correct_value', 'decisionResults', 'ProfileDecisionView']) {
+    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments does not implement ${marker} in S3`);
+  }
+});
+
+test('P3.1 S3: an applied user_confirmed or user_corrected field is usable by the existing prefill; a conflict still is not', () => {
+  const userField = (state: EvidenceState, value: number): ProfileFieldView => ({
+    ...field('hourlyRate', state, value, []),
+    sources: [{ sourceType: 'user', role: 'user', documentIndex: null, documentLabel: null, effectiveDate: null, payPeriod: null, printedLabel: null, page: null, line: null, decisionId: 'd-1' }],
+  });
+  for (const state of ['user_confirmed', 'user_corrected'] as const) {
+    assert.equal(profilePrefill(profile({ hourlyRate: userField(state, 17.1) }, {}), badge).hourly_rate, 17.1, state);
+  }
+  assert.equal(profilePrefill(profile({ hourlyRate: field('hourlyRate', 'conflict', null) }, {}), badge).hourly_rate, undefined);
 });

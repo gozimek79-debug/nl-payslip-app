@@ -57,14 +57,18 @@ import {
  * timeline itself, `resolveField`, the equality epsilon and the disputed-annex-date variants are
  * unchanged; payslip-only fields keep NO recency rule.
  *
+ * P3.1 S3: this resolver stays purely documentary - every field it returns has `resolution: null`.
+ * User decisions (`user_confirmed` / `user_corrected`) are a separate pure overlay applied afterwards
+ * (profile-decisions.ts), keyed by a temporal evidence fingerprint of the documentary field.
+ *
  * Pure and synchronous: no I/O, no AI call, no rules lookup.
  */
 
 export type EvidenceState = 'document_exact' | 'corroborated' | 'user_confirmed' | 'user_corrected' | 'conflict' | 'unknown';
 
 /** States whose `value` may feed a forward calculation as a document- or user-backed parameter.
- * `user_confirmed`/`user_corrected` are defined so the schema is final, but nothing produces them
- * yet - field-level user confirmation is P3. */
+ * `user_confirmed`/`user_corrected` are never produced by this resolver; since P3.1 S3 the decision
+ * overlay (profile-decisions.ts) produces them, field by field. */
 export const USABLE_EVIDENCE_STATES: readonly EvidenceState[] = ['document_exact', 'corroborated', 'user_confirmed', 'user_corrected'];
 
 export type SourceRole = 'contract_base' | 'contract_annex' | 'payslip' | 'rules' | 'user';
@@ -102,6 +106,8 @@ export interface EvidenceSource {
   /** 1-based page (P2). `line` stays null - a line index cannot be proved from an image. */
   page: number | null;
   line: number | null;
+  /** P3.1 S3: on a `user` source only - the decision it records. Absent on document sources. */
+  decisionId?: string | null;
 }
 
 /** Units are codes, never prose (CONVENTIONS.md) - the interface decides how to word them. */
@@ -270,6 +276,20 @@ export interface ProfileField {
   /** P3: the in-force regime of a contract-timeline field (when a contract document exists); null for
    * every other field. */
   regime: FieldRegime | null;
+  /** P3.1 S3: the user decision applied to this field (profile-decisions.ts); null on every documentary
+   * field. `candidates`, `excluded` and `regime` are never changed by a decision. */
+  resolution: UserResolution | null;
+}
+
+/** P3.1 S3 (decisions B/C): what a user decision did to a field, and the documentary result it replaced. */
+export interface UserResolution {
+  decisionId: string;
+  kind: 'confirm_candidate' | 'correct_value';
+  /** Client-supplied, echoed only - never used in any logic. */
+  decidedAt: string;
+  /** The documentary fingerprint the decision was applied under (profile-decisions.ts). */
+  evidenceFingerprint: string;
+  previous: { state: EvidenceState; value: ProfileValue | null; reason: ProfileReason | null };
 }
 
 export type ProfileDocumentRole = 'contract_base' | 'contract_annex' | 'payslip';
@@ -482,7 +502,9 @@ export function calibrationPrintedAmount(key: keyof CalibrationPayslipEvidence['
   return value === null ? null : applySignPolicy(PAYSLIP_PERIOD_SIGN_POLICY[CALIBRATION_SIGN_POLICY_KEY[key]], value);
 }
 
-function valuesEqual(a: ProfileValue, b: ProfileValue): boolean {
+/** Printed-cent equality for numbers, trimmed equality for text. Exported for the decision overlay
+ * (P3.1 S3), which must use exactly the same notion of "the same value". */
+export function valuesEqual(a: ProfileValue, b: ProfileValue): boolean {
   if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < NUMERIC_EQUALITY_EPSILON;
   if (typeof a === 'string' && typeof b === 'string') return a.trim() === b.trim();
   if (typeof a === 'boolean' && typeof b === 'boolean') return a === b;
@@ -506,7 +528,7 @@ interface FieldSpec {
  * that reason whenever it has candidates.
  */
 function resolveField(spec: FieldSpec, candidates: ProfileCandidate[], excluded: ExcludedEvidence[], emptyReason: UnknownReasonCode, forcedConflict: ProfileReason | null = null): ProfileField {
-  const base = { key: spec.key, meaning: spec.meaning, unit: spec.unit, candidates, excluded, regime: null };
+  const base = { key: spec.key, meaning: spec.meaning, unit: spec.unit, candidates, excluded, regime: null, resolution: null };
   if (candidates.length === 0) {
     return { ...base, value: null, state: 'unknown', sources: [], reason: { code: excluded.length > 0 ? 'only_excluded_evidence' : emptyReason } };
   }

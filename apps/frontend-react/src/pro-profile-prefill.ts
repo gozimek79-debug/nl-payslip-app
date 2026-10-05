@@ -30,6 +30,8 @@ export interface ProfileSourceView {
   line: number | null;
   /** P2: the printed text fragment the value was read from. */
   rawValue?: string | null;
+  /** P3.1 S3: on a `user` source only - the decision it records. */
+  decisionId?: string | null;
 }
 
 export type ProfileValueView = number | string | number[] | boolean;
@@ -47,6 +49,32 @@ export interface ProfileFieldView {
   reason: { code: string; asOfDate?: string; changeDate?: string; documentIndex?: number; documentId?: string | null; effectiveDate?: string | null } | null;
   /** P3: a contract-timeline field's in-force regime; null/absent for every other field. */
   regime?: { start: string | null; end: string | null; winnerDocumentIndex: number | null; winnerDocumentId: string | null; winnerDocumentLabel: string | null } | null;
+  /** P3.1 S3: the user decision applied to this field (null/absent on a documentary field). */
+  resolution?: UserResolutionView | null;
+}
+
+/** P3.1 S3: what a user decision did to a field, and the documentary result it replaced. */
+export interface UserResolutionView {
+  decisionId: string;
+  kind: 'confirm_candidate' | 'correct_value';
+  decidedAt: string;
+  evidenceFingerprint: string;
+  previous: { state: EvidenceState; value: ProfileValueView | null; reason: ProfileFieldView['reason'] };
+}
+
+/** P3.1 S3: a field-level user decision as sent to `POST /api/profile/resolve` (backend
+ * profile-decisions.ts). `evidenceFingerprint` is the documentary fingerprint the decision was made
+ * under; the backend re-checks it on every resolve. */
+export type ProfileDecisionView =
+  | { kind: 'confirm_candidate'; decisionId: string; fieldPath: string; value: ProfileValueView; evidenceFingerprint: string; decidedAt: string }
+  | { kind: 'correct_value'; decisionId: string; fieldPath: string; value: ProfileValueView; unit: string; evidenceFingerprint: string; decidedAt: string };
+
+/** P3.1 S3: one result per submitted decision, in request order. */
+export interface DecisionResultView {
+  decisionId: string;
+  fieldPath: string;
+  status: 'applied' | 'satisfied_by_documents' | 'stale' | 'rejected';
+  problem: 'field_not_found' | 'evidence_changed' | 'candidate_not_present' | 'invalid_value' | 'unit_mismatch' | 'duplicate_field_decision' | null;
 }
 
 /** P3: the regime boundary an excluded piece of evidence was placed against. */
@@ -90,6 +118,8 @@ export interface ExtractionRowView {
 export interface ResolvedProfileView {
   profile: PayrollProfileView;
   extractionTable: ExtractionRowView[];
+  /** P3.1 S3: one per submitted decision, request order (empty when none were sent). */
+  decisionResults: DecisionResultView[];
 }
 
 export function isUsableField(field: ProfileFieldView | undefined): field is ProfileFieldView & { value: ProfileValueView } {
@@ -174,15 +204,19 @@ export function isResolvableAsOfDate(value: string): boolean {
  * when the as-of date changes. It calls exactly one endpoint, the pure profile resolver; it never
  * touches a document-reading endpoint. `null` on any failure (the caller shows an error, never the
  * previous profile under the new date).
+ *
+ * P3.1 S3: optional field-level `decisions` are sent with the documents (the backend is stateless - the
+ * client re-sends them on every resolve); without decisions the request body is exactly as before. The
+ * returned profile is the one with the decisions overlaid, plus one `decisionResults` entry per decision.
  */
-export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch): Promise<ResolvedProfileView | null> {
+export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch, decisions: ProfileDecisionView[] = []): Promise<ResolvedProfileView | null> {
   try {
     const res = await fetchImpl('/api/profile/resolve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ asOfDate, documents }),
+      body: JSON.stringify(decisions.length > 0 ? { asOfDate, documents, decisions } : { asOfDate, documents }),
     });
-    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[] };
-    return res.ok && data.profile ? { profile: data.profile, extractionTable: data.extractionTable ?? [] } : null;
+    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[]; decisionResults?: DecisionResultView[] };
+    return res.ok && data.profile ? { profile: data.profile, extractionTable: data.extractionTable ?? [], decisionResults: data.decisionResults ?? [] } : null;
   } catch {
     return null;
   }

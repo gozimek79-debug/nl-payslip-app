@@ -2,6 +2,7 @@ import type { ContractExtraction } from './contract.js';
 import { resolveEffectiveContract, type ContractDocumentEntry, type EffectiveContract } from './contract-timeline.js';
 import { stripDiacritics } from './extraction-consistency.js';
 import type { PreTaxDeductionCategory, PostTaxSocialCategory } from './payslip-model.js';
+import { magnitude, PAYSLIP_PERIOD_SIGN_POLICY, type SignFieldPolicy } from './sign-policy.js';
 import {
   contractExtractionFromFacts, singleExactValue, firstExactFact,
   type DocumentFacts, type PayslipDocumentFacts, type ContractDocumentFacts, type PayrollFact, type FactEvidence,
@@ -34,6 +35,13 @@ import {
  * `EvidenceSource.rawValue`, page now populated, `PayPeriodRef.startDate/paymentDate`,
  * `ExcludedEvidence.factReason`, three excluded-reason codes, one conflict reason
  * (`annex_effective_date_disputed`), and explicitly evidenced tier/weekday facts.
+ *
+ * P3.1 S1 (LOONTO-PRO-P3-DECISION-LOCK.md, decision F2): the profile is the ONE place where an
+ * amount's sign is made canonical - magnitude, with the direction carried by the field/list it sits in
+ * (`netAdditions` vs `netDeductions`), exactly the convention the engine already uses
+ * (`periodNet = wageNet + netAdditions - netDeductions`). Facts stay as read (P2), and the printed sign
+ * stays in `EvidenceSource.rawValue`; only the profile's value/detail amounts are normalised, BEFORE
+ * candidates are compared, so `95,00-` and `95,00` can never be a sign-only conflict.
  *
  * Pure and synchronous: no I/O, no AI call, no rules lookup.
  */
@@ -334,6 +342,71 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+// ---------------------------------------------------------------------------------------------
+// P3.1 S1 - canonical amount sign at the profile boundary (decision F2)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every place the profile carries an AMOUNT taken from a payslip fact. The direction of a net line is
+ * carried by which list it is in (an addition vs a deduction), never by the number's sign, so those
+ * amounts are canonical magnitudes. Hour-line amounts keep their sign (a correction line can reverse a
+ * gross amount), exactly as the engine-side `PAYSLIP_PERIOD_SIGN_POLICY` has it. `satisfies` makes a
+ * newly added site a compile error until it has a policy.
+ */
+export type ProfileAmountSite =
+  | `recurringItems.${'netAdditions' | 'netDeductions'}`
+  | `payroll.${'etExchangeAmount' | 'jaarloonBt'}`
+  | 'detail.deductionLineAmount'
+  | 'detail.reservationAmount'
+  | 'detail.hourLineAmount';
+
+export const PROFILE_AMOUNT_SIGN_POLICY = {
+  'recurringItems.netAdditions': 'magnitude', // list membership = addition
+  'recurringItems.netDeductions': 'magnitude', // list membership = deduction (a printed "95,00-" is 95, never -95)
+  'payroll.etExchangeAmount': 'magnitude', // PAYSLIP_PERIOD_SIGN_POLICY.et
+  'payroll.jaarloonBt': 'magnitude', // a yearly wage, never a signed payslip amount
+  'detail.deductionLineAmount': 'magnitude', // PAYSLIP_PERIOD_SIGN_POLICY.pre_tax_deductions / post_tax_social (no label-based credit inversion here - that is P4 engine feeding)
+  'detail.reservationAmount': 'magnitude', // PAYSLIP_PERIOD_SIGN_POLICY.reservations
+  'detail.hourLineAmount': 'keep', // PAYSLIP_PERIOD_SIGN_POLICY.hour_lines: sign is the direction of a correction
+} as const satisfies Record<ProfileAmountSite, SignFieldPolicy>;
+
+/** Applies one of the engine's sign policies to a number. `magnitude` is idempotent. */
+export function applySignPolicy(policy: SignFieldPolicy, value: number): number {
+  return policy === 'magnitude' ? magnitude(value) : value;
+}
+
+/**
+ * The canonical profile amount for a site. `null` stays `null` (an unread amount is never a number),
+ * and nothing is coerced: a non-finite input stays non-finite (callers already guard on finiteness
+ * before an amount becomes a candidate). Idempotent: canonical(canonical(x)) === canonical(x).
+ */
+export function canonicalProfileAmount(site: ProfileAmountSite, value: number): number;
+export function canonicalProfileAmount(site: ProfileAmountSite, value: number | null): number | null;
+export function canonicalProfileAmount(site: ProfileAmountSite, value: number | null): number | null {
+  return value === null ? null : applySignPolicy(PROFILE_AMOUNT_SIGN_POLICY[site], value);
+}
+
+/** Calibration figures the profile keeps (see `CalibrationPayslipEvidence.printed`) and the engine-side
+ * policy entry each one follows - no second convention is invented for them. */
+const CALIBRATION_SIGN_POLICY_KEY = {
+  table_tax: 'printed_table_tax',
+  bt_tax: 'printed_bt_tax',
+  algemene_heffingskorting: 'printed_algemene_heffingskorting',
+  arbeidskorting: 'printed_arbeidskorting',
+  gross_total: 'printed_gross_total',
+  loon_voor_heffingen: 'printed_loon_voor_heffingen',
+  net: 'printed_net',
+  payout: 'printed_payout',
+  minimum_wage: 'wml_printed',
+} as const satisfies Record<keyof CalibrationPayslipEvidence['printed'], keyof typeof PAYSLIP_PERIOD_SIGN_POLICY>;
+
+/** A calibration figure under the engine's own sign policy: tax / gross / loon voor heffingen are
+ * magnitudes; net, payout and the printed credits keep their printed sign (it is meaningful: a printed
+ * payout can be negative, an amount owed); the printed minimum wage is a rate, as read. */
+export function calibrationPrintedAmount(key: keyof CalibrationPayslipEvidence['printed'], value: number | null): number | null {
+  return value === null ? null : applySignPolicy(PAYSLIP_PERIOD_SIGN_POLICY[CALIBRATION_SIGN_POLICY_KEY[key]], value);
+}
+
 function valuesEqual(a: ProfileValue, b: ProfileValue): boolean {
   if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < NUMERIC_EQUALITY_EPSILON;
   if (typeof a === 'string' && typeof b === 'string') return a.trim() === b.trim();
@@ -487,12 +560,19 @@ function payslipSource(slip: PayslipDoc, evidence: FactEvidence | null): Evidenc
   };
 }
 
-function payslipScalarEvidence(slips: PayslipDoc[], key: PayslipScalarKey): { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] } {
+/** P3.1 S1: a numeric candidate with its amount made canonical for `site`; anything else is untouched. */
+function canonicalCandidate(candidate: ProfileCandidate, site: ProfileAmountSite): ProfileCandidate {
+  return typeof candidate.value === 'number' ? { ...candidate, value: round2(canonicalProfileAmount(site, candidate.value)) } : candidate;
+}
+
+/** `amountSite` is given only for scalars that ARE amounts (ET exchange, jaarloon BT): their candidates
+ * are canonical BEFORE they are compared, so a sign-only difference can never be a conflict. */
+function payslipScalarEvidence(slips: PayslipDoc[], key: PayslipScalarKey, amountSite?: ProfileAmountSite): { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] } {
   const candidates: ProfileCandidate[] = [];
   const excluded: ExcludedEvidence[] = [];
   for (const slip of slips) {
     const ev = factEvidence(slip.facts.scalars[key], (f) => payslipSource(slip, f.evidence));
-    candidates.push(...ev.candidates);
+    candidates.push(...(amountSite ? ev.candidates.map((c) => canonicalCandidate(c, amountSite)) : ev.candidates));
     excluded.push(...ev.excluded);
   }
   return { candidates, excluded };
@@ -505,7 +585,7 @@ function regularRateEvidence(slips: PayslipDoc[]): { candidates: ProfileCandidat
     for (const line of slip.facts.hourLines) {
       if (line.kind !== 'regular') continue;
       const source = payslipSource(slip, line.evidence);
-      const d = detail({ hours: line.hours, amount: line.amount });
+      const d = detail({ hours: line.hours, amount: canonicalProfileAmount('detail.hourLineAmount', line.amount) });
       const issue = issueFor(line.issues, 'rate');
       if (issue) excluded.push(issueExclusion(issue, source, d));
       else if (isFiniteNumber(line.rate) && line.rate > 0) candidates.push({ value: round2(line.rate), source, detail: d });
@@ -550,7 +630,7 @@ function overtimeEvidence(slips: PayslipDoc[], contracts: ApplicableContract[]):
     const ambiguousSlip = overtime.some((l) => l.addsHours === true && isFiniteNumber(l.percent) && l.percent < 100);
     for (const l of overtime) {
       const source = payslipSource(slip, l.evidence);
-      const d = detail({ hours: l.hours, amount: l.amount, printedPercent: l.percent });
+      const d = detail({ hours: l.hours, amount: canonicalProfileAmount('detail.hourLineAmount', l.amount), printedPercent: l.percent });
       const percentIssue = issueFor(l.issues, 'percent');
       if (l.addsHours === null) ev.excluded.push({ value: l.percent, source, reason: 'adds_hours_unclear', detail: d });
       else if (percentIssue) ev.excluded.push(issueExclusion(percentIssue, source, d));
@@ -630,7 +710,7 @@ function deductionLines(slips: PayslipDoc[], placement: 'pre_tax' | 'post_tax', 
         description: d.evidence.printedLabel ?? '',
         percent: d.percent,
         percentIssue: issueFor(d.issues, 'percent'),
-        amount: d.amount,
+        amount: canonicalProfileAmount('detail.deductionLineAmount', d.amount),
         base: d.base,
         hours: null,
       })),
@@ -687,13 +767,24 @@ function netLineEvidence(slips: PayslipDoc[]): { additions: AmountLine[]; deduct
   const additions: AmountLine[] = [];
   const deductions: AmountLine[] = [];
   for (const slip of slips) {
+    // P3.1 S1: the amount is made canonical HERE, where the line becomes profile evidence - the list it
+    // goes into carries its direction, so the printed sign (`95,00-`) is dropped from the value and kept
+    // in the source's rawValue.
     for (const l of slip.facts.netLines) {
-      const line: AmountLine = { source: payslipSource(slip, l.evidence), category: l.category, description: l.evidence.printedLabel ?? '', amount: l.amount, amountIssue: issueFor(l.issues, 'amount') };
-      if (l.category === 'reimbursement') additions.push(line);
+      const isAddition = l.category === 'reimbursement';
+      const line: AmountLine = {
+        source: payslipSource(slip, l.evidence), category: l.category, description: l.evidence.printedLabel ?? '',
+        amount: canonicalProfileAmount(isAddition ? 'recurringItems.netAdditions' : 'recurringItems.netDeductions', l.amount),
+        amountIssue: issueFor(l.issues, 'amount'),
+      };
+      if (isAddition) additions.push(line);
       else deductions.push(line);
     }
     for (const l of slip.facts.etReimbursementLines) {
-      additions.push({ source: payslipSource(slip, l.evidence), category: 'et_reimbursement', description: l.evidence.printedLabel ?? '', amount: l.amount, amountIssue: issueFor(l.issues, 'amount') });
+      additions.push({
+        source: payslipSource(slip, l.evidence), category: 'et_reimbursement', description: l.evidence.printedLabel ?? '',
+        amount: canonicalProfileAmount('recurringItems.netAdditions', l.amount), amountIssue: issueFor(l.issues, 'amount'),
+      });
     }
   }
   return { additions, deductions };
@@ -711,7 +802,7 @@ function surchargeLines(slips: PayslipDoc[]): Array<PercentLine & { category: st
         description: l.evidence.printedLabel ?? '',
         percent: l.percent,
         percentIssue: issueFor(l.issues, 'percent'),
-        amount: l.amount,
+        amount: canonicalProfileAmount('detail.hourLineAmount', l.amount),
         base: null,
         hours: l.hours,
       })),
@@ -1097,15 +1188,15 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
           value: null,
           source: payslipSource(slip, r.evidence),
           reason: issue ? ('amount_unreadable' as const) : ('not_a_forward_rate' as const),
-          detail: detail({ amount: r.accrued }),
+          detail: detail({ amount: canonicalProfileAmount('detail.reservationAmount', r.accrued) }),
           ...(issue ? { factReason: issue.reason } : {}),
         };
       }),
   );
 
   const bt = payslipScalarEvidence(slips, 'bijzonderTariefPercent');
-  const jaarloon = payslipScalarEvidence(slips, 'jaarloonBt');
-  const et = payslipScalarEvidence(slips, 'etExchangeAmount');
+  const jaarloon = payslipScalarEvidence(slips, 'jaarloonBt', 'payroll.jaarloonBt');
+  const et = payslipScalarEvidence(slips, 'etExchangeAmount', 'payroll.etExchangeAmount');
 
   const percentField = (key: string, meaning: string, lines: PercentLine[]): ProfileField => {
     const ev = percentLineEvidence(lines);
@@ -1154,23 +1245,26 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
   };
 
   // --- calibration only ---------------------------------------------------------------------
-  const printed = (slip: PayslipDoc, key: PayslipScalarKey): number | null => {
+  // P3.1 S1: each printed figure follows the engine's own sign policy (calibrationPrintedAmount): tax /
+  // gross / loon voor heffingen are magnitudes; net, payout and the printed credits keep the printed
+  // sign. The as-read value stays in the P2 fact and in the extraction table.
+  const printed = (slip: PayslipDoc, key: PayslipScalarKey, calibrationKey: keyof CalibrationPayslipEvidence['printed']): number | null => {
     const v = singleExactValue(slip.facts.scalars[key]);
-    return typeof v === 'number' ? v : null;
+    return calibrationPrintedAmount(calibrationKey, typeof v === 'number' ? v : null);
   };
   const calibrationOnly = {
     payslips: slips.map((slip) => ({
       source: payslipSource(slip, null),
       printed: {
-        table_tax: printed(slip, 'printedTableTax'),
-        bt_tax: printed(slip, 'printedBtTax'),
-        algemene_heffingskorting: printed(slip, 'printedAlgemeneHeffingskorting'),
-        arbeidskorting: printed(slip, 'printedArbeidskorting'),
-        gross_total: printed(slip, 'printedGrossTotal'),
-        loon_voor_heffingen: printed(slip, 'printedLoonVoorHeffingen'),
-        net: printed(slip, 'printedNet'),
-        payout: printed(slip, 'printedPayout'),
-        minimum_wage: printed(slip, 'minimumWagePrinted'),
+        table_tax: printed(slip, 'printedTableTax', 'table_tax'),
+        bt_tax: printed(slip, 'printedBtTax', 'bt_tax'),
+        algemene_heffingskorting: printed(slip, 'printedAlgemeneHeffingskorting', 'algemene_heffingskorting'),
+        arbeidskorting: printed(slip, 'printedArbeidskorting', 'arbeidskorting'),
+        gross_total: printed(slip, 'printedGrossTotal', 'gross_total'),
+        loon_voor_heffingen: printed(slip, 'printedLoonVoorHeffingen', 'loon_voor_heffingen'),
+        net: printed(slip, 'printedNet', 'net'),
+        payout: printed(slip, 'printedPayout', 'payout'),
+        minimum_wage: printed(slip, 'minimumWagePrinted', 'minimum_wage'),
       },
     })),
   };

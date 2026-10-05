@@ -23,7 +23,7 @@ function field(key: string, state: EvidenceState, value: ProfileFieldView['value
 }
 
 function profile(employment: Record<string, ProfileFieldView>, payroll: Record<string, ProfileFieldView>, observed: ProfileFieldView[] = []): PayrollProfileView {
-  return { version: 1, asOfDate: '2026-06-01', employment, payroll, recurringItems: {}, observedOvertimePremiums: { fields: observed, excluded: [] }, contractContext: { annexDates: [] } };
+  return { version: 2, asOfDate: '2026-06-01', employment, payroll, recurringItems: {}, observedOvertimePremiums: { fields: observed, excluded: [] }, contractContext: { annexDates: [] } };
 }
 
 const badge = (f: ProfileFieldView) => `${f.state}:${f.sources.map((s) => s.documentLabel).join('+')}`;
@@ -184,4 +184,21 @@ test('P2.17 #15: local-ocr reads every page of a document; the old three-page ca
   assert.ok(!source.includes('Math.min(pdf.numPages, 3)'));
   assert.ok(/const wanted = pageNumbers \?\? /.test(ocr), 'an explicit page list (PRO batches) is rendered as given');
   assert.ok(proDocumentsCode.includes('renderPageImages(entry.file, hasTextLayer, batch.imagePages)'), 'PRO always passes the batch pages explicitly');
+});
+
+// --- P3.1 S2 ----------------------------------------------------------------------------------
+
+test('P3.1 S2: each profile request document carries its per-upload DocEntry.id as an opaque documentId, forwarded unchanged', async () => {
+  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveProfile(asOfDate, profileDocuments)'));
+  assert.ok(block.includes('documentId: e.id'), 'the request identifies each document by its DocEntry.id, not by its position');
+  assert.ok(block.includes('index,'), 'the display index is still sent alongside it (backward compatible)');
+  const withIds: ProfileRequestDocument[] = cachedDocuments.map((d, i) => ({ ...d, documentId: `upload-${i}` }));
+  const bodies: Array<{ documents: ProfileRequestDocument[] }> = [];
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ profile: profile({}, {}), extractionTable: [] }), { status: 200 });
+  }) as typeof fetch;
+  const resolved = await resolveProfile('2026-10-01', withIds, fakeFetch);
+  assert.deepEqual(bodies[0]?.documents.map((d) => d.documentId), ['upload-0', 'upload-1']);
+  assert.equal(resolved?.profile.version, 2);
 });

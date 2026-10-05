@@ -255,7 +255,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     const profileDocuments = processed.flatMap((e, index): ProfileRequestDocument[] => {
       if (e.status !== 'done' || !e.factBatches) return [];
       const role = e.documentType === 'payslip' ? 'payslip' : e.documentType === 'contract_annex' ? 'contract_annex' : 'contract_base';
-      return [{ index, label: e.label, role, effectiveDate: role === 'contract_annex' ? e.effectiveDate : null, factBatches: e.factBatches }];
+      return [{ index, documentId: e.id, label: e.label, role, effectiveDate: role === 'contract_annex' ? e.effectiveDate : null, factBatches: e.factBatches }];
     });
     setResolvedDocuments(profileDocuments);
     const requestId = ++profileRequestId.current;

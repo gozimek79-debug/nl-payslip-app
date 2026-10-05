@@ -101,3 +101,27 @@ test('P2.14: the response carries the extraction table and page coverage built f
   assert.ok(body.extractionTable.some((r) => r.key === 'payslip.printedNet' && r.status === 'absent' && r.destination === 'calibrationOnly'));
   assert.deepEqual(body.coverage, [{ index: 0, totalPages: 1, processedPages: [1], notProcessedPages: [] }]);
 });
+
+test('P3.1 S2: an optional opaque documentId (1-64 chars) is accepted and carried into provenance; empty, over-long or non-string is invalid_input', async () => {
+  const longId = 'x'.repeat(64);
+  const ok = await post({
+    asOfDate: '2026-06-01',
+    documents: [
+      { ...contractDocJson(0, 'umowa.pdf', { hourly_rate: found(16.2, 'Uurloon: € 16,20', 1, 'Uurloon') }), documentId: longId },
+      { ...payslipDocJson(1, 'pasek.pdf'), documentId: '1738000000000-ab12cd' },
+    ],
+  });
+  assert.equal(ok.status, 200);
+  const { profile } = (await ok.json()) as { profile: { version: number; documents: Array<{ documentId: string | null }>; employment: { hourlyRate: { state: string; sources: Array<{ documentId: string | null }> } } } };
+  assert.equal(profile.version, 2);
+  assert.deepEqual(profile.documents.map((d) => d.documentId), [longId, '1738000000000-ab12cd']);
+  assert.deepEqual([profile.employment.hourlyRate.state, profile.employment.hourlyRate.sources.map((s) => s.documentId)], ['corroborated', [longId, '1738000000000-ab12cd']]);
+  const legacy = await post({ asOfDate: '2026-06-01', documents: [payslipDocJson(0, 'pasek.pdf')] });
+  assert.equal(legacy.status, 200, 'a request without documentId stays valid');
+  const legacyProfile = ((await legacy.json()) as { profile: { documents: Array<{ documentId: string | null }> } }).profile;
+  assert.deepEqual(legacyProfile.documents.map((d) => d.documentId), [null]);
+  for (const bad of ['', 'x'.repeat(65), 42, null]) {
+    const res = await post({ asOfDate: '2026-06-01', documents: [{ ...payslipDocJson(0, 'pasek.pdf'), documentId: bad }] });
+    assert.equal(res.status, 400, `documentId ${JSON.stringify(bad)} is rejected`);
+  }
+});

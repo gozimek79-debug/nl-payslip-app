@@ -43,6 +43,20 @@ import {
  * stays in `EvidenceSource.rawValue`; only the profile's value/detail amounts are normalised, BEFORE
  * candidates are compared, so `95,00-` and `95,00` can never be a sign-only conflict.
  *
+ * P3.1 S2 (LOONTO-PRO-P3-DECISION-LOCK.md, decision A; profile `version: 2`): a field that has BOTH
+ * contract-timeline evidence and payslip evidence is resolved per evidence REGIME. Per timeline variant,
+ * the regime runs from the date of the document the timeline picks for the field (`S`; the base
+ * contract has none) to the earliest later annex, after the as-of date, that states the field (`X`).
+ * A payslip is a current candidate only when its printed pay period lies inside `[S, X)`; a period
+ * before, after or across a boundary is excluded and stays visible with a `RegimeMarker`, never a
+ * conflict and never silently dropped. A payslip with no printed period cannot be placed: a different
+ * value is kept as a candidate and forces a `payslip_period_unplaceable` conflict (A3a); an equal value
+ * is shown but never corroborates (A3b). Contract values the timeline overrode are shown as superseded,
+ * and a later in-force document that states the field unclearly turns the field into a
+ * `later_document_unclear` conflict (A4) instead of leaving the earlier value `document_exact`. The
+ * timeline itself, `resolveField`, the equality epsilon and the disputed-annex-date variants are
+ * unchanged; payslip-only fields keep NO recency rule.
+ *
  * Pure and synchronous: no I/O, no AI call, no rules lookup.
  */
 
@@ -73,6 +87,9 @@ export interface EvidenceSource {
   role: SourceRole;
   /** The document's index in the request's own document list - never re-numbered. */
   documentIndex: number | null;
+  /** P3: the request's opaque per-upload document identity (the client's `DocEntry.id`), when supplied.
+   * Never interpreted or ordered; null when the request carries none. */
+  documentId: string | null;
   documentLabel: string | null;
   /** Annex effective date used to place it in the timeline. null for a base contract/payslip. */
   effectiveDate: string | null;
@@ -143,7 +160,33 @@ export type ExcludedReasonCode =
   /** P2: a printed value rejected by a domain sense check (see `factReason`). */
   | 'implausible_value'
   /** P2: an overtime line whose document does not show whether it adds hours or surcharges them. */
-  | 'adds_hours_unclear';
+  | 'adds_hours_unclear'
+  /** P3 (A1): from before the field's in-force regime - a payslip period ending before it, or a contract
+   * value the timeline overrode. Historical evidence, not a current candidate and not a conflict. */
+  | 'superseded_by_later_document'
+  /** P3: a payslip period starting in a regime that begins after the as-of date. */
+  | 'outside_as_of_regime'
+  /** P3: a payslip period crossing a regime boundary - the mixed period proves neither regime. */
+  | 'pay_period_straddles_change'
+  /** P3 (A3b): a payslip with no printed period, equal to the in-force contractual value - visible,
+   * non-authoritative, never corroborating. */
+  | 'payslip_period_unplaceable';
+
+/** P3: how an excluded piece of evidence relates to the field's in-force regime. */
+export type RegimeRelation = 'superseded_by' | 'later_than_as_of' | 'straddles' | 'value_matches_current_but_period_unknown';
+
+/** P3: the regime boundary an excluded piece of evidence was placed against - the contract document
+ * whose effective date is that boundary. */
+export interface RegimeMarker {
+  relation: RegimeRelation;
+  /** Display / backward compatibility; identity is `documentId` when supplied. */
+  documentIndex: number;
+  documentId: string | null;
+  documentLabel: string;
+  role: 'contract_base' | 'contract_annex';
+  /** The boundary date. */
+  effectiveDate: string;
+}
 
 export interface ExcludedEvidence {
   value: ProfileValue | null;
@@ -152,6 +195,23 @@ export interface ExcludedEvidence {
   detail: CandidateDetail | null;
   /** P2: the document fact's own reason code (e.g. `raw_value_mismatch`, `exceeds_legal_hours_per_week`). */
   factReason?: FactReasonCode;
+  /** P3: present when the evidence was excluded by regime placement (or superseded by the timeline). */
+  regime?: RegimeMarker;
+}
+
+/** P3: a timeline field's in-force regime for the as-of date - its identity, not a value. */
+export interface FieldRegime {
+  /** `S`: the effective date of the document the timeline picked for the field; null = the base
+   * contract (no start) or no contractual value. */
+  start: string | null;
+  /** `X`: the earliest effective date after the as-of date of a dated annex stating the field
+   * (readably or not); null = open. */
+  end: string | null;
+  /** The document the timeline picked for the field; null when it picked none (no value, or a
+   * timeline disagreement). `winnerDocumentIndex` is display only. */
+  winnerDocumentIndex: number | null;
+  winnerDocumentId: string | null;
+  winnerDocumentLabel: string | null;
 }
 
 export type UnknownReasonCode =
@@ -181,7 +241,13 @@ export type ProfileReason =
   /** P2: an annex's printed effective date and the user-entered date disagree, and the field's value
    * depends on which one is right - both outcomes are kept, none is chosen. */
   | { code: 'annex_effective_date_disputed' }
-  | { code: UnknownReasonCode };
+  | { code: UnknownReasonCode }
+  /** P3 (A4): a contract document in force at or after the one the timeline picked states the field,
+   * but not readably/plausibly - the earlier value is kept as a candidate, never as `document_exact`. */
+  | { code: 'later_document_unclear'; documentIndex: number; documentId: string | null; effectiveDate: string | null }
+  /** P3 (A3a): a payslip with no printed period disagrees with the in-force contractual value of a field
+   * that changes at `changeDate` - which regime it belongs to cannot be established. */
+  | { code: 'payslip_period_unplaceable'; changeDate: string };
 
 export interface ProfileField {
   /** Stable key, unique within the profile (recurring items carry a group-qualified key). */
@@ -201,12 +267,18 @@ export interface ProfileField {
   excluded: ExcludedEvidence[];
   /** Why the field is unknown or in conflict; null for a resolved field. */
   reason: ProfileReason | null;
+  /** P3: the in-force regime of a contract-timeline field (when a contract document exists); null for
+   * every other field. */
+  regime: FieldRegime | null;
 }
 
 export type ProfileDocumentRole = 'contract_base' | 'contract_annex' | 'payslip';
 
 export interface ProfileDocumentInput {
   index: number;
+  /** P3: opaque per-upload identity (the client's `DocEntry.id`); carried into provenance, never
+   * interpreted. Absent for older clients. */
+  documentId?: string | null;
   label: string;
   role: ProfileDocumentRole;
   /** User-entered annex effective date (unchanged UI mechanism). Only meaningful for an annex. */
@@ -224,6 +296,8 @@ export interface ResolvePayrollProfileInput {
 
 export interface ProfileDocumentRef {
   index: number;
+  /** P3: the request's opaque document identity, or null. */
+  documentId: string | null;
   label: string;
   role: ProfileDocumentRole;
   /** For an annex: the effective date used to place it, or null when none is usable or the printed and
@@ -314,7 +388,8 @@ export interface ObservedOvertimePremiums {
 }
 
 export interface PayrollProfile {
-  version: 1;
+  /** 2 since P3.1 S2: regime-aware placement, superseded/unplaceable evidence, A4, `documentId`. */
+  version: 2;
   asOfDate: string;
   documents: ProfileDocumentRef[];
   contractContext: ContractContext;
@@ -431,7 +506,7 @@ interface FieldSpec {
  * that reason whenever it has candidates.
  */
 function resolveField(spec: FieldSpec, candidates: ProfileCandidate[], excluded: ExcludedEvidence[], emptyReason: UnknownReasonCode, forcedConflict: ProfileReason | null = null): ProfileField {
-  const base = { key: spec.key, meaning: spec.meaning, unit: spec.unit, candidates, excluded };
+  const base = { key: spec.key, meaning: spec.meaning, unit: spec.unit, candidates, excluded, regime: null };
   if (candidates.length === 0) {
     return { ...base, value: null, state: 'unknown', sources: [], reason: { code: excluded.length > 0 ? 'only_excluded_evidence' : emptyReason } };
   }
@@ -550,6 +625,7 @@ function payslipSource(slip: PayslipDoc, evidence: FactEvidence | null): Evidenc
     sourceType: 'document',
     role: 'payslip',
     documentIndex: slip.doc.index,
+    documentId: slip.doc.documentId ?? null,
     documentLabel: slip.doc.label,
     effectiveDate: null,
     payPeriod: slip.payPeriod,
@@ -841,6 +917,7 @@ function contractSource(c: { doc: ProfileDocumentInput; effectiveDate: string | 
     sourceType: 'document',
     role: c.doc.role === 'contract_annex' ? 'contract_annex' : 'contract_base',
     documentIndex: c.doc.index,
+    documentId: c.doc.documentId ?? null,
     documentLabel: c.doc.label,
     effectiveDate: c.doc.role === 'contract_annex' ? c.effectiveDate : null,
     payPeriod: null,
@@ -927,23 +1004,81 @@ function applicableContracts(side: ContractSide, variant: TimelineVariant, asOfD
     .filter((c) => c.doc.role === 'contract_base' || (hasUsableDate(c.effectiveDate) && c.effectiveDate <= asOfDate));
 }
 
-interface ContractEvidence {
+/** P3.1 S2: a regime boundary - a contract document and the date it takes effect. */
+interface RegimeBound {
+  date: string;
+  doc: ProfileDocumentInput;
+}
+
+/** P3.1 S2: one field's regime in ONE timeline variant. */
+interface VariantRegime {
+  /** `S`: null for the base contract or when no document states the field (open towards the past). */
+  start: RegimeBound | null;
+  /** `X`: null when no later annex states the field (open towards the future). */
+  end: RegimeBound | null;
+  /** The document the timeline picked; null for no value or a timeline disagreement. */
+  winner: ProfileDocumentInput | null;
+}
+
+interface VariantEvidence {
   candidates: ProfileCandidate[];
   excluded: ExcludedEvidence[];
   forcedConflict: ProfileReason | null;
+  regime: VariantRegime;
+  /** P3.1 S2: where this variant placed each payslip candidate - part of the variant comparison. */
+  placements: string[];
+}
+
+interface FieldEvidence {
+  candidates: ProfileCandidate[];
+  excluded: ExcludedEvidence[];
+  forcedConflict: ProfileReason | null;
+  regime: FieldRegime | null;
+}
+
+/** A deterministic order between contract documents that does not depend on the request's array
+ * order when the client supplies `documentId` (ties on a boundary date are named the same way however
+ * the documents are listed). */
+function documentOrder(a: ProfileDocumentInput, b: ProfileDocumentInput): number {
+  const ka = [a.documentId ?? '', a.label];
+  const kb = [b.documentId ?? '', b.label];
+  for (let i = 0; i < ka.length; i += 1) {
+    if ((ka[i] as string) < (kb[i] as string)) return -1;
+    if ((ka[i] as string) > (kb[i] as string)) return 1;
+  }
+  return a.index - b.index;
+}
+
+function regimeMarker(relation: RegimeRelation, bound: RegimeBound): RegimeMarker {
+  return {
+    relation,
+    documentIndex: bound.doc.index,
+    documentId: bound.doc.documentId ?? null,
+    documentLabel: bound.doc.label,
+    role: bound.doc.role === 'contract_annex' ? 'contract_annex' : 'contract_base',
+    effectiveDate: bound.date,
+  };
 }
 
 /** Evidence for one timeline field in ONE variant. The timeline's own answer is never re-decided:
  * its winner's printed occurrences are the contract-side candidates; a `disagreement` becomes the
  * competing candidates; an `undated_document` becomes excluded evidence. On top (P2): documents in
  * force at or after the winner that state the field unclearly are shown as excluded evidence, and
- * one that contradicts itself contributes both values (a visible conflict). */
-function variantEvidence(side: ContractSide, variant: TimelineVariant, field: TimelineFieldKey, factKey: ContractScalarKey, asOfDate: string): ContractEvidence {
-  const result: ContractEvidence = { candidates: [], excluded: [], forcedConflict: null };
+ * one that contradicts itself contributes both values (a visible conflict).
+ * P3.1 S2: the variant also yields the field's regime (`S`, `X`, winner); values the timeline overrode
+ * are shown as `superseded_by_later_document`; and an unclear statement in force at or after the
+ * winner makes the field a `later_document_unclear` conflict (A4) - never a silent `document_exact`. */
+function variantEvidence(side: ContractSide, variant: TimelineVariant, field: TimelineFieldKey, factKey: ContractScalarKey, asOfDate: string): VariantEvidence {
+  const result: VariantEvidence = { candidates: [], excluded: [], forcedConflict: null, regime: { start: null, end: null, winner: null }, placements: [] };
   const effective = variant.effective[field];
   const at = (position: number) => ({ doc: side.docs[position]!.doc, effectiveDate: variant.dates[position] ?? null });
   const occurrences = (position: number) => side.docs[position]?.facts.scalars[factKey] ?? [];
   const exactCandidates = (position: number) => factEvidence(occurrences(position).filter((f) => f.status === 'exact'), (f) => contractSource(at(position), f.evidence)).candidates;
+  const annexBound = (position: number): RegimeBound | null => {
+    const doc = side.docs[position]?.doc;
+    const date = variant.dates[position] ?? null;
+    return doc && doc.role === 'contract_annex' && hasUsableDate(date) ? { date, doc } : null;
+  };
   const used = new Set<number>();
   let winnerKey = '';
   if (effective.value !== null && effective.source) {
@@ -951,12 +1086,17 @@ function variantEvidence(side: ContractSide, variant: TimelineVariant, field: Ti
     result.candidates.push(...exactCandidates(position));
     used.add(position);
     winnerKey = side.docs[position]?.doc.role === 'contract_annex' ? (variant.dates[position] ?? '') : '';
+    result.regime.winner = side.docs[position]?.doc ?? null;
+    result.regime.start = annexBound(position);
   } else if (effective.reason?.code === 'disagreement') {
     for (const label of effective.reason.documentLabels) {
       const position = Number(label.slice(1));
       if (!Number.isInteger(position)) continue;
       result.candidates.push(...exactCandidates(position));
       used.add(position);
+      // The disagreeing annexes share one date (the timeline only reports a tie): that date starts the regime.
+      const bound = annexBound(position);
+      if (bound && (result.regime.start === null || documentOrder(bound.doc, result.regime.start.doc) < 0)) result.regime.start = bound;
     }
     result.forcedConflict = { code: 'timeline_disagreement', asOfDate: effective.reason.asOfDate ?? asOfDate };
   } else if (effective.reason?.code === 'undated_document') {
@@ -979,6 +1119,7 @@ function variantEvidence(side: ContractSide, variant: TimelineVariant, field: Ti
     }
     used.add(position);
   });
+  const unclearLater: Array<{ doc: ProfileDocumentInput; key: string; effectiveDate: string | null }> = [];
   for (const c of applicableContracts(side, variant, asOfDate)) {
     if (used.has(c.position)) continue;
     const key = c.doc.role === 'contract_annex' ? (c.effectiveDate ?? '') : '';
@@ -986,24 +1127,162 @@ function variantEvidence(side: ContractSide, variant: TimelineVariant, field: Ti
     const ev = factEvidence(occurrences(c.position).filter((f) => f.status !== 'exact'), (f) => contractSource(c, f.evidence));
     result.candidates.push(...ev.candidates);
     result.excluded.push(...ev.excluded);
+    if (ev.excluded.length > 0) unclearLater.push({ doc: c.doc, key, effectiveDate: c.doc.role === 'contract_annex' ? c.effectiveDate : null });
   }
+  // P3.1 S2 (§5): a value the timeline overrode for this field - a document in force before the
+  // regime start - stays visible as superseded historical evidence, never as a current candidate.
+  const start = result.regime.start;
+  if (start) {
+    for (const c of applicableContracts(side, variant, asOfDate)) {
+      if (used.has(c.position)) continue;
+      const key = c.doc.role === 'contract_annex' ? (c.effectiveDate ?? '') : '';
+      if (key >= start.date) continue;
+      for (const candidate of exactCandidates(c.position)) {
+        result.excluded.push({ value: candidate.value, source: candidate.source, reason: 'superseded_by_later_document', detail: null, regime: regimeMarker('superseded_by', start) });
+      }
+    }
+  }
+  // P3.1 S2 (A4): the timeline picked a readable value, but a document in force at or after it states
+  // the field unclearly - the earlier value may no longer apply, so it is not `document_exact`.
+  if (result.regime.winner && result.forcedConflict === null && unclearLater.length > 0) {
+    const first = [...unclearLater].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : documentOrder(a.doc, b.doc)))[0]!;
+    result.forcedConflict = { code: 'later_document_unclear', documentIndex: first.doc.index, documentId: first.doc.documentId ?? null, effectiveDate: first.effectiveDate };
+  }
+  // P3.1 S2: `X` - the earliest annex taking effect after the as-of date that states this field,
+  // readably or not (an unclear future statement still ends the current regime).
+  side.docs.forEach((c, position) => {
+    const bound = annexBound(position);
+    if (!bound || bound.date <= asOfDate || !occurrences(position).some((f) => f.status !== 'absent')) return;
+    const end = result.regime.end;
+    if (end === null || bound.date < end.date || (bound.date === end.date && documentOrder(bound.doc, end.doc) < 0)) result.regime.end = bound;
+  });
   return result;
 }
 
-function candidateSignature(ev: ContractEvidence): string {
+// ---------------------------------------------------------------------------------------------
+// P3.1 S2 - payslip placement in a field's regime (LOONTO-PRO-P3-DECISION-LOCK.md, decision A)
+// ---------------------------------------------------------------------------------------------
+
+/** A payslip's printed pay period `[ps, pe]`. One printed date is both bounds. The payment date is
+ * never a period bound. null = no printed period date at all (unplaceable). */
+function payslipPeriodBounds(period: PayPeriodRef | null): { start: string; end: string } | null {
+  const printedStart = period && hasUsableDate(period.startDate) ? period.startDate : null;
+  const printedEnd = period && hasUsableDate(period.endDate) ? period.endDate : null;
+  const start = printedStart ?? printedEnd;
+  const end = printedEnd ?? printedStart;
+  return start !== null && end !== null ? { start, end } : null;
+}
+
+/** The single value the contract side states for the field, or null when it states none, several, or
+ * is itself in conflict (then nothing is "the in-force contractual value"). */
+function inForceContractValue(ev: VariantEvidence): ProfileValue | null {
+  if (ev.forcedConflict !== null) return null;
+  const first = ev.candidates[0];
+  return first && ev.candidates.every((c) => valuesEqual(c.value, first.value)) ? first.value : null;
+}
+
+interface Placement {
+  /** Variant-comparison code. */
+  code: 'candidate' | 'unplaceable' | RegimeRelation;
+  exclude: { reason: ExcludedReasonCode; relation: RegimeRelation; bound: RegimeBound } | null;
+}
+
+/** Where one payslip candidate falls relative to the field's regime `[S, X)` (§4 of the S2 task). */
+function placePayslipCandidate(candidate: ProfileCandidate, regime: VariantRegime, inForce: ProfileValue | null): Placement {
+  const { start: S, end: X } = regime;
+  const boundary = S ?? X;
+  if (boundary === null) return { code: 'candidate', exclude: null }; // §4.7: no dated boundary - P1 behaviour
+  const period = payslipPeriodBounds(candidate.source.payPeriod);
+  if (period === null) {
+    // §4.6 (A3b): equal to the in-force value - shown, but it cannot prove it belongs to this regime.
+    if (inForce !== null && valuesEqual(candidate.value, inForce)) {
+      return { code: 'value_matches_current_but_period_unknown', exclude: { reason: 'payslip_period_unplaceable', relation: 'value_matches_current_but_period_unknown', bound: boundary } };
+    }
+    return { code: 'unplaceable', exclude: null }; // §4.5 (A3a): a candidate that forces a conflict
+  }
+  if (S && period.end < S.date) return { code: 'superseded_by', exclude: { reason: 'superseded_by_later_document', relation: 'superseded_by', bound: S } };
+  if (X && period.start >= X.date) return { code: 'later_than_as_of', exclude: { reason: 'outside_as_of_regime', relation: 'later_than_as_of', bound: X } };
+  if (S && period.start < S.date) return { code: 'straddles', exclude: { reason: 'pay_period_straddles_change', relation: 'straddles', bound: S } };
+  if (X && period.end >= X.date) return { code: 'straddles', exclude: { reason: 'pay_period_straddles_change', relation: 'straddles', bound: X } };
+  return { code: 'candidate', exclude: null }; // §4.4: fully inside [S, X)
+}
+
+/** One variant's contract evidence plus the payslip evidence placed in that variant's regime. Payslip
+ * candidates inside the regime join as employer-applied candidates (they corroborate or conflict - no
+ * majority vote, no automatic winner); the rest are excluded with a `RegimeMarker`. */
+function placePayslipEvidence(contract: VariantEvidence, slips: { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] }): VariantEvidence {
+  const inForce = inForceContractValue(contract);
+  const candidates = [...contract.candidates];
+  const placedOut: ExcludedEvidence[] = [];
+  const placements: string[] = [];
+  let unplaceable = false;
+  for (const candidate of slips.candidates) {
+    const placement = placePayslipCandidate(candidate, contract.regime, inForce);
+    placements.push(`${candidate.source.documentIndex}:${placement.code}`);
+    if (placement.exclude) {
+      placedOut.push({ value: candidate.value, source: candidate.source, reason: placement.exclude.reason, detail: candidate.detail, regime: regimeMarker(placement.exclude.relation, placement.exclude.bound) });
+    } else {
+      candidates.push(candidate);
+      if (placement.code === 'unplaceable') unplaceable = true;
+    }
+  }
+  // A contract-side conflict (timeline disagreement, A4) keeps its own reason; otherwise an unplaceable,
+  // different payslip value forces the A3a conflict, naming the change it cannot be placed against.
+  const changeBound = contract.regime.start ?? contract.regime.end;
+  const forcedConflict: ProfileReason | null = contract.forcedConflict ?? (unplaceable && changeBound ? { code: 'payslip_period_unplaceable', changeDate: changeBound.date } : null);
+  return { ...contract, candidates, excluded: [...contract.excluded, ...slips.excluded, ...placedOut], forcedConflict, placements };
+}
+
+/** P2.6 + P3.1 S2: the variant comparison covers the candidate values, the forced reason and the
+ * payslip placement - so a field whose outcome (including where a payslip falls) depends on a disputed
+ * annex date is never collapsed into one agreed state. */
+function candidateSignature(ev: VariantEvidence): string {
   const values = ev.candidates.map((c) => JSON.stringify(c.value)).sort();
-  return JSON.stringify([[...new Set(values)], ev.forcedConflict?.code ?? null]);
+  return JSON.stringify([[...new Set(values)], ev.forcedConflict?.code ?? null, [...ev.placements].sort()]);
+}
+
+/** The field's regime as reported. When variants are compared (a disputed annex date), a bound or
+ * winner that depends on which date is right is null - as `ProfileDocumentRef.effectiveDate` already
+ * does for a disputed annex; both dates stay in `contractContext.annexDates`. */
+function fieldRegime(regimes: VariantRegime[]): FieldRegime {
+  const views = regimes.map((r): FieldRegime => ({
+    start: r.start?.date ?? null,
+    end: r.end?.date ?? null,
+    winnerDocumentIndex: r.winner?.index ?? null,
+    winnerDocumentId: r.winner?.documentId ?? null,
+    winnerDocumentLabel: r.winner?.label ?? null,
+  }));
+  const first = views[0] as FieldRegime;
+  const sameWinner = views.every((v) => v.winnerDocumentIndex === first.winnerDocumentIndex);
+  return {
+    start: views.every((v) => v.start === first.start) ? first.start : null,
+    end: views.every((v) => v.end === first.end) ? first.end : null,
+    winnerDocumentIndex: sameWinner ? first.winnerDocumentIndex : null,
+    winnerDocumentId: sameWinner ? first.winnerDocumentId : null,
+    winnerDocumentLabel: sameWinner ? first.winnerDocumentLabel : null,
+  };
 }
 
 /** P2.6: with a disputed annex date the timeline is resolved under each date; a field whose outcome
- * does not depend on the date resolves normally; one that does is a conflict naming both outcomes. */
-function contractFieldEvidence(side: ContractSide, field: TimelineFieldKey, asOfDate: string): ContractEvidence {
+ * does not depend on the date resolves normally; one that does is a conflict naming both outcomes.
+ * P3.1 S2: when `payslips` is given (a regime-aware field), the payslip evidence is placed in EACH
+ * variant's regime before the variants are compared. With no contract document there is no regime and
+ * the payslip evidence is used as in P1. */
+function timelineFieldEvidence(side: ContractSide, field: TimelineFieldKey, asOfDate: string, payslips: { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] } | null): FieldEvidence {
   const factKey = TIMELINE_FACT_KEY[field];
-  if (!factKey || side.variants.length === 0) return { candidates: [], excluded: [], forcedConflict: null };
-  const perVariant = side.variants.map((v) => variantEvidence(side, v, field, factKey, asOfDate));
-  const first = perVariant[0] as ContractEvidence;
-  if (perVariant.every((ev) => candidateSignature(ev) === candidateSignature(first))) return first;
+  if (!factKey || side.variants.length === 0) {
+    return { candidates: [...(payslips?.candidates ?? [])], excluded: [...(payslips?.excluded ?? [])], forcedConflict: null, regime: null };
+  }
+  const perVariant = side.variants.map((v) => {
+    const ev = variantEvidence(side, v, field, factKey, asOfDate);
+    return payslips ? placePayslipEvidence(ev, payslips) : ev;
+  });
+  const first = perVariant[0] as VariantEvidence;
+  if (perVariant.every((ev) => candidateSignature(ev) === candidateSignature(first))) {
+    return { candidates: first.candidates, excluded: first.excluded, forcedConflict: first.forcedConflict, regime: fieldRegime([first.regime]) };
+  }
   const seen = new Set<string>();
+  const seenExcluded = new Set<string>();
   const candidates: ProfileCandidate[] = [];
   const excluded: ExcludedEvidence[] = [];
   for (const ev of perVariant) {
@@ -1011,9 +1290,14 @@ function contractFieldEvidence(side: ContractSide, field: TimelineFieldKey, asOf
       const sig = JSON.stringify([c.source.documentIndex, c.source.page, c.source.effectiveDate, c.value]);
       if (!seen.has(sig)) { seen.add(sig); candidates.push(c); }
     }
-    excluded.push(...ev.excluded);
+    // Every variant's exclusions are kept (they can differ by variant); only byte-identical repeats of
+    // the same exclusion are listed once.
+    for (const x of ev.excluded) {
+      const sig = JSON.stringify(x);
+      if (!seenExcluded.has(sig)) { seenExcluded.add(sig); excluded.push(x); }
+    }
   }
-  return { candidates, excluded, forcedConflict: { code: 'annex_effective_date_disputed' } };
+  return { candidates, excluded, forcedConflict: { code: 'annex_effective_date_disputed' }, regime: fieldRegime(perVariant.map((ev) => ev.regime)) };
 }
 
 function contractEmptyReason(side: ContractSide): UnknownReasonCode {
@@ -1021,8 +1305,16 @@ function contractEmptyReason(side: ContractSide): UnknownReasonCode {
 }
 
 function contractOnlyField(spec: FieldSpec, side: ContractSide, field: TimelineFieldKey, asOfDate: string): ProfileField {
-  const ev = contractFieldEvidence(side, field, asOfDate);
-  return resolveField(spec, ev.candidates, ev.excluded, contractEmptyReason(side), ev.forcedConflict);
+  const ev = timelineFieldEvidence(side, field, asOfDate, null);
+  return { ...resolveField(spec, ev.candidates, ev.excluded, contractEmptyReason(side), ev.forcedConflict), regime: ev.regime };
+}
+
+/** P3.1 S2: the ONE entry point for a field with both contract-timeline and payslip evidence (today
+ * `hourlyRate` and `hoursPerWeek`; any future such field opts in by calling this). Payslip-only fields
+ * never come here - among payslips there is no recency rule. */
+function regimeAwareField(spec: FieldSpec, side: ContractSide, field: TimelineFieldKey, asOfDate: string, payslips: { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] }, emptyReason: UnknownReasonCode): ProfileField {
+  const ev = timelineFieldEvidence(side, field, asOfDate, payslips);
+  return { ...resolveField(spec, ev.candidates, ev.excluded, emptyReason, ev.forcedConflict), regime: ev.regime };
 }
 
 /** Contract documents applicable in ANY timeline variant (base contracts, annexes in force under at
@@ -1078,6 +1370,7 @@ function docRef(doc: ProfileDocumentInput, side: ContractSide): ProfileDocumentR
   }
   return {
     index: doc.index,
+    documentId: doc.documentId ?? null,
     label: doc.label,
     role: doc.role,
     effectiveDate,
@@ -1116,25 +1409,18 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
   const applicable = anyVariantApplicable(side, asOfDate);
 
   // --- employment ---------------------------------------------------------------------------
-  const rateContract = contractFieldEvidence(side, 'hourlyRate', asOfDate);
+  // P3.1 S2: the two fields with both contract-timeline and payslip evidence are regime-aware.
   const rateSlips = regularRateEvidence(slips);
-  const hourlyRate = resolveField(
-    F('hourlyRate', 'gross_base_hourly_wage', 'eur_per_hour'),
-    [...rateContract.candidates, ...rateSlips.candidates],
-    [...rateContract.excluded, ...rateSlips.excluded],
+  const hourlyRate = regimeAwareField(
+    F('hourlyRate', 'gross_base_hourly_wage', 'eur_per_hour'), side, 'hourlyRate', asOfDate, rateSlips,
     documents.length === 0 ? 'no_documents' : 'not_on_documents',
-    rateContract.forcedConflict,
   );
 
   // P2.3: a contract-hours-per-week figure printed on a payslip is evidence for the same parameter.
-  const hpwContract = contractFieldEvidence(side, 'hoursPerWeek', asOfDate);
   const hpwSlips = payslipScalarEvidence(slips, 'hoursPerWeek');
-  const hoursPerWeek = resolveField(
-    F('hoursPerWeek', 'contract_hours_per_week', 'hours_per_week'),
-    [...hpwContract.candidates, ...hpwSlips.candidates],
-    [...hpwContract.excluded, ...hpwSlips.excluded],
+  const hoursPerWeek = regimeAwareField(
+    F('hoursPerWeek', 'contract_hours_per_week', 'hours_per_week'), side, 'hoursPerWeek', asOfDate, hpwSlips,
     documents.length === 0 ? 'no_documents' : 'not_on_documents',
-    hpwContract.forcedConflict,
   );
 
   const payslipEmployerCandidates: ProfileCandidate[] = [];
@@ -1270,7 +1556,7 @@ export function resolvePayrollProfile(input: ResolvePayrollProfileInput): Payrol
   };
 
   return {
-    version: 1,
+    version: 2,
     asOfDate,
     documents: documents.map((d) => docRef(d, side)),
     contractContext: buildContractContext(side, asOfDate),

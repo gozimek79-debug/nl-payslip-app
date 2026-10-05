@@ -20,6 +20,8 @@ export interface ProfileSourceView {
   sourceType: 'document' | 'rules' | 'user';
   role: 'contract_base' | 'contract_annex' | 'payslip' | 'rules' | 'user';
   documentIndex: number | null;
+  /** P3: the opaque per-upload identity the request carried (DocEntry.id), or null. */
+  documentId?: string | null;
   documentLabel: string | null;
   effectiveDate: string | null;
   payPeriod: { label: string | null; endDate: string | null; periodType: string | null } | null;
@@ -40,12 +42,26 @@ export interface ProfileFieldView {
   state: EvidenceState;
   sources: ProfileSourceView[];
   candidates: Array<{ value: ProfileValueView; source: ProfileSourceView }>;
-  excluded: Array<{ value: ProfileValueView | null; source: ProfileSourceView; reason: string; factReason?: string }>;
-  reason: { code: string; asOfDate?: string } | null;
+  excluded: Array<{ value: ProfileValueView | null; source: ProfileSourceView; reason: string; factReason?: string; regime?: RegimeMarkerView }>;
+  /** P3: `changeDate` (payslip_period_unplaceable) and the document members (later_document_unclear). */
+  reason: { code: string; asOfDate?: string; changeDate?: string; documentIndex?: number; documentId?: string | null; effectiveDate?: string | null } | null;
+  /** P3: a contract-timeline field's in-force regime; null/absent for every other field. */
+  regime?: { start: string | null; end: string | null; winnerDocumentIndex: number | null; winnerDocumentId: string | null; winnerDocumentLabel: string | null } | null;
+}
+
+/** P3: the regime boundary an excluded piece of evidence was placed against. */
+export interface RegimeMarkerView {
+  relation: 'superseded_by' | 'later_than_as_of' | 'straddles' | 'value_matches_current_but_period_unknown';
+  documentIndex: number;
+  documentId: string | null;
+  documentLabel: string;
+  role: 'contract_base' | 'contract_annex';
+  effectiveDate: string;
 }
 
 export interface PayrollProfileView {
-  version: 1;
+  /** 2 since P3.1 S2 (regime-aware evidence, documentId). */
+  version: 2;
   asOfDate: string;
   employment: Record<string, ProfileFieldView>;
   payroll: Record<string, ProfileFieldView>;
@@ -138,6 +154,8 @@ export function profilePrefill(profile: PayrollProfileView, badge: (field: Profi
  */
 export interface ProfileRequestDocument {
   index: number;
+  /** P3: the document's per-upload `DocEntry.id` - opaque identity, never interpreted. */
+  documentId?: string;
   label: string;
   role: 'contract_base' | 'contract_annex' | 'payslip';
   /** User-entered annex effective date (null for anything else). */

@@ -16,6 +16,10 @@ import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
  *
  * Deliberately absent from the request: discrepancies, needsConfirmation, any "fully reproduced"
  * flag, any replay result. Unknown keys are stripped by the schema.
+ *
+ * P3.1 S2: each document may carry an optional `documentId` - the client's per-upload `DocEntry.id`,
+ * an opaque non-empty string of at most 64 characters (no format is imposed, nothing reads meaning
+ * into it). It is carried into the profile's provenance; older requests without it stay valid.
  */
 const router = express.Router();
 
@@ -23,6 +27,7 @@ const MAX_DOCUMENTS = 30;
 
 const documentSchema = z.object({
   index: z.number().int().min(0),
+  documentId: z.string().min(1).max(64).optional(),
   label: z.string().min(1).max(300),
   role: z.enum(['contract_base', 'contract_annex', 'payslip']),
   effectiveDate: z.string().max(40).nullable(),
@@ -53,7 +58,7 @@ router.post('/resolve', (req, res) => {
       if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
       facts = mergeContractBatches(batches);
     }
-    documents.push({ index: d.index, label: d.label, role: d.role, effectiveDate: d.role === 'contract_annex' ? d.effectiveDate : null, facts });
+    documents.push({ index: d.index, documentId: d.documentId ?? null, label: d.label, role: d.role, effectiveDate: d.role === 'contract_annex' ? d.effectiveDate : null, facts });
   }
 
   const profile = resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents });

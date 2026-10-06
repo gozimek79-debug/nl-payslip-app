@@ -184,3 +184,83 @@ test('P3.1 S3 #41: request validation - more than 200 decisions, a malformed dec
   const differentIds = await post({ asOfDate: '2026-06-01', documents: [{ ...contractDocJson(0, 'pasek.pdf'), documentId: 'a' }, { ...payslipDocJson(1, 'pasek.pdf'), documentId: 'b' }] });
   assert.equal(differentIds.status, 200, 'the same label with different ids is fine');
 });
+
+type IssueJson = { fieldPath: string; severity: string; state: string; evidenceFingerprint: string; previousDecision: { kind: string; value: unknown } | null; candidates: Array<{ candidateId: string; value: unknown; basis: string }>; actions: string[]; impact: null };
+type ReadinessJson = { activeGroups: string[]; ready: boolean; blockingCount: number; optionalCount: number };
+type ResolveJson = { profile: PayrollProfile; decisionResults: Array<{ decisionId: string; fieldPath: string; status: string; problem: string | null }>; issues: IssueJson[]; readiness: ReadinessJson; extractionTable: unknown[]; coverage: unknown[] };
+
+/** A core_pay rate conflict: contract 15.55 against a payslip at 16.20. */
+const conflictDocuments = () => [
+  { ...contractDocJson(0, 'umowa.pdf', { hourly_rate: found(15.55, 'Uurloon: € 15,55', 1, 'Uurloon') }), documentId: 'u-base' },
+  { ...payslipDocJson(1, 'pasek.pdf'), documentId: 'u-slip' },
+];
+const SEVERITY_ORDER = ['blocking', 'optional', 'informational'];
+
+test('P3.1 S4: the response carries issues and readiness; with no requirements the active group is core_pay and the rate conflict blocks', async () => {
+  const res = await post({ asOfDate: '2026-06-01', documents: conflictDocuments() });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as ResolveJson;
+  assert.deepEqual(Object.keys(body).sort(), ['coverage', 'decisionResults', 'extractionTable', 'issues', 'profile', 'readiness'], 'existing members kept, issues + readiness added');
+  assert.deepEqual(body.decisionResults, []);
+  assert.deepEqual([body.readiness.activeGroups, body.readiness.ready, body.readiness.blockingCount], [['core_pay'], false, 1]);
+  const rate = body.issues.find((i) => i.fieldPath === 'employment.hourlyRate');
+  assert.deepEqual([rate?.severity, rate?.state, rate?.impact, rate?.actions], ['blocking', 'conflict', null, ['select_candidate', 'enter_value']]);
+  assert.deepEqual(rate?.candidates.map((c) => [c.value, c.basis]), [[15.55, 'contractual'], [16.2, 'employer_applied']]);
+  assert.equal(rate?.evidenceFingerprint, profileFieldFingerprint(body.profile, 'employment.hourlyRate'));
+  const ranks = body.issues.map((i) => SEVERITY_ORDER.indexOf(i.severity));
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b), 'ordered blocking, optional, informational');
+});
+
+test('P3.1 S4: requirements.groups - explicit, empty, repeated and reordered lists; unknown or malformed ones are invalid_input', async () => {
+  const withGroups = async (groups: unknown) => post({ asOfDate: '2026-06-01', documents: conflictDocuments(), requirements: { groups } });
+  const empty = (await (await withGroups([])).json()) as ResolveJson;
+  assert.deepEqual([empty.readiness.activeGroups, empty.readiness.ready, empty.readiness.blockingCount], [[], true, 0]);
+  assert.equal(empty.issues.find((i) => i.fieldPath === 'employment.hourlyRate')?.severity, 'optional', 'a conflict stays visible, as optional');
+  const a = (await (await withGroups(['tax_settings', 'core_pay', 'overtime', 'core_pay', 'tax_settings'])).json()) as ResolveJson;
+  const b = (await (await withGroups(['overtime', 'tax_settings', 'core_pay'])).json()) as ResolveJson;
+  assert.deepEqual(a.readiness.activeGroups, ['core_pay', 'overtime', 'tax_settings']);
+  assert.equal(JSON.stringify([a.issues, a.readiness]), JSON.stringify([b.issues, b.readiness]), 'repeats and order change nothing');
+  assert.equal(a.issues.find((i) => i.fieldPath === 'payroll.loonheffingskorting')?.severity, 'blocking');
+  for (const bad of [['payroll'], ['core_pay', 'nope'], [1], 'core_pay', null, {}, Array.from({ length: 37 }, () => 'core_pay')]) {
+    const res = await withGroups(bad);
+    assert.equal(res.status, 400, `groups ${JSON.stringify(bad)}`);
+    assert.equal(((await res.json()) as { error_code: string }).error_code, 'invalid_input');
+  }
+  assert.equal((await post({ asOfDate: '2026-06-01', documents: conflictDocuments(), requirements: {} })).status, 400, 'requirements without groups is malformed');
+  assert.equal((await post({ asOfDate: '2026-06-01', documents: conflictDocuments(), requirements: null })).status, 400);
+  const extra = await post({ asOfDate: '2026-06-01', documents: conflictDocuments(), requirements: { groups: ['core_pay'], scenario: { hours: 40 } } });
+  assert.equal(extra.status, 200, 'there is no scenario input: unknown members are stripped, not interpreted');
+  assert.deepEqual(((await extra.json()) as ResolveJson).readiness.activeGroups, ['core_pay']);
+});
+
+test('P3.1 S4 #13: legacy replay / needsConfirmation state in the request is stripped - it can change neither issues nor readiness', async () => {
+  const plain = (await (await post({ asOfDate: '2026-06-01', documents: conflictDocuments() })).json()) as ResolveJson;
+  const noisy = await post({
+    asOfDate: '2026-06-01', discrepancies: [{ key: 'x' }], needsConfirmation: [{ key: 'y' }], confirmedIssueKeys: ['y'], fullyReproduced: true,
+    documents: conflictDocuments().map((d) => ({ ...d, needsConfirmation: [{ key: 'z' }], payslipAnalysis: { blocked: true }, confirmed: true })),
+  });
+  assert.equal(noisy.status, 200);
+  const body = (await noisy.json()) as ResolveJson;
+  assert.equal(JSON.stringify([body.issues, body.readiness]), JSON.stringify([plain.issues, plain.readiness]));
+});
+
+test('P3.1 S4: the client submits the fingerprint an issue carried - the decision applies, the issue disappears, readiness turns ready; a later change stales it with previousDecision', async () => {
+  const first = (await (await post({ asOfDate: '2026-06-01', documents: conflictDocuments() })).json()) as ResolveJson;
+  const issue = first.issues.find((i) => i.fieldPath === 'employment.hourlyRate') as IssueJson;
+  const picked = issue.candidates.find((c) => c.basis === 'employer_applied') as IssueJson['candidates'][number];
+  const decision = { kind: 'confirm_candidate', decisionId: 'd-rate', fieldPath: issue.fieldPath, value: picked.value, evidenceFingerprint: issue.evidenceFingerprint, decidedAt: '2026-10-06T09:00:00Z' };
+  const applied = (await (await post({ asOfDate: '2026-06-01', documents: conflictDocuments(), decisions: [decision] })).json()) as ResolveJson;
+  assert.deepEqual(applied.decisionResults, [{ decisionId: 'd-rate', fieldPath: 'employment.hourlyRate', status: 'applied', problem: null }]);
+  assert.equal(applied.profile.employment.hourlyRate.state, 'user_confirmed');
+  assert.equal(applied.issues.find((i) => i.fieldPath === 'employment.hourlyRate'), undefined);
+  // Ready; what remains is the three optional core_pay fields this minimal contract does not state.
+  assert.deepEqual(applied.readiness, { activeGroups: ['core_pay'], ready: true, blockingCount: 0, optionalCount: 3 });
+  assert.deepEqual(applied.issues.filter((i) => i.severity === 'optional').map((i) => i.fieldPath), ['employment.hoursPerWeek', 'employment.guaranteedHours', 'employment.guaranteedHoursPeriodWeeks']);
+  // The contract changes (another rate): the decision is stale, the documentary conflict returns with the previous choice.
+  const changedDocuments = [{ ...contractDocJson(0, 'umowa.pdf', { hourly_rate: found(15.7, 'Uurloon: € 15,70', 1, 'Uurloon') }), documentId: 'u-base' }, conflictDocuments()[1]];
+  const stale = (await (await post({ asOfDate: '2026-06-01', documents: changedDocuments, decisions: [decision] })).json()) as ResolveJson;
+  assert.deepEqual(stale.decisionResults.map((r) => [r.status, r.problem]), [['stale', 'evidence_changed']]);
+  const again = stale.issues.find((i) => i.fieldPath === 'employment.hourlyRate') as IssueJson;
+  assert.deepEqual([again.severity, again.previousDecision, again.evidenceFingerprint === issue.evidenceFingerprint], ['blocking', { kind: 'confirm_candidate', value: 16.2 }, false]);
+  assert.equal(stale.readiness.ready, false);
+});

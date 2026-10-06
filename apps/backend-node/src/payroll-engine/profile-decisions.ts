@@ -31,7 +31,7 @@ import {
 
 /** Every recurring collection is a decision target; a new collection is a compile error until listed. */
 export const RECURRING_COLLECTIONS = ['surcharges', 'otherPreTaxDeductions', 'otherPostTaxDeductions', 'netAdditions', 'netDeductions'] as const satisfies readonly (keyof RecurringItems)[];
-type RecurringCollection = (typeof RECURRING_COLLECTIONS)[number];
+export type RecurringCollection = (typeof RECURRING_COLLECTIONS)[number];
 export const ALL_RECURRING_COLLECTIONS_LISTED: [Exclude<keyof RecurringItems, RecurringCollection>] extends [never] ? true : false = true;
 
 /** Stable field identity. A recurring field is addressed by its existing group key
@@ -288,6 +288,10 @@ function isIsoCalendarDate(v: ProfileValue): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 }
 
+/** The pay-period types a user may give (the P2 fact layer's own set). One list: the readiness layer's
+ * `period_type` input metadata (profile-readiness.ts) reads it too, so the two cannot drift. */
+export const PERIOD_TYPE_VALUES = ['week', '4-weekly', 'month'] as const;
+
 /**
  * The value a user may give a field of each unit. Ranges are the canonical limits (task §9). Monetary
  * units: >= 0 (F2); the only established plausibility maximum in the repository is the monthly salary's
@@ -308,7 +312,7 @@ export const UNIT_RULES: Record<ProfileUnit, (v: ProfileValue) => boolean> = {
   surcharge_percent: within(0, 100),
   percent_of_printed_base: within(0, 100),
   percent: within(0, 100),
-  period_type: (v) => v === 'week' || v === '4-weekly' || v === 'month',
+  period_type: (v) => typeof v === 'string' && (PERIOD_TYPE_VALUES as readonly string[]).includes(v),
   boolean: (v) => typeof v === 'boolean',
 };
 

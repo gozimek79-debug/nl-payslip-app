@@ -5,6 +5,7 @@ import {
   applyUserDecisions, duplicateDocumentIds, isProfileFieldPath, MAX_DECISIONS, MAX_FIELD_PATH_LENGTH, PROFILE_UNITS,
   type UserProfileDecision,
 } from '../payroll-engine/profile-decisions.js';
+import { evaluateReadiness, normalizeActiveGroups, REQUIREMENT_GROUP_IDS, type RequirementGroupId } from '../payroll-engine/profile-readiness.js';
 import { mergePayslipBatches, mergeContractBatches, type DocumentFacts } from '../payroll-engine/document-facts.js';
 import { buildExtractionTable } from '../payroll-engine/fact-table.js';
 import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
@@ -30,6 +31,12 @@ import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
  * `decisions` (default none); the response profile is the documentary profile with those decisions
  * overlaid (profile-decisions.ts, stateless - nothing is stored), plus one `decisionResults` entry per
  * decision in request order.
+ *
+ * P3.1 S4: the request may name the active requirement `groups` (default `core_pay`, O4). The response
+ * adds `issues` - one per unresolved field with a severity (blocking only when required in an active
+ * group), candidates, hints, actions, a typed input and the documentary evidence fingerprint - and
+ * `readiness` (profile-readiness.ts). Pure and stateless; no replay or per-payslip confirmation state
+ * enters it (unknown request keys, including the legacy ones, are stripped).
  */
 const router = express.Router();
 
@@ -65,6 +72,9 @@ const resolveProfileSchema = z.object({
   asOfDate: z.string().min(1).max(40),
   documents: z.array(documentSchema).max(MAX_DOCUMENTS),
   decisions: z.array(decisionSchema).max(MAX_DECISIONS).optional(),
+  // P3.1 S4: which requirement groups are active. Omitted = the O4 default ['core_pay']; [] is allowed.
+  // Unknown ids are rejected; repeats are harmless (deduplicated). There is no scenario input here.
+  requirements: z.object({ groups: z.array(z.enum(REQUIREMENT_GROUP_IDS)).max(REQUIREMENT_GROUP_IDS.length * 4) }).optional(),
 });
 
 router.post('/resolve', (req, res) => {
@@ -91,10 +101,13 @@ router.post('/resolve', (req, res) => {
   }
 
   const documentary = resolvePayrollProfile({ asOfDate: parsed.data.asOfDate, documents });
-  const { profile, decisionResults } = applyUserDecisions(documentary, (parsed.data.decisions ?? []) as UserProfileDecision[]);
+  const decisions = (parsed.data.decisions ?? []) as UserProfileDecision[];
+  const { profile, decisionResults } = applyUserDecisions(documentary, decisions);
+  const groups: RequirementGroupId[] = normalizeActiveGroups(parsed.data.requirements?.groups);
+  const { issues, readiness } = evaluateReadiness(profile, { groups, decisions, decisionResults });
   const extractionTable = buildExtractionTable(documents.map((d) => ({ documentIndex: d.index, documentLabel: d.label, role: d.role, facts: d.facts })));
   const coverage = documents.map((d) => ({ index: d.index, ...d.facts.coverage }));
-  return res.json({ profile, extractionTable, coverage, decisionResults });
+  return res.json({ profile, extractionTable, coverage, decisionResults, issues, readiness });
 });
 
 export default router;

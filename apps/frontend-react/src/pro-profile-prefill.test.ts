@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { profilePrefill, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState, type ProfileDecisionView } from './pro-profile-prefill.ts';
+import { profilePrefill, isUsableField, resolveProfile, isResolvableAsOfDate, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type EvidenceState, type ProfileDecisionView, type ProfileIssueView, type CalculationReadinessView, type RequirementsView, REQUIREMENT_GROUP_IDS_VIEW } from './pro-profile-prefill.ts';
 import { translations } from './translations.ts';
 
 /**
@@ -231,4 +231,43 @@ test('P3.1 S3: an applied user_confirmed or user_corrected field is usable by th
     assert.equal(profilePrefill(profile({ hourlyRate: userField(state, 17.1) }, {}), badge).hourly_rate, 17.1, state);
   }
   assert.equal(profilePrefill(profile({ hourlyRate: field('hourlyRate', 'conflict', null) }, {}), badge).hourly_rate, undefined);
+});
+
+// --- P3.1 S4 ----------------------------------------------------------------------------------
+
+test('P3.1 S4: resolveProfile sends requirements only when given, returns issues and readiness, and keeps the earlier request shapes byte for byte', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const issue: ProfileIssueView = {
+    fieldPath: 'employment.hourlyRate', key: 'hourlyRate', meaning: 'gross_base_hourly_wage', unit: 'eur_per_hour', state: 'conflict', reason: { code: 'sources_disagree' },
+    severity: 'blocking', groups: ['core_pay'], candidates: [{ candidateId: '0123456789abcdef', value: 16.2, sources: [], basis: 'employer_applied' }], hints: [], excluded: [],
+    actions: ['select_candidate', 'enter_value'], input: { kind: 'number', min: 0.01, max: 200, step: 0.01 }, evidenceFingerprint: 'fedcba9876543210', previousDecision: null, impact: null,
+  };
+  const readiness: CalculationReadinessView = { activeGroups: ['core_pay'], ready: false, blockingCount: 1, optionalCount: 0 };
+  const fakeFetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ profile: profile({}, {}), extractionTable: [], decisionResults: [], issues: [issue], readiness }), { status: 200 });
+  }) as typeof fetch;
+  const resolved = await resolveProfile('2026-10-01', cachedDocuments, fakeFetch);
+  assert.deepEqual(bodies[0], { asOfDate: '2026-10-01', documents: cachedDocuments }, 'no requirements: the backend default (core_pay) applies');
+  assert.deepEqual([resolved?.issues, resolved?.readiness], [[issue], readiness]);
+  const requirements: RequirementsView = { groups: ['core_pay', 'overtime'] };
+  await resolveProfile('2026-10-01', cachedDocuments, fakeFetch, [], requirements);
+  assert.deepEqual(bodies[1], { asOfDate: '2026-10-01', documents: cachedDocuments, requirements });
+  const decision: ProfileDecisionView = { kind: 'confirm_candidate', decisionId: 'd-1', fieldPath: 'employment.hourlyRate', value: 16.2, evidenceFingerprint: issue.evidenceFingerprint, decidedAt: '2026-10-06T09:00:00Z' };
+  await resolveProfile('2026-10-01', cachedDocuments, fakeFetch, [decision], requirements);
+  assert.deepEqual(bodies[2], { asOfDate: '2026-10-01', documents: cachedDocuments, decisions: [decision], requirements });
+  // An older backend (no issues / readiness): empty issues, and no readiness is invented.
+  const older = (async () => new Response(JSON.stringify({ profile: profile({}, {}), extractionTable: [] }), { status: 200 })) as unknown as typeof fetch;
+  const fallback = await resolveProfile('2026-10-01', cachedDocuments, older);
+  assert.deepEqual([fallback?.issues, fallback?.readiness], [[], null]);
+});
+
+test('P3.1 S4: the frontend group list mirrors the backend canonical list, and ProDocuments still renders no issues or readiness (no S4 UI)', () => {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const backend = readFileSync(path.join(dir, '..', '..', 'backend-node', 'src', 'payroll-engine', 'profile-readiness.ts'), 'utf-8');
+  const listed = /REQUIREMENT_GROUP_IDS = \[([^\]]+)\] as const/.exec(backend)?.[1]?.match(/'([a-z_]+)'/g)?.map((s) => s.slice(1, -1));
+  assert.deepEqual([...REQUIREMENT_GROUP_IDS_VIEW], listed, 'same ids, same canonical order');
+  for (const marker of ['readiness', 'ProfileIssueView', 'CalculationReadinessView', 'REQUIREMENT_GROUP', 'resolved.issues', 'RequirementsView']) {
+    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments does not use ${marker} in S4`);
+  }
 });

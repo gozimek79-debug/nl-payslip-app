@@ -77,6 +77,48 @@ export interface DecisionResultView {
   problem: 'field_not_found' | 'evidence_changed' | 'candidate_not_present' | 'invalid_value' | 'unit_mismatch' | 'duplicate_field_decision' | null;
 }
 
+/** P3.1 S4: the requirement groups (backend profile-readiness.ts), in the backend's canonical order. */
+export const REQUIREMENT_GROUP_IDS_VIEW = [
+  'core_pay', 'overtime', 'saturday', 'sunday', 'public_holiday', 'surcharges', 'employee_deductions', 'net_items', 'tax_settings',
+] as const;
+export type RequirementGroupIdView = (typeof REQUIREMENT_GROUP_IDS_VIEW)[number];
+
+/** P3.1 S4: which requirement groups the calculation needs. Omit it and the backend uses `['core_pay']`. */
+export interface RequirementsView {
+  groups: RequirementGroupIdView[];
+}
+
+export type IssueSeverityView = 'blocking' | 'optional' | 'informational';
+
+/** P3.1 S4: one unresolved field (conflict / unknown) with everything a question needs - the later UI
+ * renders it; nothing here decides anything. `impact` is reserved for P4 and always null. */
+export interface ProfileIssueView {
+  fieldPath: string;
+  key: string;
+  meaning: string;
+  unit: string;
+  state: 'conflict' | 'unknown';
+  reason: NonNullable<ProfileFieldView['reason']>;
+  severity: IssueSeverityView;
+  groups: RequirementGroupIdView[];
+  candidates: Array<{ candidateId: string; value: ProfileValueView; sources: ProfileSourceView[]; basis: 'contractual' | 'employer_applied' }>;
+  hints: Array<{ value: ProfileValueView; sources: ProfileSourceView[]; kind: 'observed_premium' | 'superseded_value' | 'unplaceable_matching_value' | 'excluded_value' }>;
+  excluded: ProfileFieldView['excluded'];
+  actions: Array<'select_candidate' | 'enter_value' | 'leave_unresolved'>;
+  input: { kind: 'number' | 'text' | 'date' | 'boolean' | 'enum'; min?: number; max?: number; step?: number; enumValues?: string[] };
+  /** The documentary fingerprint to submit back with a decision on this field. */
+  evidenceFingerprint: string;
+  previousDecision: { kind: 'confirm_candidate' | 'correct_value'; value: ProfileValueView } | null;
+  impact: null;
+}
+
+export interface CalculationReadinessView {
+  activeGroups: RequirementGroupIdView[];
+  ready: boolean;
+  blockingCount: number;
+  optionalCount: number;
+}
+
 /** P3: the regime boundary an excluded piece of evidence was placed against. */
 export interface RegimeMarkerView {
   relation: 'superseded_by' | 'later_than_as_of' | 'straddles' | 'value_matches_current_but_period_unknown';
@@ -120,6 +162,10 @@ export interface ResolvedProfileView {
   extractionTable: ExtractionRowView[];
   /** P3.1 S3: one per submitted decision, request order (empty when none were sent). */
   decisionResults: DecisionResultView[];
+  /** P3.1 S4: one per unresolved field, blocking first (empty when there are none). */
+  issues: ProfileIssueView[];
+  /** P3.1 S4: null only when the backend sent none - a readiness is never made up here. */
+  readiness: CalculationReadinessView | null;
 }
 
 export function isUsableField(field: ProfileFieldView | undefined): field is ProfileFieldView & { value: ProfileValueView } {
@@ -208,15 +254,21 @@ export function isResolvableAsOfDate(value: string): boolean {
  * P3.1 S3: optional field-level `decisions` are sent with the documents (the backend is stateless - the
  * client re-sends them on every resolve); without decisions the request body is exactly as before. The
  * returned profile is the one with the decisions overlaid, plus one `decisionResults` entry per decision.
+ *
+ * P3.1 S4: optional `requirements` name the active requirement groups. Without them the request body is
+ * exactly as before and the backend applies its default (`core_pay`). The response also carries `issues`
+ * and `readiness`. Nothing here renders or decides them.
  */
-export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch, decisions: ProfileDecisionView[] = []): Promise<ResolvedProfileView | null> {
+export async function resolveProfile(asOfDate: string, documents: ProfileRequestDocument[], fetchImpl: typeof fetch = fetch, decisions: ProfileDecisionView[] = [], requirements?: RequirementsView): Promise<ResolvedProfileView | null> {
   try {
     const res = await fetchImpl('/api/profile/resolve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(decisions.length > 0 ? { asOfDate, documents, decisions } : { asOfDate, documents }),
+      body: JSON.stringify({ asOfDate, documents, ...(decisions.length > 0 ? { decisions } : {}), ...(requirements ? { requirements } : {}) }),
     });
-    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[]; decisionResults?: DecisionResultView[] };
-    return res.ok && data.profile ? { profile: data.profile, extractionTable: data.extractionTable ?? [], decisionResults: data.decisionResults ?? [] } : null;
+    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[]; decisionResults?: DecisionResultView[]; issues?: ProfileIssueView[]; readiness?: CalculationReadinessView };
+    return res.ok && data.profile
+      ? { profile: data.profile, extractionTable: data.extractionTable ?? [], decisionResults: data.decisionResults ?? [], issues: data.issues ?? [], readiness: data.readiness ?? null }
+      : null;
   } catch {
     return null;
   }

@@ -72,11 +72,11 @@ test('P1.8 #13: live ProDocuments no longer imports or calls the old whole-paysl
 test('P1.8 #13: live ProDocuments sources the projection prefill from the backend profile', () => {
   // P1.1: the endpoint call itself lives in resolveProfile (pro-profile-prefill.ts, tested above);
   // ProDocuments must reach it with the documents it just read.
-  assert.ok(proDocumentsCode.includes('resolveProfile(asOfDate, profileDocuments)'), 'submitAll resolves the profile from the documents it read');
+  assert.ok(proDocumentsCode.includes('resolveWithDecisions(asOfDate, profileDocuments, '), 'submitAll resolves the profile from the documents it read');
   assert.ok(/const contractPrefill[^;]*=[^;]*profilePrefill\(profile,/.test(proDocumentsCode), 'contractPrefill is built from profilePrefill(profile, ...) only');
   assert.ok(/contractPrefill=\{contractPrefill\}/.test(proDocumentsCode), 'that prefill is what the PRO calculator receives');
   // The audit state that used to unlock parameters is not part of the profile request.
-  const requestBlock = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveProfile(asOfDate, profileDocuments)'));
+  const requestBlock = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveWithDecisions(asOfDate, profileDocuments, '));
   for (const auditState of ['confirmedIssueKeys', 'discrepancies', 'openNeedsConfirmation', 'visibleNeedsConfirmation']) {
     assert.ok(!requestBlock.includes(auditState), `the profile request must not carry ${auditState}`);
   }
@@ -147,7 +147,7 @@ test('P1.1 #9: a failed re-resolve returns null (the caller shows an error, neve
 
 test('P1.1 #9: live ProDocuments re-resolves on an as-of date change from cached facts, never re-reading documents', () => {
   const handler = proDocumentsCode.slice(proDocumentsCode.indexOf('function changeAsOfDate'), proDocumentsCode.indexOf('async function correctNeedsConfirmationIssue'));
-  assert.ok(handler.includes('resolveProfile(value, resolvedDocuments)'), 'the handler re-resolves from the cached document facts with the new date');
+  assert.ok(handler.includes('resolveWithDecisions(value, resolvedDocuments, '), 'the handler re-resolves from the cached document facts with the new date');
   assert.ok(handler.includes('setProfile(null)'), 'the old profile is cleared at once - never shown under the new date');
   assert.ok(/setSubmitCount/.test(handler), 'the calculator remounts so its prefill follows the new profile');
   for (const reread of ['readDocument', 'renderPageImages', 'readDocumentSource', '/api/pro/', '/api/tier-c/analyze', '/api/contracts/analyze']) {
@@ -169,7 +169,7 @@ test('P2.17 #18/#3: the live PRO read path uses the fact routes only - no Tier C
 });
 
 test('P2.4: a payslip whose replay is unavailable is still sent to the profile - only read status and its own facts decide', () => {
-  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveProfile(asOfDate, profileDocuments)'));
+  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveWithDecisions(asOfDate, profileDocuments, '));
   assert.ok(block.includes("e.status !== 'done' || !e.factBatches"), 'membership depends only on the document having been read');
   for (const auditOrReplay of ['payslipBlocked', 'payslipAnalysis', 'discrepancies', 'needsConfirmation', 'confirmedIssueKeys']) {
     assert.ok(!block.includes(auditOrReplay), `the profile request must not depend on ${auditOrReplay}`);
@@ -189,7 +189,7 @@ test('P2.17 #15: local-ocr reads every page of a document; the old three-page ca
 // --- P3.1 S2 ----------------------------------------------------------------------------------
 
 test('P3.1 S2: each profile request document carries its per-upload DocEntry.id as an opaque documentId, forwarded unchanged', async () => {
-  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveProfile(asOfDate, profileDocuments)'));
+  const block = proDocumentsCode.slice(proDocumentsCode.indexOf('const profileDocuments'), proDocumentsCode.indexOf('resolveWithDecisions(asOfDate, profileDocuments, '));
   assert.ok(block.includes('documentId: e.id'), 'the request identifies each document by its DocEntry.id, not by its position');
   assert.ok(block.includes('index,'), 'the display index is still sent alongside it (backward compatible)');
   const withIds: ProfileRequestDocument[] = cachedDocuments.map((d, i) => ({ ...d, documentId: `upload-${i}` }));
@@ -205,7 +205,7 @@ test('P3.1 S2: each profile request document carries its per-upload DocEntry.id 
 
 // --- P3.1 S3 ----------------------------------------------------------------------------------
 
-test('P3.1 S3: resolveProfile sends field-level decisions only when given and returns decisionResults; ProDocuments has no decision flow yet', async () => {
+test('P3.1 S3: resolveProfile sends field-level decisions only when given and returns decisionResults; ProDocuments builds no decision itself (S5 delegates)', async () => {
   const bodies: Array<Record<string, unknown>> = [];
   const fakeFetch = (async (_url: string, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)));
@@ -217,8 +217,8 @@ test('P3.1 S3: resolveProfile sends field-level decisions only when given and re
   assert.deepEqual(resolved?.decisionResults, [{ decisionId: 'd-1', fieldPath: 'employment.hourlyRate', status: 'applied', problem: null }]);
   await resolveProfile('2026-10-01', cachedDocuments, fakeFetch);
   assert.deepEqual(bodies[1], { asOfDate: '2026-10-01', documents: cachedDocuments }, 'without decisions the request body is exactly as before');
-  for (const marker of ['confirm_candidate', 'correct_value', 'decisionResults', 'ProfileDecisionView']) {
-    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments does not implement ${marker} in S3`);
+  for (const marker of ['confirm_candidate', 'correct_value']) {
+    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments does not construct a ${marker} decision itself (pro-profile-questions.ts does)`);
   }
 });
 
@@ -262,12 +262,12 @@ test('P3.1 S4: resolveProfile sends requirements only when given, returns issues
   assert.deepEqual([fallback?.issues, fallback?.readiness], [[], null]);
 });
 
-test('P3.1 S4: the frontend group list mirrors the backend canonical list, and ProDocuments still renders no issues or readiness (no S4 UI)', () => {
+test('P3.1 S4: the frontend group list mirrors the backend canonical list, and ProDocuments adds no requirement-group selector (backend default core_pay)', () => {
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const backend = readFileSync(path.join(dir, '..', '..', 'backend-node', 'src', 'payroll-engine', 'profile-readiness.ts'), 'utf-8');
   const listed = /REQUIREMENT_GROUP_IDS = \[([^\]]+)\] as const/.exec(backend)?.[1]?.match(/'([a-z_]+)'/g)?.map((s) => s.slice(1, -1));
   assert.deepEqual([...REQUIREMENT_GROUP_IDS_VIEW], listed, 'same ids, same canonical order');
-  for (const marker of ['readiness', 'ProfileIssueView', 'CalculationReadinessView', 'REQUIREMENT_GROUP', 'resolved.issues', 'RequirementsView']) {
-    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments does not use ${marker} in S4`);
+  for (const marker of ['REQUIREMENT_GROUP', 'RequirementsView', 'requirements']) {
+    assert.ok(!proDocumentsCode.includes(marker), `ProDocuments has no requirement-group selector (${marker})`);
   }
 });

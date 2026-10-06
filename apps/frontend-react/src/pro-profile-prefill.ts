@@ -24,7 +24,7 @@ export interface ProfileSourceView {
   documentId?: string | null;
   documentLabel: string | null;
   effectiveDate: string | null;
-  payPeriod: { label: string | null; endDate: string | null; periodType: string | null } | null;
+  payPeriod: { label: string | null; startDate?: string | null; endDate: string | null; paymentDate?: string | null; periodType: string | null } | null;
   printedLabel: string | null;
   page: number | null;
   line: number | null;

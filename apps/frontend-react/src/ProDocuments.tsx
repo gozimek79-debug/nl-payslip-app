@@ -4,7 +4,12 @@ import { renderPageImages, readDocumentSource, photoWithinBudget } from './local
 import { planDocumentBatches } from './document-batches.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
-import { isResolvableAsOfDate, profilePrefill, resolveProfile, sourceDocumentLabels, type ExtractionRowView, type PayrollProfileView, type ProfileFieldView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
+import { isResolvableAsOfDate, profilePrefill, sourceDocumentLabels, type CalculationReadinessView, type DecisionResultView, type ExtractionRowView, type PayrollProfileView, type ProfileDecisionView, type ProfileFieldView, type ProfileIssueView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
+import {
+  acceptSuggestion, chooseCandidate, enterManual, planApply, removeDecision, resolvedByYou, resolveWithDecisions, settlePending, skipIssue, visibleIssues, withoutField,
+  type DecisionProblem, type DecisionResolveOutcome, type PendingMap,
+} from './pro-profile-questions.ts';
+import { ProfileQuestions } from './ProfileQuestions.tsx';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 import {
   issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
@@ -141,6 +146,18 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   const [globalError, setGlobalError] = useState('');
   // P2 (§P2.14): the developer extraction table returned with the profile.
   const [extractionTable, setExtractionTable] = useState<ExtractionRowView[]>([]);
+  // P3.1 S5: the field-level resolution flow. `issues` / `readiness` / `decisionResults` are exactly what
+  // the backend returned for the last resolve; the decision set (S3 decisions, resubmitted on EVERY
+  // resolve - Apply, Undo, a new as-of date, a document re-read) lives in a ref so async handlers always
+  // see the latest one; `pending` holds the user's in-progress choices (one per field); `problems` the
+  // per-field rejections of the last resolve. Nothing here resolves anything locally.
+  const [issues, setIssues] = useState<ProfileIssueView[]>([]);
+  const [readiness, setReadiness] = useState<CalculationReadinessView | null>(null);
+  const [decisionResults, setDecisionResults] = useState<DecisionResultView[]>([]);
+  const [pending, setPending] = useState<PendingMap>({});
+  const [problems, setProblems] = useState<Record<string, DecisionProblem>>({});
+  const [applying, setApplying] = useState(false);
+  const decisionsRef = useRef<ProfileDecisionView[]>([]);
 
   function handleFilesAdded(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -234,7 +251,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
   async function submitAll() {
     if (!isReadyToSubmit(docs)) { setGlobalError(t.effectiveDateRequired); return; }
-    setGlobalError(''); setSubmitting(true); setProfile(null); setExtractionTable([]);
+    setGlobalError(''); setSubmitting(true); setProfile(null); setExtractionTable([]); setIssues([]); setReadiness(null);
     setDocs((current) => current.map((e) => ({ ...e, status: 'processing' as const })));
 
     const processed = await Promise.all(docs.map(async (entry) => {
@@ -258,10 +275,14 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       return [{ index, documentId: e.id, label: e.label, role, effectiveDate: role === 'contract_annex' ? e.effectiveDate : null, factBatches: e.factBatches }];
     });
     setResolvedDocuments(profileDocuments);
+    // P3.1 S5: a document re-read resubmits the CURRENT decision set (the documents keep their ids), so
+    // the backend decides what still applies - a decision it can no longer apply comes back as a stale
+    // question with `previousDecision`; nothing is dropped here before the backend has seen it.
     const requestId = ++profileRequestId.current;
-    const resolved = await resolveProfile(asOfDate, profileDocuments);
+    const sent = decisionsRef.current;
+    const outcome = await resolveWithDecisions(asOfDate, profileDocuments, sent);
     if (requestId === profileRequestId.current) {
-      if (resolved) { setProfile(resolved.profile); setExtractionTable(resolved.extractionTable); }
+      if (outcome) applyOutcome(outcome, sent);
       else setGlobalError(t.profileError);
     }
 
@@ -282,16 +303,68 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     const requestId = ++profileRequestId.current;
     setProfile(null);
     setExtractionTable([]);
+    setIssues([]);
+    setReadiness(null);
     setGlobalError('');
     setSubmitCount((n) => n + 1);
     if (!isResolvableAsOfDate(value)) { setResolvingProfile(false); return; }
     setResolvingProfile(true);
-    void resolveProfile(value, resolvedDocuments).then((resolved) => {
+    // P3.1 S5: the existing decisions go with the new date; one that no longer holds under it (another
+    // regime) comes back stale - never silently kept, never silently dropped.
+    const sent = decisionsRef.current;
+    void resolveWithDecisions(value, resolvedDocuments, sent).then((outcome) => {
       if (requestId !== profileRequestId.current) return;
       setResolvingProfile(false);
-      if (resolved) { setProfile(resolved.profile); setExtractionTable(resolved.extractionTable); setSubmitCount((n) => n + 1); }
+      if (outcome) { applyOutcome(outcome, sent); setSubmitCount((n) => n + 1); }
       else setGlobalError(t.profileError);
     });
+  }
+
+  /** P3.1 S5: lands a backend result - the profile, issues, readiness and decisionResults exactly as the
+   * backend returned them, the decision set to keep (what was sent minus rejected decisions), the per-field
+   * rejections, and the pending choices that are now settled. The client never builds a profile itself. */
+  function applyOutcome(outcome: DecisionResolveOutcome, sent: ProfileDecisionView[]) {
+    const { resolved } = outcome;
+    decisionsRef.current = outcome.decisions;
+    setProfile(resolved.profile);
+    setExtractionTable(resolved.extractionTable);
+    setIssues(resolved.issues);
+    setReadiness(resolved.readiness);
+    setDecisionResults(resolved.decisionResults);
+    setProblems(outcome.problems);
+    setPending((current) => settlePending(current, sent, outcome.problems, visibleIssues(resolved.issues)));
+  }
+
+  /** P3.1 S5: Apply and Undo are ONE backend re-resolve with the complete decision set. On failure the
+   * current profile, issues, pending choices and decisions all stay exactly as they were. */
+  async function resolveDecisionSet(sent: ProfileDecisionView[]) {
+    if (!profile || !resolvedDocuments) return;
+    setApplying(true);
+    setGlobalError('');
+    const requestId = ++profileRequestId.current;
+    const outcome = await resolveWithDecisions(profile.asOfDate, resolvedDocuments, sent);
+    setApplying(false);
+    if (requestId !== profileRequestId.current) return;
+    if (!outcome) { setGlobalError(t.profileError); return; }
+    applyOutcome(outcome, sent);
+    setSubmitCount((n) => n + 1); // the calculator's prefill follows the profile: remount it, as for a new as-of date
+  }
+
+  function applyPendingDecisions() {
+    if (applying) return;
+    const { added, sent } = planApply(visibleIssues(issues), pending, decisionsRef.current);
+    if (added.length === 0) return;
+    void resolveDecisionSet(sent);
+  }
+
+  function undoUserDecision(fieldPath: string) {
+    if (applying) return;
+    void resolveDecisionSet(removeDecision(decisionsRef.current, fieldPath));
+  }
+
+  function touchField(fieldPath: string, next: (current: PendingMap) => PendingMap) {
+    setPending(next);
+    setProblems((current) => withoutField(current, fieldPath));
   }
 
   /** Stage 2u (§2u.2): the restored field-specific correction path, now living on the actual live PRO
@@ -400,6 +473,78 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
     return formatProfileValue(field.value);
   }
 
+  // P3.1 S5 (O3): the replay's confirm/correct card. It used to sit inside each document row, i.e. in the
+  // normal user flow - there is now ONE confirmation model (the field-level 'To resolve' panel), so this
+  // card is rendered only inside the developer diagnostics section below. Its logic, handlers and the
+  // replay itself are unchanged; confirming or correcting here still changes no profile parameter.
+  function renderLegacyReplayCard(entry: DocEntry) {
+    const openIssues = visibleNeedsConfirmation(entry);
+    if (!(entry.status === 'done' && entry.payslipAnalysis && openIssues.length > 0)) return null;
+    return (
+      <div className="notice-card pro-payslip-confirmation">
+        <AlertTriangle size={16}/>
+        <div>
+          <h3>{tc.provisionalResultTitle}</h3>
+          <p>{tc.provisionalResultBody}</p>
+          {/* Stage 2u (§2u.1): "the specific lines requiring confirmation must appear
+              before or visually above any provisional computed amount" - confirmed by a
+              live production check that this order matters: the issue list below must
+              render BEFORE the provisional euro figure further down, never after it. */}
+          <p className="form-note">{tc.needsConfirmationIntro}</p>
+          {openIssues.map((issue) => {
+            const key = issueKey(issue);
+            const path = correctableFieldPath(issue);
+            const readValue = correctableReadValue(issue);
+            const expectedValue = correctableExpectedValue(issue);
+            const printedLabel = entry.payslipAnalysis && path ? correctablePrintedLabel(entry.payslipAnalysis.period, issue) : null;
+            const recomputing = entry.recomputingKey === key;
+            return (
+              <div key={key} className="discrepancy-item confirm">
+                <p>{issueMessage(tc, issue)}</p>
+                {path && entry.payslipAnalysis && (
+                  <>
+                    <p className="form-note">
+                      <strong>{correctableLineLabel(tc, entry.payslipAnalysis.period, issue)}</strong>{' '}
+                      {printedLabel && <span className="nl-term">({tc.dutchTerm(printedLabel)})</span>}
+                    </p>
+                    {readValue !== null
+                      ? <p className="form-note">{tc.weRead(money(readValue))}</p>
+                      : <p className="form-note">{tc.notReadAtAll}</p>}
+                    {expectedValue !== null && <p className="form-note">{tc.expectedValue(money(expectedValue))}</p>}
+                    {readValue !== null && (
+                      <div className="calc-toggles">
+                        <button type="button" className="secondary" onClick={() => confirmNeedsConfirmationIssue(entry.id, issue)}>{tc.confirmYes}</button>
+                      </div>
+                    )}
+                    <label>{tc.correctionLabel}
+                      <div className="money-input">
+                        <span>€</span>
+                        <input inputMode="decimal" value={entry.correctionInputs?.[key] ?? ''}
+                          onChange={(event) => setCorrectionInput(entry.id, key, event.target.value.replace(/[^0-9.,-]/g, ''))}/>
+                      </div>
+                    </label>
+                    <button type="button" className="secondary" disabled={recomputing} onClick={() => void correctNeedsConfirmationIssue(entry.id, issue)}>
+                      {recomputing ? tc.recomputing : tc.correctSubmit}
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+          {/* The provisional euro figure itself - deliberately AFTER the specific issue(s)
+              above, and labelled as provisional, never with "Amount payable"/"Paid now"
+              wording (§2u.1). */}
+          {entry.payslipAnalysis.outcome.status === 'complete' && (
+            <p>{tc.provisionalPayoutLabel}: <strong>{money(entry.payslipAnalysis.outcome.result.payout_amount)}</strong></p>
+          )}
+          <p className="form-note">{tc.provisionalNote}</p>
+        </div>
+      </div>
+    );
+  }
+  const legacyReplayEntries = docs.filter((e) => e.status === 'done' && e.payslipAnalysis && visibleNeedsConfirmation(e).length > 0);
+  const questionResolved = resolvedByYou(profile);
+
   return (
     <section className="flow-page">
       <div className="flow-heading"><h1>{t.title}</h1><p>{t.lead}</p></div>
@@ -448,7 +593,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                       clean case, never the bare euro figure alone. */}
                   {entry.status === 'done' && entry.payslipAnalysis && (
                     isProvisional
-                      ? t.payslipSummaryNeedsConfirmation(printedAmount !== null ? money(printedAmount) : '—')
+                      ? t.payslipSummaryRead(printedAmount !== null ? money(printedAmount) : '—')
                       : t.payslipSummaryOk(printedAmount !== null ? money(printedAmount) : '—')
                   )}
                   {entry.status === 'done' && entry.payslipBlocked && t.payslipReplayUnavailable}
@@ -474,72 +619,6 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
                 </button>
               </div>
 
-              {/* Stage 2u (§2u.1/§2u.2): the inline provisional/confirmation panel - "the specific
-                  lines requiring confirmation must appear before or visually above any provisional
-                  computed amount" is satisfied by rendering this BEFORE the calculator/projection
-                  section further down uses this entry as a parameter source, and by stating plainly,
-                  right here, that the figure above is not yet confirmed. */}
-              {entry.status === 'done' && entry.payslipAnalysis && isProvisional && (
-                <div className="notice-card pro-payslip-confirmation">
-                  <AlertTriangle size={16}/>
-                  <div>
-                    <h3>{tc.provisionalResultTitle}</h3>
-                    <p>{tc.provisionalResultBody}</p>
-                    {/* Stage 2u (§2u.1): "the specific lines requiring confirmation must appear
-                        before or visually above any provisional computed amount" - confirmed by a
-                        live production check that this order matters: the issue list below must
-                        render BEFORE the provisional euro figure further down, never after it. */}
-                    <p className="form-note">{tc.needsConfirmationIntro}</p>
-                    {openIssues.map((issue) => {
-                      const key = issueKey(issue);
-                      const path = correctableFieldPath(issue);
-                      const readValue = correctableReadValue(issue);
-                      const expectedValue = correctableExpectedValue(issue);
-                      const printedLabel = entry.payslipAnalysis && path ? correctablePrintedLabel(entry.payslipAnalysis.period, issue) : null;
-                      const recomputing = entry.recomputingKey === key;
-                      return (
-                        <div key={key} className="discrepancy-item confirm">
-                          <p>{issueMessage(tc, issue)}</p>
-                          {path && entry.payslipAnalysis && (
-                            <>
-                              <p className="form-note">
-                                <strong>{correctableLineLabel(tc, entry.payslipAnalysis.period, issue)}</strong>{' '}
-                                {printedLabel && <span className="nl-term">({tc.dutchTerm(printedLabel)})</span>}
-                              </p>
-                              {readValue !== null
-                                ? <p className="form-note">{tc.weRead(money(readValue))}</p>
-                                : <p className="form-note">{tc.notReadAtAll}</p>}
-                              {expectedValue !== null && <p className="form-note">{tc.expectedValue(money(expectedValue))}</p>}
-                              {readValue !== null && (
-                                <div className="calc-toggles">
-                                  <button type="button" className="secondary" onClick={() => confirmNeedsConfirmationIssue(entry.id, issue)}>{tc.confirmYes}</button>
-                                </div>
-                              )}
-                              <label>{tc.correctionLabel}
-                                <div className="money-input">
-                                  <span>€</span>
-                                  <input inputMode="decimal" value={entry.correctionInputs?.[key] ?? ''}
-                                    onChange={(event) => setCorrectionInput(entry.id, key, event.target.value.replace(/[^0-9.,-]/g, ''))}/>
-                                </div>
-                              </label>
-                              <button type="button" className="secondary" disabled={recomputing} onClick={() => void correctNeedsConfirmationIssue(entry.id, issue)}>
-                                {recomputing ? tc.recomputing : tc.correctSubmit}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {/* The provisional euro figure itself - deliberately AFTER the specific issue(s)
-                        above, and labelled as provisional, never with "Amount payable"/"Paid now"
-                        wording (§2u.1). */}
-                    {entry.payslipAnalysis.outcome.status === 'complete' && (
-                      <p>{tc.provisionalPayoutLabel}: <strong>{money(entry.payslipAnalysis.outcome.result.payout_amount)}</strong></p>
-                    )}
-                    <p className="form-note">{tc.provisionalNote}</p>
-                  </div>
-                </div>
-              )}
               {/* P2 (§P2.9): a page not read is said, by number - a document is never shown as fully read when it was not. */}
               {entry.status === 'done' && entry.coverage && entry.coverage.notProcessedPages.length > 0 && (
                 <p className="form-note pro-document-pages-warning">
@@ -565,6 +644,25 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       )}
 
       {globalError && <div className="status error">{globalError}</div>}
+
+      {/* P3.1 S5: the ONE user-facing confirmation flow - field-level issues from the backend profile, shown
+          above the developer profile table and below the document/submit area. Informational issues are
+          filtered inside; every action is a callback into the single re-resolve path above. */}
+      {profile && (
+        <ProfileQuestions
+          lang={lang} issues={issues} readiness={readiness} pending={pending} resolved={questionResolved} problems={problems}
+          busy={applying || resolvingProfile || submitting}
+          onChooseCandidate={(fieldPath, candidateId) => touchField(fieldPath, (current) => chooseCandidate(current, fieldPath, candidateId))}
+          onManualChange={(fieldPath, raw) => touchField(fieldPath, (current) => enterManual(current, fieldPath, raw))}
+          onSkip={(fieldPath) => touchField(fieldPath, (current) => skipIssue(current, fieldPath))}
+          onUseSuggestion={(fieldPath) => {
+            const issue = issues.find((i) => i.fieldPath === fieldPath);
+            if (issue) touchField(fieldPath, (current) => acceptSuggestion(current, issue));
+          }}
+          onApply={applyPendingDecisions}
+          onUndo={undoUserDecision}
+        />
+      )}
 
       {/* P1 (§P1.6): developer-facing profile inspection - replaces the old contract-timeline table
           (the timeline still runs, inside the backend profile, and its sources/dates show here). */}
@@ -644,6 +742,31 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
             </details>
           )}
         </div>
+      )}
+      {/* P3.1 S5 (O3): developer / diagnostic section. The replay's confirm/correct controls live HERE only
+          (collapsed), never in the normal flow; the backend's per-decision results are listed raw. */}
+      {(legacyReplayEntries.length > 0 || decisionResults.length > 0) && (
+        <details className="pro-developer-diagnostics pro-legacy-replay">
+          <summary>{t.legacyReplayTitle}</summary>
+          <p className="form-note">{t.legacyReplayLead}</p>
+          {legacyReplayEntries.map((entry) => {
+            const printed = entry.payslipAnalysis ? entry.payslipAnalysis.period.printed_payout ?? entry.payslipAnalysis.period.printed_net : null;
+            return (
+              <div key={entry.id} className="pro-legacy-replay-entry">
+                <p className="form-note"><strong>{entry.label}</strong> - {t.payslipSummaryNeedsConfirmation(printed !== null ? money(printed) : '—')}</p>
+                {renderLegacyReplayCard(entry)}
+              </div>
+            );
+          })}
+          {decisionResults.length > 0 && (
+            <div className="pro-decision-results">
+              <p className="form-note">{t.decisionResultsTitle(decisionResults.length)}</p>
+              <ul>
+                {decisionResults.map((r, i) => <li key={i}><code>{r.fieldPath}</code> <code>{r.status}</code>{r.problem ? <> <code>{r.problem}</code></> : null}</li>)}
+              </ul>
+            </div>
+          )}
+        </details>
       )}
       {resolvingProfile && <p className="form-note">{t.profileResolving}</p>}
 

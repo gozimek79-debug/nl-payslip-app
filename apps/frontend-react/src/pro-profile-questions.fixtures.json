@@ -1,0 +1,2598 @@
+{
+ "a2": {
+  "asOfDate": "2026-09-15",
+  "issues": [
+   {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "549e9c8095871c36",
+      "value": 16.8,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_annex",
+        "documentIndex": 1,
+        "documentId": "u-annex",
+        "documentLabel": "aneks.pdf",
+        "effectiveDate": "2026-09-01",
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,80",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 3,
+        "documentId": "u-sep",
+        "documentLabel": "pasek-wrzesien.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-09-07",
+         "endDate": "2026-09-13",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [
+     {
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-aug",
+        "documentLabel": "pasek-sierpien.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-08-24",
+         "endDate": "2026-08-30",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "kind": "superseded_value"
+     },
+     {
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,20",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "kind": "superseded_value"
+     }
+    ],
+    "excluded": [
+     {
+      "value": 16.2,
+      "source": {
+       "sourceType": "document",
+       "role": "contract_base",
+       "documentIndex": 0,
+       "documentId": "u-base",
+       "documentLabel": "umowa.pdf",
+       "effectiveDate": null,
+       "payPeriod": null,
+       "printedLabel": "Uurloon",
+       "rawValue": "Uurloon € 16,20",
+       "page": 1,
+       "line": null
+      },
+      "reason": "superseded_by_later_document",
+      "detail": null,
+      "regime": {
+       "relation": "superseded_by",
+       "documentIndex": 1,
+       "documentId": "u-annex",
+       "documentLabel": "aneks.pdf",
+       "role": "contract_annex",
+       "effectiveDate": "2026-09-01"
+      }
+     },
+     {
+      "value": 16.2,
+      "source": {
+       "sourceType": "document",
+       "role": "payslip",
+       "documentIndex": 2,
+       "documentId": "u-aug",
+       "documentLabel": "pasek-sierpien.pdf",
+       "effectiveDate": null,
+       "payPeriod": {
+        "label": "week 10/2026",
+        "startDate": "2026-08-24",
+        "endDate": "2026-08-30",
+        "paymentDate": "2026-03-13",
+        "periodType": "week"
+       },
+       "printedLabel": "Uren normaal",
+       "rawValue": "Uren normaal 40,00 16,20 648,00",
+       "page": 1,
+       "line": null
+      },
+      "reason": "superseded_by_later_document",
+      "detail": {
+       "amount": 648,
+       "base": null,
+       "hours": 40,
+       "printedPercent": null
+      },
+      "regime": {
+       "relation": "superseded_by",
+       "documentIndex": 1,
+       "documentId": "u-annex",
+       "documentLabel": "aneks.pdf",
+       "role": "contract_annex",
+       "effectiveDate": "2026-09-01"
+      }
+     }
+    ],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "67de86bcb970680b",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.employerName",
+    "key": "employerName",
+    "meaning": "employer_or_agency_name_contract",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "fbd26bbc8e018883",
+    "previousDecision": null,
+    "impact": null
+   }
+  ],
+  "readiness": {
+   "activeGroups": [
+    "core_pay"
+   ],
+   "ready": false,
+   "blockingCount": 1,
+   "optionalCount": 0
+  }
+ },
+ "a3a": {
+  "asOfDate": "2026-09-15",
+  "issues": [
+   {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "payslip_period_unplaceable",
+     "changeDate": "2026-09-01"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "549e9c8095871c36",
+      "value": 16.8,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_annex",
+        "documentIndex": 1,
+        "documentId": "u-annex",
+        "documentLabel": "aneks.pdf",
+        "effectiveDate": "2026-09-01",
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,80",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-und",
+        "documentLabel": "pasek-bez-daty.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": null,
+         "endDate": null,
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [
+     {
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,20",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "kind": "superseded_value"
+     }
+    ],
+    "excluded": [
+     {
+      "value": 16.2,
+      "source": {
+       "sourceType": "document",
+       "role": "contract_base",
+       "documentIndex": 0,
+       "documentId": "u-base",
+       "documentLabel": "umowa.pdf",
+       "effectiveDate": null,
+       "payPeriod": null,
+       "printedLabel": "Uurloon",
+       "rawValue": "Uurloon € 16,20",
+       "page": 1,
+       "line": null
+      },
+      "reason": "superseded_by_later_document",
+      "detail": null,
+      "regime": {
+       "relation": "superseded_by",
+       "documentIndex": 1,
+       "documentId": "u-annex",
+       "documentLabel": "aneks.pdf",
+       "role": "contract_annex",
+       "effectiveDate": "2026-09-01"
+      }
+     }
+    ],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "b599b42164a87b3c",
+    "previousDecision": null,
+    "impact": null
+   }
+  ],
+  "readiness": {
+   "activeGroups": [
+    "core_pay"
+   ],
+   "ready": false,
+   "blockingCount": 1,
+   "optionalCount": 0
+  }
+ },
+ "a4": {
+  "asOfDate": "2026-09-15",
+  "issues": [
+   {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "later_document_unclear",
+     "documentIndex": 1,
+     "documentId": "u-annex",
+     "effectiveDate": "2026-09-01"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,20",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     }
+    ],
+    "hints": [],
+    "excluded": [
+     {
+      "value": null,
+      "source": {
+       "sourceType": "document",
+       "role": "contract_annex",
+       "documentIndex": 1,
+       "documentId": "u-annex",
+       "documentLabel": "aneks.pdf",
+       "effectiveDate": "2026-09-01",
+       "payPeriod": null,
+       "printedLabel": "Uurloon",
+       "rawValue": "Uurloon € 1?,80",
+       "page": 1,
+       "line": null
+      },
+      "reason": "ambiguous_on_document",
+      "detail": null,
+      "factReason": "reader_marked_ambiguous"
+     }
+    ],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "5d5be1cc40daa6ab",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.periodType",
+    "key": "periodType",
+    "meaning": "pay_period_type",
+    "unit": "period_type",
+    "state": "unknown",
+    "reason": {
+     "code": "no_payslip_document"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value"
+    ],
+    "input": {
+     "kind": "enum",
+     "enumValues": [
+      "week",
+      "4-weekly",
+      "month"
+     ]
+    },
+    "evidenceFingerprint": "9fd635b7e6e46ae8",
+    "previousDecision": null,
+    "impact": null
+   }
+  ],
+  "readiness": {
+   "activeGroups": [
+    "core_pay"
+   ],
+   "ready": false,
+   "blockingCount": 2,
+   "optionalCount": 0
+  }
+ },
+ "rich": {
+  "asOfDate": "2026-06-01",
+  "issues": [
+   {
+    "fieldPath": "employment.overtimeThresholdHours",
+    "key": "overtimeThresholdHours",
+    "meaning": "daily_overtime_hours_before_tier_2",
+    "unit": "hours",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "blocking",
+    "groups": [
+     "overtime"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 744,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "c8836b61cee10ad5",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.overtimeTier1Premium",
+    "key": "overtimeTier1Premium",
+    "meaning": "overtime_tier_1_premium_above_base",
+    "unit": "premium_percent",
+    "state": "unknown",
+    "reason": {
+     "code": "tier_identity_not_evidenced"
+    },
+    "severity": "blocking",
+    "groups": [
+     "overtime"
+    ],
+    "candidates": [],
+    "hints": [
+     {
+      "value": 50,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Overwerk 150%",
+        "rawValue": "Overwerk 150% 4,00 16,20 97,20",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "kind": "observed_premium"
+     }
+    ],
+    "excluded": [],
+    "actions": [
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 400,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "a0286f86946e9bc5",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.overtimeTier2Premium",
+    "key": "overtimeTier2Premium",
+    "meaning": "overtime_tier_2_premium_above_base",
+    "unit": "premium_percent",
+    "state": "unknown",
+    "reason": {
+     "code": "tier_identity_not_evidenced"
+    },
+    "severity": "blocking",
+    "groups": [
+     "overtime"
+    ],
+    "candidates": [],
+    "hints": [
+     {
+      "value": 50,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Overwerk 150%",
+        "rawValue": "Overwerk 150% 4,00 16,20 97,20",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "kind": "observed_premium"
+     }
+    ],
+    "excluded": [],
+    "actions": [
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 400,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "22b9e9f3c3eba1ce",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.loonheffingskorting",
+    "key": "loonheffingskorting",
+    "meaning": "loonheffingskorting_applied",
+    "unit": "boolean",
+    "state": "unknown",
+    "reason": {
+     "code": "no_evidence_source"
+    },
+    "severity": "blocking",
+    "groups": [
+     "tax_settings"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value"
+    ],
+    "input": {
+     "kind": "boolean"
+    },
+    "evidenceFingerprint": "f628158a3b66e587",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.pensionEmployeePercent",
+    "key": "pensionEmployeePercent",
+    "meaning": "pension_employee_contribution",
+    "unit": "percent_of_printed_base",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [
+     {
+      "candidateId": "dd85f2f7c24655f3",
+      "value": 7.5,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Pensioen StiPP",
+        "rawValue": "Pensioen StiPP 7,50% 648,00 48,60",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "22b167400b9fe263",
+      "value": 7.9,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-b",
+        "documentLabel": "pasek-11.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Pensioen StiPP",
+        "rawValue": "Pensioen StiPP 7,90% 648,00 51,19",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "dcc621d2f3830b3a",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.etExchangeAmount",
+    "key": "etExchangeAmount",
+    "meaning": "et_taxable_base_reduction_per_period",
+    "unit": "eur_per_period",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "net_items"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "45e9bbb9a32be853",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "recurringItems.netDeductions.net_deduction:housing:huisvesting",
+    "key": "net_deduction:housing:huisvesting",
+    "meaning": "recurring_net_deduction",
+    "unit": "eur_per_period",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "optional",
+    "groups": [
+     "net_items"
+    ],
+    "candidates": [
+     {
+      "candidateId": "dc2c947a43334700",
+      "value": 95,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Huisvesting",
+        "rawValue": "Huisvesting 95,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "f8a15a86295cc874",
+      "value": 96,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-b",
+        "documentLabel": "pasek-11.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Huisvesting",
+        "rawValue": "Huisvesting 96,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "0e7d9f3d7b7d0b67",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.employerName",
+    "key": "employerName",
+    "meaning": "employer_or_agency_name_contract",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "fbd26bbc8e018883",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.hirerName",
+    "key": "hirerName",
+    "meaning": "hirer_name_payslip",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "623a2515ce3a5b91",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.contractHirerName",
+    "key": "contractHirerName",
+    "meaning": "hirer_name_contract",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "eeb6ccc02211f4d2",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.caoName",
+    "key": "caoName",
+    "meaning": "cao_name",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "ff82de567391b9a8",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.phase",
+    "key": "phase",
+    "meaning": "cao_phase",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "386e69dbcffbc77d",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.contractType",
+    "key": "contractType",
+    "meaning": "contract_type",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "0c8ace6524a318e6",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.functionTitle",
+    "key": "functionTitle",
+    "meaning": "function_title",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "7c7207ad2b713260",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.contractStartDate",
+    "key": "contractStartDate",
+    "meaning": "contract_start_date",
+    "unit": "date",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "date"
+    },
+    "evidenceFingerprint": "19d745ea67e41832",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.contractEndDate",
+    "key": "contractEndDate",
+    "meaning": "contract_end_date",
+    "unit": "date",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "date"
+    },
+    "evidenceFingerprint": "f57317b25dd3a7f3",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.monthlySalary",
+    "key": "monthlySalary",
+    "meaning": "gross_monthly_salary",
+    "unit": "eur_per_month",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100000,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "f0da404c4d7ead2d",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "employment.pensionFundName",
+    "key": "pensionFundName",
+    "meaning": "pension_fund_name",
+    "unit": "text",
+    "state": "unknown",
+    "reason": {
+     "code": "not_in_contract_extraction"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "text",
+     "min": 1,
+     "max": 200
+    },
+    "evidenceFingerprint": "d0e456f446618ece",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.saturdayPremium",
+    "key": "saturdayPremium",
+    "meaning": "saturday_premium_above_base",
+    "unit": "premium_percent",
+    "state": "unknown",
+    "reason": {
+     "code": "no_weekday_evidence"
+    },
+    "severity": "informational",
+    "groups": [
+     "saturday"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 400,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "aa40658a463ef69c",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.sundayPremium",
+    "key": "sundayPremium",
+    "meaning": "sunday_premium_above_base",
+    "unit": "premium_percent",
+    "state": "unknown",
+    "reason": {
+     "code": "no_weekday_evidence"
+    },
+    "severity": "informational",
+    "groups": [
+     "sunday"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 400,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "7257a7d26dd2c596",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.publicHolidayPremium",
+    "key": "publicHolidayPremium",
+    "meaning": "public_holiday_premium_above_base",
+    "unit": "premium_percent",
+    "state": "unknown",
+    "reason": {
+     "code": "no_weekday_evidence"
+    },
+    "severity": "informational",
+    "groups": [
+     "public_holiday"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 400,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "6ceeedac9cbf0197",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.pawwEmployeePercent",
+    "key": "pawwEmployeePercent",
+    "meaning": "paww_employee_contribution",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "3b32ba8cde522f19",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.sectorPremiumPercent",
+    "key": "sectorPremiumPercent",
+    "meaning": "sector_premium_ziektewet_azw_employee",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "46ee85bbc4f01b6f",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.wgaGatEmployeePercent",
+    "key": "wgaGatEmployeePercent",
+    "meaning": "wga_gat_employee_contribution",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "b0b11c2ff9daa062",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.wgaEmployeePercent",
+    "key": "wgaEmployeePercent",
+    "meaning": "wga_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "183d112d32d52a21",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.gediffWgaEmployeePercent",
+    "key": "gediffWgaEmployeePercent",
+    "meaning": "gediff_wga_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "5aadf4b492777cb9",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.whkEmployeePercent",
+    "key": "whkEmployeePercent",
+    "meaning": "whk_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "49f77f094d621064",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.vakantiegeldAccrualPercent",
+    "key": "vakantiegeldAccrualPercent",
+    "meaning": "vakantiegeld_accrual_rate",
+    "unit": "percent",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "70b8aad72ccc910d",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.bijzonderTariefPrintedPercent",
+    "key": "bijzonderTariefPrintedPercent",
+    "meaning": "bijzonder_tarief_rate_as_printed",
+    "unit": "percent",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "8d01776df3dbf982",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.jaarloonBt",
+    "key": "jaarloonBt",
+    "meaning": "jaarloon_used_for_bijzonder_tarief",
+    "unit": "eur_per_year",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "informational",
+    "groups": [],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "3c37ae821949be92",
+    "previousDecision": null,
+    "impact": null
+   }
+  ],
+  "readiness": {
+   "activeGroups": [
+    "core_pay",
+    "overtime",
+    "net_items",
+    "tax_settings"
+   ],
+   "ready": false,
+   "blockingCount": 4,
+   "optionalCount": 3
+  }
+ },
+ "stale": {
+  "confirmMatching": {
+   "decisionResults": [
+    {
+     "decisionId": "d-old",
+     "fieldPath": "employment.hourlyRate",
+     "status": "stale",
+     "problem": "evidence_changed"
+    }
+   ],
+   "issue": {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "a869dcc4b8a3be50",
+      "value": 15.55,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 15,55",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "31748222c358d9d6",
+      "value": 16.5,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-new",
+        "documentLabel": "pasek-nowy.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,50 660,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "22d427310c98758d",
+    "previousDecision": {
+     "kind": "confirm_candidate",
+     "value": 16.2
+    },
+    "impact": null
+   }
+  },
+  "correction": {
+   "decisionResults": [
+    {
+     "decisionId": "d-old",
+     "fieldPath": "employment.hourlyRate",
+     "status": "stale",
+     "problem": "evidence_changed"
+    }
+   ],
+   "issue": {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "a869dcc4b8a3be50",
+      "value": 15.55,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 15,55",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "31748222c358d9d6",
+      "value": 16.5,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-new",
+        "documentLabel": "pasek-nowy.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,50 660,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "22d427310c98758d",
+    "previousDecision": {
+     "kind": "correct_value",
+     "value": 17.1
+    },
+    "impact": null
+   }
+  },
+  "confirmGone": {
+   "decisionResults": [
+    {
+     "decisionId": "d-old",
+     "fieldPath": "employment.hourlyRate",
+     "status": "stale",
+     "problem": "evidence_changed"
+    }
+   ],
+   "issue": {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "a869dcc4b8a3be50",
+      "value": 15.55,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 15,55",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "31748222c358d9d6",
+      "value": 16.5,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-new",
+        "documentLabel": "pasek-nowy.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,50 660,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "22d427310c98758d",
+    "previousDecision": {
+     "kind": "confirm_candidate",
+     "value": 15.55
+    },
+    "impact": null
+   }
+  },
+  "confirmNotCandidate": {
+   "decisionResults": [
+    {
+     "decisionId": "d-old",
+     "fieldPath": "employment.hourlyRate",
+     "status": "stale",
+     "problem": "evidence_changed"
+    }
+   ],
+   "issue": {
+    "fieldPath": "employment.hourlyRate",
+    "key": "hourlyRate",
+    "meaning": "gross_base_hourly_wage",
+    "unit": "eur_per_hour",
+    "state": "conflict",
+    "reason": {
+     "code": "sources_disagree"
+    },
+    "severity": "blocking",
+    "groups": [
+     "core_pay"
+    ],
+    "candidates": [
+     {
+      "candidateId": "a869dcc4b8a3be50",
+      "value": 15.55,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 15,55",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "contractual"
+     },
+     {
+      "candidateId": "ebba42b298945156",
+      "value": 16.2,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     },
+     {
+      "candidateId": "31748222c358d9d6",
+      "value": 16.5,
+      "sources": [
+       {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-new",
+        "documentLabel": "pasek-nowy.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,50 660,00",
+        "page": 1,
+        "line": null
+       }
+      ],
+      "basis": "employer_applied"
+     }
+    ],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "select_candidate",
+     "enter_value"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0.01,
+     "max": 200,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "22d427310c98758d",
+    "previousDecision": {
+     "kind": "confirm_candidate",
+     "value": 99
+    },
+    "impact": null
+   }
+  }
+ },
+ "resolved": {
+  "decisionResults": [
+   {
+    "decisionId": "d-1",
+    "fieldPath": "payroll.pensionEmployeePercent",
+    "status": "applied",
+    "problem": null
+   },
+   {
+    "decisionId": "d-2",
+    "fieldPath": "recurringItems.netDeductions.net_deduction:housing:huisvesting",
+    "status": "applied",
+    "problem": null
+   },
+   {
+    "decisionId": "d-3",
+    "fieldPath": "employment.hourlyRate",
+    "status": "satisfied_by_documents",
+    "problem": null
+   }
+  ],
+  "profile": {
+   "version": 2,
+   "asOfDate": "2026-06-01",
+   "employment": {
+    "hourlyRate": {
+     "key": "hourlyRate",
+     "meaning": "gross_base_hourly_wage",
+     "unit": "eur_per_hour",
+     "candidates": [
+      {
+       "value": 16.2,
+       "source": {
+        "sourceType": "document",
+        "role": "contract_base",
+        "documentIndex": 0,
+        "documentId": "u-base",
+        "documentLabel": "umowa.pdf",
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": "Uurloon",
+        "rawValue": "Uurloon € 16,20",
+        "page": 1,
+        "line": null
+       },
+       "detail": null
+      },
+      {
+       "value": 16.2,
+       "source": {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       },
+       "detail": {
+        "amount": 648,
+        "base": null,
+        "hours": 40,
+        "printedPercent": null
+       }
+      },
+      {
+       "value": 16.2,
+       "source": {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-b",
+        "documentLabel": "pasek-11.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Uren normaal",
+        "rawValue": "Uren normaal 40,00 16,20 648,00",
+        "page": 1,
+        "line": null
+       },
+       "detail": {
+        "amount": 648,
+        "base": null,
+        "hours": 40,
+        "printedPercent": null
+       }
+      }
+     ],
+     "excluded": [],
+     "regime": {
+      "start": null,
+      "end": null,
+      "winnerDocumentIndex": 0,
+      "winnerDocumentId": "u-base",
+      "winnerDocumentLabel": "umowa.pdf"
+     },
+     "resolution": null,
+     "value": 16.2,
+     "state": "corroborated",
+     "sources": [
+      {
+       "sourceType": "document",
+       "role": "contract_base",
+       "documentIndex": 0,
+       "documentId": "u-base",
+       "documentLabel": "umowa.pdf",
+       "effectiveDate": null,
+       "payPeriod": null,
+       "printedLabel": "Uurloon",
+       "rawValue": "Uurloon € 16,20",
+       "page": 1,
+       "line": null
+      },
+      {
+       "sourceType": "document",
+       "role": "payslip",
+       "documentIndex": 1,
+       "documentId": "u-a",
+       "documentLabel": "pasek-10.pdf",
+       "effectiveDate": null,
+       "payPeriod": {
+        "label": "week 10/2026",
+        "startDate": "2026-03-02",
+        "endDate": "2026-03-08",
+        "paymentDate": "2026-03-13",
+        "periodType": "week"
+       },
+       "printedLabel": "Uren normaal",
+       "rawValue": "Uren normaal 40,00 16,20 648,00",
+       "page": 1,
+       "line": null
+      },
+      {
+       "sourceType": "document",
+       "role": "payslip",
+       "documentIndex": 2,
+       "documentId": "u-b",
+       "documentLabel": "pasek-11.pdf",
+       "effectiveDate": null,
+       "payPeriod": {
+        "label": "week 10/2026",
+        "startDate": "2026-03-09",
+        "endDate": "2026-03-15",
+        "paymentDate": "2026-03-13",
+        "periodType": "week"
+       },
+       "printedLabel": "Uren normaal",
+       "rawValue": "Uren normaal 40,00 16,20 648,00",
+       "page": 1,
+       "line": null
+      }
+     ],
+     "reason": null
+    }
+   },
+   "payroll": {
+    "pensionEmployeePercent": {
+     "key": "pensionEmployeePercent",
+     "meaning": "pension_employee_contribution",
+     "unit": "percent_of_printed_base",
+     "candidates": [
+      {
+       "value": 7.5,
+       "source": {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 1,
+        "documentId": "u-a",
+        "documentLabel": "pasek-10.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-02",
+         "endDate": "2026-03-08",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Pensioen StiPP",
+        "rawValue": "Pensioen StiPP 7,50% 648,00 48,60",
+        "page": 1,
+        "line": null
+       },
+       "detail": {
+        "amount": 48.6,
+        "base": 648,
+        "hours": null,
+        "printedPercent": 7.5
+       }
+      },
+      {
+       "value": 7.9,
+       "source": {
+        "sourceType": "document",
+        "role": "payslip",
+        "documentIndex": 2,
+        "documentId": "u-b",
+        "documentLabel": "pasek-11.pdf",
+        "effectiveDate": null,
+        "payPeriod": {
+         "label": "week 10/2026",
+         "startDate": "2026-03-09",
+         "endDate": "2026-03-15",
+         "paymentDate": "2026-03-13",
+         "periodType": "week"
+        },
+        "printedLabel": "Pensioen StiPP",
+        "rawValue": "Pensioen StiPP 7,90% 648,00 51,19",
+        "page": 1,
+        "line": null
+       },
+       "detail": {
+        "amount": 51.19,
+        "base": 648,
+        "hours": null,
+        "printedPercent": 7.9
+       }
+      }
+     ],
+     "excluded": [],
+     "regime": null,
+     "resolution": {
+      "decisionId": "d-1",
+      "kind": "confirm_candidate",
+      "decidedAt": "2026-10-05T10:00:00Z",
+      "evidenceFingerprint": "dcc621d2f3830b3a",
+      "previous": {
+       "state": "conflict",
+       "value": null,
+       "reason": {
+        "code": "sources_disagree"
+       }
+      }
+     },
+     "value": 7.5,
+     "state": "user_confirmed",
+     "sources": [
+      {
+       "sourceType": "document",
+       "role": "payslip",
+       "documentIndex": 1,
+       "documentId": "u-a",
+       "documentLabel": "pasek-10.pdf",
+       "effectiveDate": null,
+       "payPeriod": {
+        "label": "week 10/2026",
+        "startDate": "2026-03-02",
+        "endDate": "2026-03-08",
+        "paymentDate": "2026-03-13",
+        "periodType": "week"
+       },
+       "printedLabel": "Pensioen StiPP",
+       "rawValue": "Pensioen StiPP 7,50% 648,00 48,60",
+       "page": 1,
+       "line": null
+      },
+      {
+       "sourceType": "user",
+       "role": "user",
+       "documentIndex": null,
+       "documentId": null,
+       "documentLabel": null,
+       "effectiveDate": null,
+       "payPeriod": null,
+       "printedLabel": null,
+       "rawValue": null,
+       "page": null,
+       "line": null,
+       "decisionId": "d-1"
+      }
+     ],
+     "reason": null
+    }
+   },
+   "recurringItems": {
+    "surcharges": [],
+    "otherPreTaxDeductions": [],
+    "otherPostTaxDeductions": [],
+    "netAdditions": [],
+    "netDeductions": [
+     {
+      "key": "net_deduction:housing:huisvesting",
+      "meaning": "recurring_net_deduction",
+      "unit": "eur_per_period",
+      "candidates": [
+       {
+        "value": 95,
+        "source": {
+         "sourceType": "document",
+         "role": "payslip",
+         "documentIndex": 1,
+         "documentId": "u-a",
+         "documentLabel": "pasek-10.pdf",
+         "effectiveDate": null,
+         "payPeriod": {
+          "label": "week 10/2026",
+          "startDate": "2026-03-02",
+          "endDate": "2026-03-08",
+          "paymentDate": "2026-03-13",
+          "periodType": "week"
+         },
+         "printedLabel": "Huisvesting",
+         "rawValue": "Huisvesting 95,00",
+         "page": 1,
+         "line": null
+        },
+        "detail": {
+         "amount": 95,
+         "base": null,
+         "hours": null,
+         "printedPercent": null
+        }
+       },
+       {
+        "value": 96,
+        "source": {
+         "sourceType": "document",
+         "role": "payslip",
+         "documentIndex": 2,
+         "documentId": "u-b",
+         "documentLabel": "pasek-11.pdf",
+         "effectiveDate": null,
+         "payPeriod": {
+          "label": "week 10/2026",
+          "startDate": "2026-03-09",
+          "endDate": "2026-03-15",
+          "paymentDate": "2026-03-13",
+          "periodType": "week"
+         },
+         "printedLabel": "Huisvesting",
+         "rawValue": "Huisvesting 96,00",
+         "page": 1,
+         "line": null
+        },
+        "detail": {
+         "amount": 96,
+         "base": null,
+         "hours": null,
+         "printedPercent": null
+        }
+       }
+      ],
+      "excluded": [],
+      "regime": null,
+      "resolution": {
+       "decisionId": "d-2",
+       "kind": "correct_value",
+       "decidedAt": "2026-10-05T10:00:00Z",
+       "evidenceFingerprint": "0e7d9f3d7b7d0b67",
+       "previous": {
+        "state": "conflict",
+        "value": null,
+        "reason": {
+         "code": "sources_disagree"
+        }
+       }
+      },
+      "value": 90,
+      "state": "user_corrected",
+      "sources": [
+       {
+        "sourceType": "user",
+        "role": "user",
+        "documentIndex": null,
+        "documentId": null,
+        "documentLabel": null,
+        "effectiveDate": null,
+        "payPeriod": null,
+        "printedLabel": null,
+        "rawValue": null,
+        "page": null,
+        "line": null,
+        "decisionId": "d-2"
+       }
+      ],
+      "reason": null
+     }
+    ]
+   },
+   "observedOvertimePremiums": {
+    "fields": [],
+    "excluded": []
+   },
+   "contractContext": {
+    "annexDates": []
+   }
+  },
+  "issues": [
+   {
+    "fieldPath": "payroll.pawwEmployeePercent",
+    "key": "pawwEmployeePercent",
+    "meaning": "paww_employee_contribution",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "3b32ba8cde522f19",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.sectorPremiumPercent",
+    "key": "sectorPremiumPercent",
+    "meaning": "sector_premium_ziektewet_azw_employee",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "46ee85bbc4f01b6f",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.wgaGatEmployeePercent",
+    "key": "wgaGatEmployeePercent",
+    "meaning": "wga_gat_employee_contribution",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "b0b11c2ff9daa062",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.wgaEmployeePercent",
+    "key": "wgaEmployeePercent",
+    "meaning": "wga_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "183d112d32d52a21",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.gediffWgaEmployeePercent",
+    "key": "gediffWgaEmployeePercent",
+    "meaning": "gediff_wga_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "5aadf4b492777cb9",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.whkEmployeePercent",
+    "key": "whkEmployeePercent",
+    "meaning": "whk_employee_contribution_post_tax",
+    "unit": "percent_of_printed_base",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "employee_deductions"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "max": 100,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "49f77f094d621064",
+    "previousDecision": null,
+    "impact": null
+   },
+   {
+    "fieldPath": "payroll.etExchangeAmount",
+    "key": "etExchangeAmount",
+    "meaning": "et_taxable_base_reduction_per_period",
+    "unit": "eur_per_period",
+    "state": "unknown",
+    "reason": {
+     "code": "not_on_payslips"
+    },
+    "severity": "optional",
+    "groups": [
+     "net_items"
+    ],
+    "candidates": [],
+    "hints": [],
+    "excluded": [],
+    "actions": [
+     "enter_value",
+     "leave_unresolved"
+    ],
+    "input": {
+     "kind": "number",
+     "min": 0,
+     "step": 0.01
+    },
+    "evidenceFingerprint": "45e9bbb9a32be853",
+    "previousDecision": null,
+    "impact": null
+   }
+  ],
+  "readiness": {
+   "activeGroups": [
+    "core_pay",
+    "employee_deductions",
+    "net_items"
+   ],
+   "ready": true,
+   "blockingCount": 0,
+   "optionalCount": 7
+  }
+ }
+}

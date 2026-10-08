@@ -10,6 +10,7 @@ import {
   type DecisionProblem, type DecisionResolveOutcome, type PendingMap,
 } from './pro-profile-questions.ts';
 import { ProfileQuestions } from './ProfileQuestions.tsx';
+import { readDiagnosticsFlag } from './diagnostics-flag.ts';
 import { TierACalculator, type TierAContractPrefill } from './TierACalculator.tsx';
 import {
   issueKey, issueMessage, correctableFieldPath, correctableLineLabel, correctablePrintedLabel,
@@ -158,6 +159,9 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   const [problems, setProblems] = useState<Record<string, DecisionProblem>>({});
   const [applying, setApplying] = useState(false);
   const decisionsRef = useRef<ProfileDecisionView[]>([]);
+  // R0: internal diagnostics (S5 panel, developer profile/extraction tables, legacy replay) only under ?diag=1,
+  // read once. The resolve/profile pipeline above runs identically either way.
+  const [showDiagnostics] = useState(readDiagnosticsFlag);
 
   function handleFilesAdded(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -648,7 +652,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       {/* P3.1 S5: the ONE user-facing confirmation flow - field-level issues from the backend profile, shown
           above the developer profile table and below the document/submit area. Informational issues are
           filtered inside; every action is a callback into the single re-resolve path above. */}
-      {profile && (
+      {showDiagnostics && profile && (
         <ProfileQuestions
           lang={lang} issues={issues} readiness={readiness} pending={pending} resolved={questionResolved} problems={problems}
           busy={applying || resolvingProfile || submitting}
@@ -666,7 +670,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
 
       {/* P1 (§P1.6): developer-facing profile inspection - replaces the old contract-timeline table
           (the timeline still runs, inside the backend profile, and its sources/dates show here). */}
-      {profile && (
+      {showDiagnostics && profile && (
         <div className="pro-effective-contract pro-payroll-profile">
           <h2>{t.profileTitle(profile.asOfDate)}</h2>
           <p className="form-note">{t.profileLead}</p>
@@ -745,7 +749,7 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
       )}
       {/* P3.1 S5 (O3): developer / diagnostic section. The replay's confirm/correct controls live HERE only
           (collapsed), never in the normal flow; the backend's per-decision results are listed raw. */}
-      {(legacyReplayEntries.length > 0 || decisionResults.length > 0) && (
+      {showDiagnostics && (legacyReplayEntries.length > 0 || decisionResults.length > 0) && (
         <details className="pro-developer-diagnostics pro-legacy-replay">
           <summary>{t.legacyReplayTitle}</summary>
           <p className="form-note">{t.legacyReplayLead}</p>

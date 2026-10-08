@@ -433,3 +433,8 @@ button.danger:disabled{opacity:.6;cursor:not-allowed}
 .pro-developer-diagnostics{margin:20px 0;min-width:0}
 .pro-developer-diagnostics summary{cursor:pointer;font-weight:600}
 @media(max-width:520px){.profile-questions{padding:16px}.pq-card{padding:14px}.pq-card-head h3{font-size:16px}.pq-candidate,.pq-manual{padding:10px}}
+/* R0: no page-level horizontal scroll at 375px. Customer-visible: long document names wrap, the PRO calculator's grid item may shrink (its hour grid scrolls inside its own box). Diagnostics (?diag=1): wide tables scroll inside their own container. */
+.pro-document-row,.pro-document-row-main{min-width:0}
+.pro-document-name{overflow-wrap:anywhere}
+.pro-projection .review-grid>*{min-width:0}
+.pro-payroll-profile,.pro-extraction-table{min-width:0;max-width:100%;overflow-x:auto}

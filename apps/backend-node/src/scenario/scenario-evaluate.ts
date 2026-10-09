@@ -15,7 +15,7 @@ import {
   type ScenarioWarning,
   type UnsupportedReason,
 } from './scenario-types.js';
-import { canonicalize, digestOf, getAt, isRecord, withValueAt } from './scenario-util.js';
+import { canonicalJson, canonicalize, digestOf, getAt, isRecord, withValueAt } from './scenario-util.js';
 import { validateScenario } from './scenario-validate.js';
 
 /**
@@ -165,20 +165,98 @@ function resolveWith(scenario: ScenarioV1, uncertain: Uncertain[], pick: (u: Unc
   return { scenario: resolved, assignments };
 }
 
-function combinations(uncertain: Uncertain[]): Array<Map<string, unknown>> {
-  let acc: Array<Map<string, unknown>> = [new Map()];
+/**
+ * F1 (Cursor review): the number of engine runs must be decided BEFORE any combination is built.
+ *
+ * `planVariantRuns` takes ONLY the number of candidates of each uncertain dimension - never the
+ * candidates themselves - so it cannot enumerate or allocate anything. It multiplies with an early exit:
+ * the moment the planned run count (1 central run + the product of all counts) exceeds the cap it stops
+ * and reports a lower bound. The running product is therefore never larger than
+ * MAX_VARIANT_RUNS * (largest single count), so there is no overflow and no unbounded loop.
+ */
+export type VariantPlan =
+  | { status: 'within_cap'; totalRuns: number }
+  | { status: 'over_cap'; atLeastRuns: number };
+
+export function planVariantRuns(candidateCounts: readonly number[], maxRuns: number = MAX_VARIANT_RUNS): VariantPlan {
+  if (candidateCounts.length === 0) return { status: 'within_cap', totalRuns: 1 };
+  let product = 1;
+  for (const count of candidateCounts) {
+    product *= Math.max(1, count);
+    if (1 + product > maxRuns) return { status: 'over_cap', atLeastRuns: 1 + product };
+  }
+  return { status: 'within_cap', totalRuns: 1 + product };
+}
+
+interface PlannedVariant {
+  kind: EngineRun['kind'];
+  resolved: ScenarioV1;
+  assignments: Record<string, unknown>;
+}
+
+/**
+ * Builds the resolved variants. Its parameter type only admits a `within_cap` plan, so the ordering
+ * "count first, reject, only then enumerate" is enforced by the compiler, not by convention. Even so, the
+ * enumeration itself carries a hard guard so that no future caller can grow it past the plan.
+ */
+function materializeVariants(scenario: ScenarioV1, uncertain: Uncertain[], plan: Extract<VariantPlan, { status: 'within_cap' }>): PlannedVariant[] {
+  if (uncertain.length === 0) return [{ kind: 'single', resolved: scenario, assignments: {} }];
+
+  const central = resolveWith(scenario, uncertain, (u) => u.central);
+  const variants: PlannedVariant[] = [{ kind: 'central', resolved: central.scenario, assignments: central.assignments }];
+
+  let combos: Array<Map<string, unknown>> = [new Map()];
   for (const u of uncertain) {
     const next: Array<Map<string, unknown>> = [];
-    for (const partial of acc) {
+    for (const partial of combos) {
       for (const candidate of u.candidates) {
+        if (next.length >= plan.totalRuns) throw new Error('scenario variant enumeration exceeded its plan');
         const copy = new Map(partial);
         copy.set(u.path, candidate);
         next.push(copy);
       }
     }
-    acc = next;
+    combos = next;
   }
-  return acc;
+  for (const combo of combos) {
+    const variant = resolveWith(scenario, uncertain, (u) => combo.get(u.path));
+    variants.push({ kind: 'variant', resolved: variant.scenario, assignments: variant.assignments });
+  }
+  return variants;
+}
+
+/**
+ * F2 (Cursor review): the top-level Scenario is validated once, but ranges / alternatives only become
+ * concrete values when a variant is resolved - and a resolved variant can be impossible even though the
+ * unresolved Scenario looked fine (an explicit overtime layout that disagrees with the resolved overtime
+ * hours, a day holding more than 24 h, a week over the limit). Every resolved variant therefore goes
+ * through the SAME validator (not a copy of its rules) BEFORE any engine call. One impossible variant
+ * makes the whole evaluation `invalid`: it is never silently dropped while the others are priced.
+ */
+function revalidateVariants(variants: PlannedVariant[]): ScenarioIssue[] {
+  const issues: ScenarioIssue[] = [];
+  const validated = new Set<string>();
+  for (const variant of variants) {
+    if (variant.kind === 'single') continue; // identical to the Scenario that was just validated
+    // The central variant is often the same resolution as one of the corners (the first alternative, or a
+    // degenerate range): an identical resolution is validated - and reported - once.
+    const resolution = canonicalJson(variant.assignments);
+    if (validated.has(resolution)) continue;
+    validated.add(resolution);
+    const validation = validateScenario(variant.resolved);
+    if (validation.status !== 'invalid') continue;
+    const described = describeAssignments(variant.assignments);
+    for (const issue of validation.issues) issues.push({ ...issue, variant: described });
+  }
+  return issues;
+}
+
+function describeAssignments(assignments: Record<string, unknown>): Record<string, number | string> {
+  const out: Record<string, number | string> = {};
+  for (const [path, value] of Object.entries(assignments)) {
+    out[path] = typeof value === 'number' || typeof value === 'string' ? value : canonicalJson(value);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -305,32 +383,33 @@ export function evaluateScenario(input: unknown, rates: PayslipComputationRates)
   }
 
   const uncertain = collectUncertain(scenario);
-  const combos = uncertain.length === 0 ? [] : combinations(uncertain);
-  if (combos.length + 1 > MAX_VARIANT_RUNS) {
+
+  // F1: decide the run count from the candidate COUNTS alone - before any combination exists.
+  const plan = planVariantRuns(uncertain.map((u) => u.candidates.length));
+  if (plan.status === 'over_cap') {
     return {
       status: 'unsupported',
       scenario: normalizeScenario(input, 'ready'),
-      unsupported: [{ kind: 'capability', capability: 'too_many_variants', params: { runs: combos.length + 1, max: MAX_VARIANT_RUNS } }],
+      unsupported: [{ kind: 'capability', capability: 'too_many_variants', params: { atLeastRuns: plan.atLeastRuns, max: MAX_VARIANT_RUNS } }],
     };
   }
 
+  // F2: every resolved variant is validated before ANY of them reaches the engine.
+  const variants = materializeVariants(scenario, uncertain, plan);
+  const variantIssues = revalidateVariants(variants);
+  if (variantIssues.length > 0) {
+    return { status: 'invalid', scenario: normalizeScenario(input, 'invalid'), issues: variantIssues };
+  }
+
   const outcomes: RunOutcome[] = [];
-  if (uncertain.length === 0) {
-    outcomes.push(runEngine(scenario, {}, 'single', rates));
-  } else {
-    const central = resolveWith(scenario, uncertain, (u) => u.central);
-    const centralRun = runEngine(central.scenario, central.assignments, 'central', rates);
-    outcomes.push(centralRun);
-    const seen = new Set<string>(centralRun.status === 'ran' ? [centralRun.run.engineInputDigest] : []);
-    for (const combo of combos) {
-      const variant = resolveWith(scenario, uncertain, (u) => combo.get(u.path));
-      const run = runEngine(variant.scenario, variant.assignments, 'variant', rates);
-      if (run.status === 'ran') {
-        if (seen.has(run.run.engineInputDigest)) continue;
-        seen.add(run.run.engineInputDigest);
-      }
-      outcomes.push(run);
+  const seen = new Set<string>();
+  for (const variant of variants) {
+    const outcome = runEngine(variant.resolved, variant.assignments, variant.kind, rates);
+    if (outcome.status === 'ran') {
+      if (seen.has(outcome.run.engineInputDigest)) continue;
+      seen.add(outcome.run.engineInputDigest);
     }
+    outcomes.push(outcome);
   }
 
   const blocked = outcomes.flatMap((o) => (o.status === 'ran' ? [] : o.requirements));

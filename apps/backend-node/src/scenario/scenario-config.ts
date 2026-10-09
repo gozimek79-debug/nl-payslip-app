@@ -20,3 +20,18 @@ export const MAX_VARIANT_RUNS = 16;
 export function rangeMaterialityThreshold(referencePayout: number): number {
   return Math.max(RANGE_MATERIALITY.absoluteSwingEur, Math.abs(referencePayout) * RANGE_MATERIALITY.relativeSwing);
 }
+
+/**
+ * Route-level rate limit for `POST /api/scenario/evaluate` (F1, Cursor review). Reuses the project's own
+ * `ipRateLimit` (rate-limiter.ts), scoped to this route only, in the "write-style" mode the other
+ * non-AI routes use: the route spends no money, so when the limiter itself cannot be checked it fails
+ * OPEN (a limiter outage must not take the calculator down); the per-request work is already bounded by
+ * MAX_VARIANT_RUNS. 60 per 5 minutes per IP is double the 30/300 `payslips-write` budget because editing
+ * the scenario table recalculates on every change (Lock section 12); it is a tunable, not a contract.
+ */
+export const SCENARIO_EVALUATE_RATE_LIMIT = {
+  routeName: 'scenario-evaluate',
+  limit: 60,
+  windowSeconds: 300,
+  onUnknown: 'allow',
+} as const;

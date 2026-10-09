@@ -1,14 +1,18 @@
 import express from 'express';
 import { z } from 'zod';
 import { fetchRates } from './tier-a.controller.js';
+import { ipRateLimit } from '../rate-limiter.js';
 import { SCENARIO_VALUE_SOURCES } from '../scenario/scenario-types.js';
 import { evaluateScenario } from '../scenario/scenario-evaluate.js';
 import { compareEvaluations } from '../scenario/scenario-compare.js';
+import { SCENARIO_EVALUATE_RATE_LIMIT } from '../scenario/scenario-config.js';
+import { toPublicComparison, toPublicEvaluation } from '../scenario/scenario-public.js';
 
 /**
  * R1 backend boundary: `POST /api/scenario/evaluate` - deterministic Scenario Core only. No LLM, no
  * Gemini, no raw document, no persistence, no session state. The request carries a Scenario V1 (and
- * optionally a second one to compare); the response is the Scenario Evaluation Result (+ comparison).
+ * optionally a second one to compare); the response is the PUBLIC projection of the evaluation
+ * (scenario-public.ts) - the internal engine input / result stay inside the process.
  *
  * The schema below checks SHAPE only (types / required keys) so a malformed request is a 400. Domain
  * problems with well-formed data - a negative number of hours, an impossible percentage, an unresolved
@@ -92,7 +96,9 @@ const requestSchema = z.strictObject({
   compareTo: scenarioSchema.optional(),
 });
 
-router.post('/evaluate', async (req, res) => {
+const evaluateRateLimit = ipRateLimit(SCENARIO_EVALUATE_RATE_LIMIT.routeName, SCENARIO_EVALUATE_RATE_LIMIT.limit, SCENARIO_EVALUATE_RATE_LIMIT.windowSeconds, SCENARIO_EVALUATE_RATE_LIMIT.onUnknown);
+
+router.post('/evaluate', evaluateRateLimit, async (req, res) => {
   const parsed = requestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error_code: 'invalid_input', details: parsed.error.flatten() });
@@ -106,7 +112,12 @@ router.post('/evaluate', async (req, res) => {
   const evaluation = evaluateScenario(parsed.data.scenario, fetched.rates);
   const comparison = parsed.data.compareTo ? compareEvaluations(evaluation, evaluateScenario(parsed.data.compareTo, fetched.rates)) : undefined;
 
-  return res.json({ evaluation, ...(comparison ? { comparison } : {}), taxRatesSource: fetched.source });
+  // F3: the HTTP boundary returns the PUBLIC projection only - never engineInput / engineResult.
+  return res.json({
+    evaluation: toPublicEvaluation(evaluation),
+    ...(comparison ? { comparison: toPublicComparison(comparison) } : {}),
+    taxRatesSource: fetched.source,
+  });
 });
 
 export default router;

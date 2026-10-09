@@ -327,7 +327,7 @@ test('R1 §9: too many uncertain values are unsupported rather than approximated
   });
   const r = ev(s);
   assert.equal(r.status, 'unsupported');
-  assert.ok(r.status === 'unsupported' && r.unsupported.some((u) => u.kind === 'capability' && u.capability === 'too_many_variants' && u.params.max === MAX_VARIANT_RUNS));
+  assert.ok(r.status === 'unsupported' && r.unsupported.some((u) => u.kind === 'capability' && u.capability === 'too_many_variants' && u.params.max === MAX_VARIANT_RUNS && u.params.atLeastRuns > MAX_VARIANT_RUNS));
 });
 
 // ---- 20: unsupported ------------------------------------------------------------------------------

@@ -265,6 +265,9 @@ export interface ScenarioIssue {
   path: string;
   /** Machine parameters for the sentence the UI builds (CONVENTIONS.md) - never prose. */
   params?: Record<string, number | string>;
+  /** Present when the issue exists only in ONE resolved variant of a range / alternatives Scenario: the
+   * uncertain fields that variant resolved, path -> concrete value (objects as canonical JSON). */
+  variant?: Record<string, number | string>;
 }
 
 export const SCENARIO_WARNING_CODES = [
@@ -309,7 +312,9 @@ export interface ConceptUnsupportedReason {
 export interface CapabilityUnsupportedReason {
   kind: 'capability';
   capability: 'too_many_variants';
-  params: { runs: number; max: number };
+  /** `atLeastRuns` is a LOWER BOUND: counting stops the moment the cap is exceeded, so the true number of
+   * combinations is never computed (and never allocated). */
+  params: { atLeastRuns: number; max: number };
 }
 export type UnsupportedReason = ConceptUnsupportedReason | CapabilityUnsupportedReason;
 

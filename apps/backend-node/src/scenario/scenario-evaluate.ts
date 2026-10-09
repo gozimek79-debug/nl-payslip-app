@@ -1,0 +1,377 @@
+import { checkTierASanity, computeTierAResult, type TierAInput, type TierASectorPremiumEstimate } from '../payroll-engine/tier-a.js';
+import type { HourGridLineCategory } from '../payroll-engine/hour-grid.js';
+import type { PayslipComputationRates, PayslipComputationResult } from '../payroll-engine/payslip-model.js';
+import { MAX_VARIANT_RUNS, rangeMaterialityThreshold } from './scenario-config.js';
+import { findUnsupported, mapScenarioToEngine, type FieldConsumption } from './scenario-map.js';
+import {
+  SCENARIO_FIELD_PATHS,
+  type NormalizedScenario,
+  type ScenarioFieldPath,
+  type ScenarioIssue,
+  type ScenarioLifecycle,
+  type ScenarioRequirement,
+  type ScenarioV1,
+  type ScenarioValueSource,
+  type ScenarioWarning,
+  type UnsupportedReason,
+} from './scenario-types.js';
+import { canonicalize, digestOf, getAt, isRecord, withValueAt } from './scenario-util.js';
+import { validateScenario } from './scenario-validate.js';
+
+/**
+ * Scenario evaluation (§8, §9): Scenario V1 -> validator -> mapper -> the EXISTING Tier A engine ->
+ * a stable, JSON-serialisable ScenarioEvaluationResult. The engine is the only arithmetic authority:
+ * every money figure here is copied out of a `computeTierAResult` run. The only numbers this module
+ * computes itself are the midpoint of a producer-supplied range (to choose the central VARIANT, not a
+ * payroll figure), the swing between payouts the engine produced, and the materiality threshold.
+ */
+
+// ---------------------------------------------------------------------------------------------
+// Result contract
+// ---------------------------------------------------------------------------------------------
+
+/** The headline figures of one engine run - copied from the engine's own result, never recomputed. */
+export interface ScenarioFigures {
+  payoutAmount: number;
+  wageNet: number;
+  grossTotal: number;
+  totalTax: number;
+  hoursWorked: number;
+}
+
+/** The engine's own estimate-mode extras (sourced population defaults, disclosed as a range) - present
+ * only when deductions.mode === 'estimate'. */
+export interface EngineEstimate {
+  sectorPremium: TierASectorPremiumEstimate;
+  netRange: { low: number; high: number };
+  payoutRange: { low: number; high: number };
+}
+
+export interface EngineRun {
+  /** `single` - no uncertainty; `central` - midpoint / first-option variant; `variant` - one combination of endpoints. */
+  kind: 'single' | 'central' | 'variant';
+  /** The uncertain fields this run resolved, path -> the concrete value it used. */
+  assignments: Record<string, unknown>;
+  /** The exact input handed to the existing engine; replayable through POST /api/tier-a/calculate. */
+  engineInput: TierAInput;
+  engineInputDigest: string;
+  consumption: FieldConsumption[];
+  figures: ScenarioFigures;
+  /** The engine's complete result (every line of the chain the engine computed). */
+  engineResult: PayslipComputationResult;
+  estimate: EngineEstimate | null;
+}
+
+export interface ScenarioRange {
+  basis: 'payout_amount';
+  low: number;
+  high: number;
+  /** high - low, from the engine runs. */
+  swing: number;
+  /** The materiality threshold that was applied (the larger of EUR 5 and 1% of the reference payout). */
+  threshold: number;
+  referencePayout: number;
+  /** Indexes into `runs` of the engine runs that produced the endpoints. A run's own estimate range may
+   * produce an endpoint (engine-provided sector-premium range). */
+  lowRun: number;
+  highRun: number;
+  uncertainFields: string[];
+}
+
+export interface ScenarioProvenanceEntry {
+  path: string;
+  state: 'known' | 'range' | 'alternatives';
+  source: ScenarioValueSource;
+  ref?: string;
+  consumedByEngine: boolean;
+}
+
+export interface ScenarioAssumptionUse {
+  path: string;
+  state: 'known' | 'range' | 'alternatives';
+  ref?: string;
+}
+
+export type ScenarioEvaluationResult =
+  | {
+      status: 'computed';
+      scenario: NormalizedScenario;
+      /** The representative engine run (`runs[0]`): the single run, or the central variant. */
+      figures: ScenarioFigures;
+      /** Non-null ONLY when the swing between engine runs is material (§10). */
+      range: ScenarioRange | null;
+      runs: EngineRun[];
+      /** Loonto assumptions that the engine actually consumed - never presented as verified facts. */
+      assumptionsUsed: ScenarioAssumptionUse[];
+      provenance: ScenarioProvenanceEntry[];
+      warnings: ScenarioWarning[];
+    }
+  | { status: 'blocked'; scenario: NormalizedScenario; requirements: ScenarioRequirement[]; warnings: ScenarioWarning[] }
+  | { status: 'invalid'; scenario: NormalizedScenario; issues: ScenarioIssue[] }
+  | { status: 'unsupported'; scenario: NormalizedScenario; unsupported: UnsupportedReason[] };
+
+// ---------------------------------------------------------------------------------------------
+// Normalisation
+// ---------------------------------------------------------------------------------------------
+
+/** Canonical key order, trimmed label, plus the code-derived lifecycle status. */
+export function normalizeScenario(input: unknown, status: ScenarioLifecycle): NormalizedScenario {
+  const base = isRecord(input) ? (canonicalize(input) as Record<string, unknown>) : {};
+  if (typeof base.label === 'string') {
+    const trimmed = base.label.trim();
+    if (trimmed === '') delete base.label;
+    else base.label = trimmed;
+  }
+  return { ...(base as unknown as ScenarioV1), status };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Variants (deterministic ranges, §9)
+// ---------------------------------------------------------------------------------------------
+
+interface Uncertain {
+  path: ScenarioFieldPath;
+  /** Candidate concrete values in deterministic order (range: [low, high]; alternatives: producer order). */
+  candidates: unknown[];
+  central: unknown;
+  origin: { source: ScenarioValueSource; ref?: string };
+}
+
+function collectUncertain(scenario: ScenarioV1): Uncertain[] {
+  const out: Uncertain[] = [];
+  for (const path of SCENARIO_FIELD_PATHS) {
+    const node = getAt(scenario, path);
+    if (!isRecord(node)) continue;
+    const origin = { source: node.source as ScenarioValueSource, ...(typeof node.ref === 'string' ? { ref: node.ref } : {}) };
+    if (node.state === 'range') {
+      const low = node.low as number;
+      const high = node.high as number;
+      out.push({ path, candidates: [low, high], central: Math.round(((low + high) / 2) * 1e6) / 1e6, origin });
+    } else if (node.state === 'alternatives' && Array.isArray(node.options)) {
+      out.push({ path, candidates: node.options, central: node.options[0], origin });
+    }
+  }
+  return out;
+}
+
+function resolveWith(scenario: ScenarioV1, uncertain: Uncertain[], pick: (u: Uncertain) => unknown): { scenario: ScenarioV1; assignments: Record<string, unknown> } {
+  let resolved = scenario;
+  const assignments: Record<string, unknown> = {};
+  for (const u of uncertain) {
+    const value = pick(u);
+    assignments[u.path] = value;
+    resolved = withValueAt(resolved, u.path, { state: 'known', value, ...u.origin });
+  }
+  return { scenario: resolved, assignments };
+}
+
+function combinations(uncertain: Uncertain[]): Array<Map<string, unknown>> {
+  let acc: Array<Map<string, unknown>> = [new Map()];
+  for (const u of uncertain) {
+    const next: Array<Map<string, unknown>> = [];
+    for (const partial of acc) {
+      for (const candidate of u.candidates) {
+        const copy = new Map(partial);
+        copy.set(u.path, candidate);
+        next.push(copy);
+      }
+    }
+    acc = next;
+  }
+  return acc;
+}
+
+// ---------------------------------------------------------------------------------------------
+// One engine run
+// ---------------------------------------------------------------------------------------------
+
+type RunOutcome = { ok: true; run: EngineRun } | { ok: false; requirements: ScenarioRequirement[] };
+
+const CATEGORY_FIELD: Partial<Record<HourGridLineCategory, ScenarioFieldPath>> = {
+  overtime_tier_1: 'pay.overtime.tier1Percent',
+  overtime_tier_2: 'pay.overtime.tier2Percent',
+  saturday: 'pay.saturdayPremiumPercent',
+  sunday: 'pay.sundayPremiumPercent',
+  holiday: 'pay.publicHolidayPremiumPercent',
+};
+
+function engineRequirement(field: ScenarioFieldPath): ScenarioRequirement {
+  return { field, reason: 'engine_requires', resolvableBy: { userAnswer: true, explicitAssumption: false, deterministicVariants: false } };
+}
+
+function runEngine(resolved: ScenarioV1, assignments: Record<string, unknown>, kind: EngineRun['kind'], rates: PayslipComputationRates): RunOutcome {
+  const mapped = mapScenarioToEngine(resolved);
+  if (mapped.status === 'blocked') return { ok: false, requirements: mapped.requirements };
+  const { input, consumption } = mapped.mapping;
+
+  const computed = computeTierAResult(input, rates);
+  if (computed.status === 'blocked') {
+    if (computed.reason === 'overtime_threshold_unknown') return { ok: false, requirements: [engineRequirement('pay.overtime.thresholdHoursPerDay')] };
+    return {
+      ok: false,
+      requirements: computed.categories.flatMap((category) => {
+        const field = CATEGORY_FIELD[category];
+        return field ? [engineRequirement(field)] : [];
+      }),
+    };
+  }
+  if (computed.outcome.status !== 'complete') {
+    // The engine's own "incomplete" outcome: a deduction field it needs is unknown. No money figure exists.
+    return { ok: false, requirements: [engineRequirement('deductions.mode')] };
+  }
+  const result = computed.outcome.result;
+  return {
+    ok: true,
+    run: {
+      kind,
+      assignments,
+      engineInput: input,
+      engineInputDigest: digestOf(input),
+      consumption,
+      figures: {
+        payoutAmount: result.payout_amount,
+        wageNet: result.wage_net,
+        grossTotal: result.gross_total,
+        totalTax: result.total_tax,
+        hoursWorked: result.hours_worked,
+      },
+      engineResult: result,
+      estimate:
+        computed.sector_premium_estimate && computed.net_range && computed.payout_range
+          ? { sectorPremium: computed.sector_premium_estimate, netRange: computed.net_range, payoutRange: computed.payout_range }
+          : null,
+    },
+  };
+}
+
+function dedupe(requirements: ScenarioRequirement[]): ScenarioRequirement[] {
+  const seen = new Set<string>();
+  return requirements.filter((r) => {
+    const key = `${r.field}|${r.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Range from engine runs
+// ---------------------------------------------------------------------------------------------
+
+function round2(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function buildRange(runs: EngineRun[], uncertainFields: string[]): ScenarioRange | null {
+  // Every endpoint is a payout the ENGINE produced: a run's own payout, or - for a run in estimate mode -
+  // the engine's own payout range for that run.
+  let low = Infinity;
+  let high = -Infinity;
+  let lowRun = 0;
+  let highRun = 0;
+  runs.forEach((run, index) => {
+    const runLow = run.estimate ? run.estimate.payoutRange.low : run.figures.payoutAmount;
+    const runHigh = run.estimate ? run.estimate.payoutRange.high : run.figures.payoutAmount;
+    if (runLow < low) { low = runLow; lowRun = index; }
+    if (runHigh > high) { high = runHigh; highRun = index; }
+  });
+  const swing = round2(high - low);
+  const referencePayout = round2((low + high) / 2);
+  const threshold = round2(rangeMaterialityThreshold(referencePayout));
+  if (swing < threshold) return null;
+  return { basis: 'payout_amount', low: round2(low), high: round2(high), swing, threshold, referencePayout, lowRun, highRun, uncertainFields };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Evaluation
+// ---------------------------------------------------------------------------------------------
+
+export function evaluateScenario(input: unknown, rates: PayslipComputationRates): ScenarioEvaluationResult {
+  const validation = validateScenario(input);
+
+  if (validation.status === 'invalid') {
+    return { status: 'invalid', scenario: normalizeScenario(input, 'invalid'), issues: validation.issues };
+  }
+  const scenario = input as ScenarioV1;
+
+  const unsupported: UnsupportedReason[] = findUnsupported(scenario);
+  if (unsupported.length > 0) {
+    return { status: 'unsupported', scenario: normalizeScenario(input, validation.status), unsupported };
+  }
+  if (validation.status === 'blocked') {
+    return { status: 'blocked', scenario: normalizeScenario(input, 'blocked'), requirements: validation.requirements, warnings: validation.warnings };
+  }
+
+  const uncertain = collectUncertain(scenario);
+  const combos = uncertain.length === 0 ? [] : combinations(uncertain);
+  if (combos.length + 1 > MAX_VARIANT_RUNS) {
+    return {
+      status: 'unsupported',
+      scenario: normalizeScenario(input, 'ready'),
+      unsupported: [{ kind: 'capability', capability: 'too_many_variants', params: { runs: combos.length + 1, max: MAX_VARIANT_RUNS } }],
+    };
+  }
+
+  const outcomes: RunOutcome[] = [];
+  if (uncertain.length === 0) {
+    outcomes.push(runEngine(scenario, {}, 'single', rates));
+  } else {
+    const central = resolveWith(scenario, uncertain, (u) => u.central);
+    const centralRun = runEngine(central.scenario, central.assignments, 'central', rates);
+    outcomes.push(centralRun);
+    const seen = new Set<string>(centralRun.ok ? [centralRun.run.engineInputDigest] : []);
+    for (const combo of combos) {
+      const variant = resolveWith(scenario, uncertain, (u) => combo.get(u.path));
+      const run = runEngine(variant.scenario, variant.assignments, 'variant', rates);
+      if (run.ok) {
+        if (seen.has(run.run.engineInputDigest)) continue;
+        seen.add(run.run.engineInputDigest);
+      }
+      outcomes.push(run);
+    }
+  }
+
+  const blocked = outcomes.flatMap((o) => (o.ok ? [] : o.requirements));
+  if (blocked.length > 0) {
+    return { status: 'blocked', scenario: normalizeScenario(input, 'blocked'), requirements: dedupe(blocked), warnings: validation.warnings };
+  }
+  const runs = outcomes.flatMap((o) => (o.ok ? [o.run] : []));
+  const representative = runs[0] as EngineRun;
+  const uncertainFields = uncertain.map((u) => u.path as string);
+  const range = uncertain.length > 0 || representative.estimate ? buildRange(runs, uncertainFields) : null;
+
+  const consumed = new Set(representative.consumption.filter((c) => c.status === 'consumed').map((c) => c.path));
+  const provenance: ScenarioProvenanceEntry[] = [];
+  for (const path of SCENARIO_FIELD_PATHS) {
+    const node = getAt(scenario, path);
+    if (!isRecord(node) || (node.state !== 'known' && node.state !== 'range' && node.state !== 'alternatives')) continue;
+    provenance.push({
+      path,
+      state: node.state,
+      source: node.source as ScenarioValueSource,
+      ...(typeof node.ref === 'string' ? { ref: node.ref } : {}),
+      consumedByEngine: consumed.has(path),
+    });
+  }
+  const assumptionsUsed: ScenarioAssumptionUse[] = provenance
+    .filter((p) => p.source === 'loonto_assumption' && p.consumedByEngine)
+    .map((p) => ({ path: p.path, state: p.state, ...(p.ref ? { ref: p.ref } : {}) }));
+
+  const warnings: ScenarioWarning[] = [...validation.warnings];
+  for (const a of assumptionsUsed) warnings.push({ code: 'assumption_in_use', path: a.path });
+  if (representative.estimate) warnings.push({ code: 'sector_premium_estimated' });
+  for (const sanity of checkTierASanity({ status: 'complete', result: representative.engineResult }, representative.engineInput)) {
+    warnings.push({ code: sanity.code === 'net_exceeds_gross' ? 'engine_sanity_net_exceeds_gross' : 'engine_sanity_effective_rate_exceeds_gross_rate' });
+  }
+
+  return {
+    status: 'computed',
+    scenario: normalizeScenario(input, 'ready'),
+    figures: representative.figures,
+    range,
+    runs,
+    assumptionsUsed,
+    provenance,
+    warnings,
+  };
+}

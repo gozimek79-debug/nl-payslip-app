@@ -72,7 +72,7 @@ const tierAInputSchema = z.object({
  * copies of the same fetch is exactly how calculator.ts and payslip-model.ts diverged once, which
  * AO2 then had to repair).
  */
-async function fetchRates(periodType: TierAInput['period_type']): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
+export async function fetchRates(periodType: TierAInput['period_type']): Promise<{ rates: PayslipComputationRates; source: 'database' | 'static' } | null> {
   const rawDbRates = await getCurrentRule<TaxRatesFile>('loonheffing_nl');
   const dbRates = rawDbRates && isCompleteTaxRatesFile(rawDbRates) ? rawDbRates : null;
   const staticRates = dbRates ? null : loadStaticTaxRatesAt(new Date());

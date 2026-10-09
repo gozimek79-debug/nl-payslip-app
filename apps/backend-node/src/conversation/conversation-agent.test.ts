@@ -101,6 +101,14 @@ test('R2 agent: the production completer disables SDK retries and bounds the cal
   assert.equal((src.match(/chat\.completions\.create\(/g) ?? []).length, 1, 'exactly one model call site');
 });
 
+test('R2 agent: the prompt treats a plain weekly total as weekday hours; ambiguity only when weekend work is also mentioned (live finding)', () => {
+  // Live smoke 2026-10-10: "I earn 16.80 an hour and work 40 hours a week" -> the model recorded the rate but
+  // called the 40 h "unclear" (over-broad ambiguity rule). Safe (nothing guessed) but it would re-ask a stated value.
+  assert.ok(AGENT_SYSTEM_PROMPT.includes('NO mention of weekend or public-holiday work') && AGENT_SYSTEM_PROMPT.includes('IS work.regularWeekdayHours: record it'));
+  assert.ok(AGENT_SYSTEM_PROMPT.includes('Only when the SAME message also mentions weekend or holiday work'));
+  assert.ok(AGENT_SYSTEM_PROMPT.includes('not "unclear"'));
+});
+
 test('R2 agent: the digest carries no documents, names or engine data', () => {
   const content = buildAgentUserContent({ ...input, scenario: [{ field: 'pay.hourlyRate', state: 'known', value: 16.8, source: 'user' }] });
   const parsed = JSON.parse(content) as Record<string, unknown>;

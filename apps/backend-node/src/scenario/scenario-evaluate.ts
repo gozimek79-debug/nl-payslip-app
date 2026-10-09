@@ -185,7 +185,9 @@ function combinations(uncertain: Uncertain[]): Array<Map<string, unknown>> {
 // One engine run
 // ---------------------------------------------------------------------------------------------
 
-type RunOutcome = { ok: true; run: EngineRun } | { ok: false; requirements: ScenarioRequirement[] };
+/** A string discriminant (not a boolean): it narrows under any TypeScript configuration, including the
+ * default one Vercel compiles the API entry with. */
+type RunOutcome = { status: 'ran'; run: EngineRun } | { status: 'blocked'; requirements: ScenarioRequirement[] };
 
 const CATEGORY_FIELD: Partial<Record<HourGridLineCategory, ScenarioFieldPath>> = {
   overtime_tier_1: 'pay.overtime.tier1Percent',
@@ -201,14 +203,14 @@ function engineRequirement(field: ScenarioFieldPath): ScenarioRequirement {
 
 function runEngine(resolved: ScenarioV1, assignments: Record<string, unknown>, kind: EngineRun['kind'], rates: PayslipComputationRates): RunOutcome {
   const mapped = mapScenarioToEngine(resolved);
-  if (mapped.status === 'blocked') return { ok: false, requirements: mapped.requirements };
+  if (mapped.status === 'blocked') return { status: 'blocked', requirements: mapped.requirements };
   const { input, consumption } = mapped.mapping;
 
   const computed = computeTierAResult(input, rates);
   if (computed.status === 'blocked') {
-    if (computed.reason === 'overtime_threshold_unknown') return { ok: false, requirements: [engineRequirement('pay.overtime.thresholdHoursPerDay')] };
+    if (computed.reason === 'overtime_threshold_unknown') return { status: 'blocked', requirements: [engineRequirement('pay.overtime.thresholdHoursPerDay')] };
     return {
-      ok: false,
+      status: 'blocked',
       requirements: computed.categories.flatMap((category) => {
         const field = CATEGORY_FIELD[category];
         return field ? [engineRequirement(field)] : [];
@@ -217,11 +219,11 @@ function runEngine(resolved: ScenarioV1, assignments: Record<string, unknown>, k
   }
   if (computed.outcome.status !== 'complete') {
     // The engine's own "incomplete" outcome: a deduction field it needs is unknown. No money figure exists.
-    return { ok: false, requirements: [engineRequirement('deductions.mode')] };
+    return { status: 'blocked', requirements: [engineRequirement('deductions.mode')] };
   }
   const result = computed.outcome.result;
   return {
-    ok: true,
+    status: 'ran',
     run: {
       kind,
       assignments,
@@ -319,11 +321,11 @@ export function evaluateScenario(input: unknown, rates: PayslipComputationRates)
     const central = resolveWith(scenario, uncertain, (u) => u.central);
     const centralRun = runEngine(central.scenario, central.assignments, 'central', rates);
     outcomes.push(centralRun);
-    const seen = new Set<string>(centralRun.ok ? [centralRun.run.engineInputDigest] : []);
+    const seen = new Set<string>(centralRun.status === 'ran' ? [centralRun.run.engineInputDigest] : []);
     for (const combo of combos) {
       const variant = resolveWith(scenario, uncertain, (u) => combo.get(u.path));
       const run = runEngine(variant.scenario, variant.assignments, 'variant', rates);
-      if (run.ok) {
+      if (run.status === 'ran') {
         if (seen.has(run.run.engineInputDigest)) continue;
         seen.add(run.run.engineInputDigest);
       }
@@ -331,11 +333,11 @@ export function evaluateScenario(input: unknown, rates: PayslipComputationRates)
     }
   }
 
-  const blocked = outcomes.flatMap((o) => (o.ok ? [] : o.requirements));
+  const blocked = outcomes.flatMap((o) => (o.status === 'ran' ? [] : o.requirements));
   if (blocked.length > 0) {
     return { status: 'blocked', scenario: normalizeScenario(input, 'blocked'), requirements: dedupe(blocked), warnings: validation.warnings };
   }
-  const runs = outcomes.flatMap((o) => (o.ok ? [o.run] : []));
+  const runs = outcomes.flatMap((o) => (o.status === 'ran' ? [o.run] : []));
   const representative = runs[0] as EngineRun;
   const uncertainFields = uncertain.map((u) => u.path as string);
   const range = uncertain.length > 0 || representative.estimate ? buildRange(runs, uncertainFields) : null;

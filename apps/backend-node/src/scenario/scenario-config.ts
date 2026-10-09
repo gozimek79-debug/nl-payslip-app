@@ -35,3 +35,16 @@ export const SCENARIO_EVALUATE_RATE_LIMIT = {
   windowSeconds: 300,
   onUnknown: 'allow',
 } as const;
+
+/**
+ * Route-level rate limit for `POST /api/scenario/turn` (R2). A turn can invoke the paid language model, so
+ * it follows the repo's AI-route convention (rate-limiter.ts, audit R5/J1): fail CLOSED - if the limit
+ * cannot be checked, the route answers 503 rather than allow unbounded spend. 30 turns per 5 minutes per
+ * IP leaves room for a real conversation; deterministic turns (no model call) count too.
+ */
+export const SCENARIO_TURN_RATE_LIMIT = {
+  routeName: 'scenario-turn',
+  limit: 30,
+  windowSeconds: 300,
+  onUnknown: 'deny',
+} as const;

@@ -99,8 +99,10 @@ test('F1-D: the limit is narrow - other routes are untouched while this route is
   const tierA = await post('/api/tier-a/calculate', oracleInput());
   assert.equal(tierA.status, 200, 'Tier A has no limiter and is unaffected');
   assert.equal((await fetch(`${baseUrl}/api/health`)).status, 200);
-  assert.equal((await post('/api/scenario/turn', {})).status, 404, 'no R2 endpoint, and no limiter bucket was created for it');
   assert.ok(![...counters.keys()].some((k) => !k.startsWith('scenario-evaluate:')), 'no other route consumed or created a bucket');
+  // R2: /turn is a separate route with its OWN budget - exhausting /evaluate does not block it.
+  assert.equal((await post('/api/scenario/turn', {})).status, 400, 'the turn route is reachable (its own limiter allowed it; the empty body is a 400)');
+  assert.ok([...counters.keys()].some((k) => k.startsWith('scenario-turn:')), 'the turn route counts in its own bucket');
 });
 
 test('F1-D: a malformed request also counts against the budget (the limiter runs before validation)', async () => {

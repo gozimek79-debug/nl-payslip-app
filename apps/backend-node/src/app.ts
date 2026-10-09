@@ -12,6 +12,7 @@ import tierARouter from './controllers/tier-a.controller.js';
 import tierCRouter from './controllers/tier-c.controller.js';
 import profileRouter from './controllers/profile.controller.js';
 import scenarioRouter from './controllers/scenario.controller.js';
+import conversationRouter from './controllers/conversation.controller.js';
 import proFactsRouter from './controllers/pro-facts.controller.js';
 import { checkDatabase } from './database.js';
 import { readingProviderStatus } from './ai-service/gemini-client.js';
@@ -59,6 +60,7 @@ app.use('/api/tier-a', tierARouter);
 app.use('/api/tier-c', tierCRouter);
 app.use('/api/profile', profileRouter);
 app.use('/api/scenario', scenarioRouter);
+app.use('/api/scenario', conversationRouter);
 app.use('/api/pro', proFactsRouter);
 
 app.use((_req, res) => {

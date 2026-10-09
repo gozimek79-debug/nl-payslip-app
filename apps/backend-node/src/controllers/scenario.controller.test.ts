@@ -176,8 +176,10 @@ test('R1 endpoint: a material range is returned with its evaluated variants (pub
   assert.equal(variants?.[r.lowVariant]?.assignments['tax.loonheffingskorting'], 'not_applied');
 });
 
-test('R1 endpoint: R2\'s turn endpoint does not exist, and the existing Tier A route is untouched', async () => {
-  assert.equal((await post('/api/scenario/turn', { scenario: weekdayScenario() })).status, 404);
+test('R1 endpoint: /turn is R2\'s own route (not part of /evaluate), and the existing Tier A route is untouched', async () => {
+  // R2 added POST /api/scenario/turn. Without a database its fail-closed limiter answers 503 here; the
+  // conversation behaviour itself is covered in conversation.controller.test.ts.
+  assert.notEqual((await post('/api/scenario/turn', { scenario: weekdayScenario() })).status, 404);
   assert.equal((await fetch(`${baseUrl}/api/scenario/evaluate`)).status, 404, 'POST only');
   const tierA = await post('/api/tier-a/calculate', oracleInput());
   assert.equal(tierA.status, 200);

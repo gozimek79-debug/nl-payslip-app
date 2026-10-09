@@ -50,7 +50,7 @@ const distribution = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('explicit'), byDay: z.strictObject({ mon: z.number(), tue: z.number(), wed: z.number(), thu: z.number(), fri: z.number() }) }),
 ]);
 
-const scenarioSchema = z.strictObject({
+export const scenarioSchema = z.strictObject({
   schemaVersion: z.number(),
   scenarioId: z.string().max(200),
   label: z.string().max(200).optional(),

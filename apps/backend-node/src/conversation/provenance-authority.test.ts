@@ -1,13 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyScenarioPatch } from './patch-authority.js';
+import { applyScenarioPatch as applyGuarded } from './patch-authority.js';
 import { runConversationTurn } from './conversation-turn.js';
 import { createTrustedContext, isTrustedContext, trustedContextFromProfile, findUnbackedVerifiedValues } from './trusted-context.js';
 import type { PatchOp, ScenarioPatchV1 } from './scenario-patch.js';
 import { computeTierAResult } from '../payroll-engine/tier-a.js';
 import { RATES_2026, documentProfile, known, out, readyScenario, scenario, scriptedAgent } from '../test-support/conversation-fixtures.js';
 import { oracleInput } from '../test-support/scenario-fixtures.js';
-import type { ScenarioV1 } from '../scenario/scenario-types.js';
+import type { ScenarioFieldPath, ScenarioV1 } from '../scenario/scenario-types.js';
+/** F4: the guard needs to know which assumption the server is offering. These tests offer none unless they
+ * are about accepting one, in which case the offered field is passed explicitly. */
+const applyScenarioPatch = (s: ScenarioV1, p: ScenarioPatchV1, offeredAssumption: ScenarioFieldPath | null = null) => applyGuarded(s, p, { offeredAssumption });
+
 
 /**
  * Red Team RT-001: external / self-declared provenance is NOT verified provenance. A public caller or the
@@ -73,11 +77,11 @@ test('RT-001 #6: a Loonto assumption is accepted only through the catalogue, onl
     assert.ok(r.status === 'rejected' && r.issues[0]?.code === 'assumption_not_in_catalog', field);
   }
   // ...only the catalogued value for a permitted field.
-  const okResult = applyScenarioPatch(scenario({ work: { sundayHours: known(6) } }), patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }));
+  const okResult = applyScenarioPatch(scenario({ work: { sundayHours: known(6) } }), patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }), 'pay.sundayPremiumPercent');
   assert.ok(okResult.status === 'applied');
   assert.deepEqual(okResult.scenario.pay.sundayPremiumPercent, { state: 'known', value: 100, source: 'loonto_assumption' });
   // A user-stated value is not replaced by an assumption.
-  const stated = applyScenarioPatch(scenario({ pay: { sundayPremiumPercent: known(80) } }), patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }));
+  const stated = applyScenarioPatch(scenario({ pay: { sundayPremiumPercent: known(80) } }), patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }), 'pay.sundayPremiumPercent');
   assert.ok(stated.status === 'rejected' && stated.issues[0]?.code === 'assumption_field_already_known');
 });
 
@@ -102,7 +106,7 @@ test('RT-001 #7: an accepted assumption remains an assumption after the user "co
 
 test('RT-001 #8: a verified document fact cannot be silently replaced by a Loonto assumption', () => {
   const s = { ...withDocumentRate(), work: { regularWeekdayHours: known(40), sundayHours: known(6) }, pay: { hourlyRate: withDocumentRate().pay.hourlyRate, sundayPremiumPercent: { state: 'known', value: 100, source: 'document', ref: 'doc-cao' } } } as ScenarioV1;
-  const r = applyScenarioPatch(s, patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }));
+  const r = applyScenarioPatch(s, patch({ op: 'accept_assumption', field: 'pay.sundayPremiumPercent' }), 'pay.sundayPremiumPercent');
   assert.ok(r.status === 'rejected' && r.issues[0]?.code === 'cannot_replace_verified_with_assumption');
 });
 

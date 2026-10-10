@@ -67,11 +67,15 @@ export const PATCH_ISSUE_CODES = [
   'cannot_erase_verified',
   'cannot_override_verified',
   'cannot_replace_verified_with_assumption',
+  /** F4: `accept_assumption` is valid only for the assumption the server is offering RIGHT NOW. */
+  'assumption_not_offered',
   'no_conflict_to_resolve',
   'conflict_pick_out_of_range',
   // whole-scenario
   'scenario_validation_failed',
   'untrusted_provenance_in_scenario',
+  /** F3: a `loonto_assumption` in the incoming Scenario that is not the server's own catalogued node. */
+  'untrusted_loonto_assumption',
 ] as const;
 export type PatchIssueCode = (typeof PATCH_ISSUE_CODES)[number];
 
@@ -91,6 +95,8 @@ export const PATCH_NOTE_CODES = [
   'trusted_value_added',
   'trusted_value_upgraded',
   'trusted_value_conflicts_with_user',
+  /** F1: the model classified a weekly total as weekday hours without the user saying so - not written. */
+  'weekday_hours_withheld',
 ] as const;
 export type PatchNoteCode = (typeof PATCH_NOTE_CODES)[number];
 export interface PatchNote {
@@ -102,12 +108,12 @@ export interface PatchNote {
 // Next question
 // ---------------------------------------------------------------------------------------------
 
-export const NEXT_QUESTION_KINDS = ['provide_value', 'offer_assumption', 'resolve_conflict', 'correct_value'] as const;
+export const NEXT_QUESTION_KINDS = ['provide_value', 'offer_assumption', 'resolve_conflict', 'correct_value', 'clarify_hours_composition'] as const;
 export type NextQuestionKind = (typeof NEXT_QUESTION_KINDS)[number];
 
 export type AnswerMode = 'number' | 'choice' | 'yes_no' | 'pick_candidate' | 'overtime_distribution' | 'hours_by_category';
 
-export type FallbackOption = 'upload_document' | 'give_range' | 'compute_both_variants' | 'use_estimate';
+export type FallbackOption = 'upload_document' | 'give_range' | 'split_hours' | 'compute_both_variants' | 'use_estimate';
 
 /** ONE deterministic question. The choice of WHAT to ask is made by code from the R1 result; wording is
  * R3's job (it renders `prompt.key` with `prompt.params` in the interface language). */
@@ -140,6 +146,17 @@ export interface ConversationDigest {
   pendingQuestion?: { field: ScenarioFieldPath | 'work.hours'; kind: NextQuestionKind };
   /** Fields whose offered assumption the user declined - not offered again. */
   declinedAssumptions?: ScenarioFieldPath[];
+  /**
+   * F1: the user gave a weekly total of hours WITHOUT saying they are Monday-Friday regular hours. The total
+   * is NOT committed to the Scenario (that would be a hidden default); it only parameterises the one
+   * clarification question. `weekdayOnly: false` = the user said the total includes other kinds of hours.
+   */
+  hoursClarification?: HoursClarification;
+}
+
+export interface HoursClarification {
+  statedWeeklyTotal?: number;
+  weekdayOnly?: false;
 }
 
 export const RESPONSE_HINT_CODES = [

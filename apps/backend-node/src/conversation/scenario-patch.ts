@@ -62,6 +62,9 @@ export const agentOutputSchema = z.strictObject({
   intent: z.enum(TURN_INTENTS),
   patch: scenarioPatchSchema,
   hint: z.enum(AGENT_HINTS).optional(),
+  /** F1: a weekly total the user mentioned WITHOUT saying it is Monday-Friday regular hours. Never written to
+   * the Scenario - it only parameterises the one hours-composition clarification. */
+  statedWeeklyHours: z.number().min(0).max(168).optional(),
 });
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
 

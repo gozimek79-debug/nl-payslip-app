@@ -17,9 +17,11 @@ function assertR1IsTheAuthority(result: Awaited<ReturnType<typeof runConversatio
   assert.deepEqual(result.evaluation, toPublicEvaluation(evaluateScenario(result.scenario, RATES_2026)));
 }
 
-test('R2 Flow A: "I earn 16.80 and work 40 hours" -> rate + weekday hours as user values; one next question; no model arithmetic', async () => {
+test('R2 Flow A: "I earn 16.80 and work 40 hours Monday to Friday" -> rate + weekday hours as user values; one next question; no model arithmetic', async () => {
+  // F1 (Cursor R2 review): only an EXPLICIT weekday statement may set weekday hours - the unqualified
+  // "40 hours" form of Flow A is covered by r2-review-fixes.test.ts (no weekday write + one clarification).
   const agent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 16.8 }, { op: 'set', field: 'work.regularWeekdayHours', value: 40 }])]);
-  const r = await run({ message: 'I earn 16.80 and work 40 hours.', locale: 'en' }, agent);
+  const r = await run({ message: 'I earn 16.80 and work 40 hours Monday to Friday.', locale: 'en' }, agent);
   assert.equal(r.status, 'updated');
   assert.deepEqual(r.patchApplied, [
     { op: 'write', field: 'pay.hourlyRate', node: { state: 'known', value: 16.8, source: 'user' } },

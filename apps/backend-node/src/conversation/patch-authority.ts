@@ -73,7 +73,16 @@ export type AuthorizationResult =
   | { status: 'authorized'; ops: AppliedOp[]; notes: PatchNote[] }
   | { status: 'rejected'; issues: PatchIssue[] };
 
-export function authorizePatch(patch: ScenarioPatchV1, scenario: ScenarioV1): AuthorizationResult {
+/**
+ * What the server is offering in THIS turn (F4). `offeredAssumption` is the field of the deterministic
+ * current question when - and only when - that question is `offer_assumption`; otherwise null. It is
+ * computed by the server from the Scenario, never taken from the client or the model.
+ */
+export interface PatchGuardContext {
+  offeredAssumption: ScenarioFieldPath | null;
+}
+
+export function authorizePatch(patch: ScenarioPatchV1, scenario: ScenarioV1, guard: PatchGuardContext): AuthorizationResult {
   const issues: PatchIssue[] = [];
   const ops: AppliedOp[] = [];
   const notes: PatchNote[] = [];
@@ -166,6 +175,8 @@ export function authorizePatch(patch: ScenarioPatchV1, scenario: ScenarioV1): Au
       case 'accept_assumption': {
         const entry = assumptionFor(field);
         if (!entry) return reject('assumption_not_in_catalog', i, field);
+        // F4: the model cannot create its own offer. Only the assumption the server offers now, for this field.
+        if (guard.offeredAssumption !== field) return reject('assumption_not_offered', i, field, guard.offeredAssumption ? { offered: guard.offeredAssumption } : undefined);
         if (verified) return reject('cannot_replace_verified_with_assumption', i, field);
         const userStated = isRecord(existing) && ((existing.state !== 'unknown' && existing.source === 'user') || existing.state === 'conflict');
         if (userStated) return reject('assumption_field_already_known', i, field);
@@ -188,7 +199,10 @@ export function authorizePatch(patch: ScenarioPatchV1, scenario: ScenarioV1): Au
     }
   });
 
-  return issues.length > 0 ? { status: 'rejected', issues } : { status: 'authorized', ops, notes };
+  if (issues.length > 0) return { status: 'rejected', issues };
+  // A write that leaves the field exactly as it is (e.g. a repeated "I don't know") is not a change.
+  const effective = ops.filter((op) => op.op !== 'write' || canonicalJson(getAt(scenario, op.field)) !== canonicalJson(op.node));
+  return { status: 'authorized', ops: effective, notes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -249,8 +263,8 @@ const issueKey = (i: { code: string; path: string; params?: unknown }) => `${i.c
  * own validator is rejected as a whole (the Scenario is returned unchanged) with R1's issue codes - a turn
  * never moves the Scenario into an invalid state.
  */
-export function applyScenarioPatch(scenario: ScenarioV1, patch: ScenarioPatchV1): PatchResult {
-  const authorization = authorizePatch(patch, scenario);
+export function applyScenarioPatch(scenario: ScenarioV1, patch: ScenarioPatchV1, guard: PatchGuardContext): PatchResult {
+  const authorization = authorizePatch(patch, scenario, guard);
   if (authorization.status === 'rejected') return { status: 'rejected', scenario, issues: authorization.issues };
   if (authorization.ops.length === 0) return { status: 'unchanged', scenario, notes: authorization.notes };
 

@@ -4,12 +4,14 @@ import { evaluateScenario, type ScenarioEvaluationResult } from '../scenario/sce
 import { toPublicEvaluation } from '../scenario/scenario-public.js';
 import { SCENARIO_FIELDS, SCENARIO_FIELD_PATHS, SCENARIO_SCHEMA_VERSION, type ScenarioFieldPath, type ScenarioV1 } from '../scenario/scenario-types.js';
 import { canonicalize, getAt, isRecord } from '../scenario/scenario-util.js';
+import { findForgedAssumptions } from './assumption-catalog.js';
 import type { AgentInput, ConversationAgent } from './conversation-agent.js';
 import type {
   AgentStatus,
   ConversationDigest,
   ConversationLocale,
   ConversationTurnResult,
+  HoursClarification,
   NextQuestionSpec,
   PatchIssue,
   PatchNote,
@@ -17,7 +19,7 @@ import type {
   TurnIntent,
   TurnStatus,
 } from './conversation-types.js';
-import { interpretDeterministically } from './deterministic-interpreter.js';
+import { confirmsWeekdayOnly, interpretDeterministically, statesWeekdaySemantics } from './deterministic-interpreter.js';
 import { selectNextQuestion } from './next-question.js';
 import { applyScenarioPatch } from './patch-authority.js';
 import { EMPTY_PATCH, type ScenarioPatchV1 } from './scenario-patch.js';
@@ -27,14 +29,17 @@ import { findUnbackedVerifiedValues, isTrustedContext, mergeTrustedContext, type
  * One conversation turn (R2 §1 binding flow):
  *
  *   Scenario (+ trusted context, server-internal only)
- *     -> trust check: every verified value must be backed by the trusted context, else the turn is rejected
+ *     -> trust checks: every verified value must be backed by the trusted context (RT-001), and every
+ *        Loonto assumption must be the server's own catalogued node (F3) - else the turn is rejected
  *     -> deterministic interpreter, or ONE model call (or the deterministic fallback)
- *     -> ScenarioPatch (schema-validated) -> authority / provenance guard -> atomic application
- *     -> R1 Scenario Core: evaluateScenario (Tier A runs only inside it) -> public projection
- *     -> deterministic next-question selector
+ *     -> F1 backstop: a model's weekday-hours write the user's own words do not support is withheld and
+ *        turned into ONE hours-composition clarification
+ *     -> ScenarioPatch (schema-validated) -> authority / provenance guard (incl. the F4 offer binding)
+ *     -> atomic application -> R1 Scenario Core: evaluateScenario (Tier A runs only inside it)
+ *     -> public projection -> deterministic next-question selector
  *
- * No Tier A call, no HTTP call to /api/tier-a/calculate, no persistence, no session state: the Scenario
- * and a tiny digest are request-carried. The model output never reaches the client.
+ * No Tier A call, no HTTP call to the Tier A route, no persistence, no session state: the Scenario and a tiny
+ * digest are request-carried. The model output never reaches the client.
  */
 
 export interface TurnRequest {
@@ -89,6 +94,37 @@ function cleanDeclined(list: readonly string[] | undefined): ScenarioFieldPath[]
   return out;
 }
 
+/** The request-carried clarification, kept only if well-formed (it can only steer which question is asked). */
+function cleanClarification(value: HoursClarification | undefined): HoursClarification | null {
+  if (!value || typeof value !== 'object') return null;
+  const total = value.statedWeeklyTotal;
+  return {
+    ...(typeof total === 'number' && Number.isFinite(total) && total >= 0 && total <= 168 ? { statedWeeklyTotal: total } : {}),
+    ...(value.weekdayOnly === false ? { weekdayOnly: false as const } : {}),
+  };
+}
+
+/**
+ * F1 backstop. The model may only write `work.regularWeekdayHours` when the user's own message says the hours
+ * are Monday-Friday / weekday hours, or when the user is answering a question that is itself about weekday
+ * hours (the weekday-hours question, or the composition clarification confirmed without naming other hours).
+ * Otherwise the write is WITHHELD - never applied, never turned into a guessed split - and the stated number
+ * only parameterises the one clarification. Other ops of the same patch (e.g. the hourly rate) are kept.
+ */
+function withholdUnstatedWeekdayHours(patch: ScenarioPatchV1, message: string, current: NextQuestionSpec | null): { patch: ScenarioPatchV1; withheld: number | null } {
+  const answersWeekdayQuestion = current?.field === 'work.regularWeekdayHours';
+  const confirmsComposition = current?.kind === 'clarify_hours_composition' && confirmsWeekdayOnly(message);
+  if (answersWeekdayQuestion || confirmsComposition || statesWeekdaySemantics(message)) return { patch, withheld: null };
+  let withheld: number | null = null;
+  const ops = patch.ops.filter((op) => {
+    const writesWeekday = (op.op === 'set' || op.op === 'set_range' || op.op === 'set_alternatives' || op.op === 'set_conflict') && op.field === 'work.regularWeekdayHours';
+    if (!writesWeekday) return true;
+    withheld = op.op === 'set' && typeof op.value === 'number' ? op.value : op.op === 'set_range' ? op.high : withheld;
+    return false;
+  });
+  return ops.length === patch.ops.length ? { patch, withheld: null } : { patch: { ...patch, ops }, withheld: withheld ?? -1 };
+}
+
 const NO_MUTATION_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>(['off_topic', 'decline_assumption', 'clarification_request']);
 
 function responseHintFor(args: {
@@ -115,6 +151,23 @@ function responseHintFor(args: {
   return { code: 'needs_information' };
 }
 
+function rejectedTurn(turnId: string, scenario: ScenarioV1, issues: PatchIssue[], declined: ScenarioFieldPath[], code: ResponseHint['code']): ConversationTurnResult {
+  return {
+    turnId,
+    status: 'rejected',
+    intent: 'unclear',
+    agentStatus: 'not_needed',
+    scenario,
+    patchApplied: null,
+    patchIssues: issues,
+    patchNotes: [],
+    evaluation: null,
+    nextQuestion: null,
+    conversation: { declinedAssumptions: declined },
+    responseHint: { code },
+  };
+}
+
 export async function runConversationTurn(request: TurnRequest, deps: TurnDependencies): Promise<ConversationTurnResult> {
   if (deps.trusted !== undefined && deps.trusted !== null && !isTrustedContext(deps.trusted)) {
     // Programming error, never a request path: anything that is not a server-built TrustedContext is refused.
@@ -124,26 +177,19 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
   const newId = deps.newId ?? randomUUID;
   const turnId = newId();
   const declinedIn = cleanDeclined(request.conversation?.declinedAssumptions);
+  const clarificationIn = cleanClarification(request.conversation?.hoursClarification);
   const incoming = request.scenario ? (canonicalize(request.scenario) as ScenarioV1) : emptyScenario(newId());
 
-  // 1. RT-001: a verified value must be backed by THIS turn's trusted context. Otherwise it is
-  //    self-declared trust - the turn is rejected before any interpretation, model call or evaluation.
+  // 1a. RT-001: a verified value must be backed by THIS turn's trusted context. Otherwise it is
+  //     self-declared trust - the turn is rejected before any interpretation, model call or evaluation.
   const unbacked = findUnbackedVerifiedValues(incoming, trusted);
   if (unbacked.length > 0) {
-    return {
-      turnId,
-      status: 'rejected',
-      intent: 'unclear',
-      agentStatus: 'not_needed',
-      scenario: incoming,
-      patchApplied: null,
-      patchIssues: unbacked.map((u) => ({ code: 'untrusted_provenance_in_scenario' as const, field: u.field, params: { source: u.source } })),
-      patchNotes: [],
-      evaluation: null,
-      nextQuestion: null,
-      conversation: { declinedAssumptions: declinedIn },
-      responseHint: { code: 'untrusted_scenario' },
-    };
+    return rejectedTurn(turnId, incoming, unbacked.map((u) => ({ code: 'untrusted_provenance_in_scenario' as const, field: u.field, params: { source: u.source } })), declinedIn, 'untrusted_scenario');
+  }
+  // 1b. F3: a Loonto assumption must be exactly the server's own catalogued node - never caller-minted.
+  const forged = findForgedAssumptions(incoming);
+  if (forged.length > 0) {
+    return rejectedTurn(turnId, incoming, forged.map((f) => ({ code: 'untrusted_loonto_assumption' as const, field: f.field, params: { reason: f.reason } })), declinedIn, 'untrusted_scenario');
   }
 
   // 2. Server-trusted facts (internal path only).
@@ -157,13 +203,14 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
 
   // 3. What the server would ask now - computed deterministically, never taken from the client.
   const before = evaluateScenario(scenario, deps.rates);
-  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: before, declinedAssumptions: declinedIn });
+  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: before, declinedAssumptions: declinedIn, hoursClarification: clarificationIn });
 
   // 4. Interpretation: deterministic first; otherwise at most ONE model call; otherwise no change.
   let intent: TurnIntent = 'unclear';
   let agentStatus: AgentStatus = 'not_needed';
   let patch: ScenarioPatchV1 = EMPTY_PATCH;
   let usedModelOrFallback = false;
+  let clarificationOut: HoursClarification | null = clarificationIn;
   const declined = [...declinedIn];
 
   const deterministic = interpretDeterministically(request.message, current);
@@ -171,14 +218,18 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
     intent = deterministic.intent;
     patch = deterministic.patch;
     if (deterministic.declined && !declined.includes(deterministic.declined)) declined.push(deterministic.declined);
+    if (deterministic.hoursClarification) clarificationOut = deterministic.hoursClarification;
   } else if (deps.agent) {
     usedModelOrFallback = true;
+    const statedTotal = current?.prompt.params.statedWeeklyTotal;
     const outcome = await deps.agent.interpret({
       locale: request.locale,
       message: request.message,
       scenario: scenarioDigest(scenario),
       requestedConcepts: (scenario.requestedConcepts ?? []).map((c) => c.concept),
-      currentQuestion: current ? { field: current.field, kind: current.kind, ...(current.suggestedAssumption ? { suggestedAssumption: current.suggestedAssumption } : {}) } : null,
+      currentQuestion: current
+        ? { field: current.field, kind: current.kind, ...(current.suggestedAssumption ? { suggestedAssumption: current.suggestedAssumption } : {}), ...(typeof statedTotal === 'number' ? { statedWeeklyTotal: statedTotal } : {}) }
+        : null,
       missing: missingDigest(before),
     });
     agentStatus = outcome.status;
@@ -189,7 +240,14 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
         agentStatus = 'invalid_output';
         intent = 'unclear';
       } else {
-        patch = outcome.output.patch;
+        // F1: withhold a weekday-hours classification the user did not state.
+        const filtered = withholdUnstatedWeekdayHours(outcome.output.patch, request.message, current);
+        patch = filtered.patch;
+        if (filtered.withheld !== null) notes.push({ code: 'weekday_hours_withheld', field: 'work.regularWeekdayHours' });
+        const stated = outcome.output.statedWeeklyHours ?? (filtered.withheld !== null && filtered.withheld >= 0 ? filtered.withheld : undefined);
+        if (outcome.output.hint === 'ambiguous_hours' || stated !== undefined || filtered.withheld !== null) {
+          clarificationOut = typeof stated === 'number' ? { statedWeeklyTotal: stated } : {};
+        }
         if (intent === 'decline_assumption' && current?.kind === 'offer_assumption' && current.field !== 'work.hours' && !declined.includes(current.field)) declined.push(current.field);
       }
     }
@@ -198,12 +256,13 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
     agentStatus = 'not_configured';
   }
 
-  // 5. Guard + atomic application + R1 validation.
+  // 5. Guard + atomic application + R1 validation. F4: the only acceptable assumption is the one offered now.
+  const offeredAssumption = current?.kind === 'offer_assumption' && current.field !== 'work.hours' ? current.field : null;
   let status: TurnStatus = 'unchanged';
   let patchIssues: PatchIssue[] = [];
   let patchApplied: ConversationTurnResult['patchApplied'] = null;
   if (patch.ops.length > 0) {
-    const result = applyScenarioPatch(scenario, patch);
+    const result = applyScenarioPatch(scenario, patch, { offeredAssumption });
     if (result.status === 'rejected') {
       status = 'rejected';
       patchIssues = result.issues;
@@ -219,7 +278,9 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
 
   // 6. R1 is the arithmetic and readiness authority; the client only ever sees its public projection.
   const evaluation = status === 'updated' ? evaluateScenario(scenario, deps.rates) : before;
-  const nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined });
+  const nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut });
+  // The clarification is only carried while the opening hours question is still the one being asked.
+  const carryClarification = nextQuestion?.field === 'work.hours' && clarificationOut ? clarificationOut : null;
 
   return {
     turnId,
@@ -232,7 +293,11 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
     patchNotes: notes,
     evaluation: toPublicEvaluation(evaluation),
     nextQuestion,
-    conversation: { ...(nextQuestion ? { pendingQuestion: { field: nextQuestion.field, kind: nextQuestion.kind } } : {}), declinedAssumptions: declined },
+    conversation: {
+      ...(nextQuestion ? { pendingQuestion: { field: nextQuestion.field, kind: nextQuestion.kind } } : {}),
+      declinedAssumptions: declined,
+      ...(carryClarification ? { hoursClarification: carryClarification } : {}),
+    },
     responseHint: responseHintFor({ status, intent, agentStatus, usedModelOrFallback, evaluation }),
   };
 }

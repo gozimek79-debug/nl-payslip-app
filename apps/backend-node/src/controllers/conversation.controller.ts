@@ -33,6 +33,7 @@ const turnRequestSchema = z.strictObject({
     .strictObject({
       pendingQuestion: z.strictObject({ field: z.string().max(80), kind: z.enum(NEXT_QUESTION_KINDS) }).optional(),
       declinedAssumptions: z.array(z.string().max(80)).max(25).optional(),
+      hoursClarification: z.strictObject({ statedWeeklyTotal: z.number().min(0).max(168).optional(), weekdayOnly: z.literal(false).optional() }).optional(),
     })
     .optional(),
 });

@@ -2,7 +2,7 @@ import type { ScenarioEvaluationResult } from '../scenario/scenario-evaluate.js'
 import { SCENARIO_FIELDS, type ScenarioFieldPath, type ScenarioIssue, type ScenarioRequirement, type ScenarioV1 } from '../scenario/scenario-types.js';
 import { getAt, isRecord } from '../scenario/scenario-util.js';
 import { assumptionFor } from './assumption-catalog.js';
-import type { AnswerMode, FallbackOption, NextQuestionSpec } from './conversation-types.js';
+import type { AnswerMode, FallbackOption, HoursClarification, NextQuestionSpec } from './conversation-types.js';
 
 /**
  * The deterministic next-question selector (R2 §12, Lock §5.1-§5.3, §16).
@@ -50,7 +50,7 @@ const DOCUMENT_DERIVABLE: ReadonlySet<string> = new Set([
   'pay.overtime.thresholdHoursPerDay', 'pay.overtime.tier1Percent', 'pay.overtime.tier2Percent', 'tax.loonheffingskorting',
 ]);
 
-const BAND = { correct_value: 0, resolve_conflict: 100, offer_assumption: 200, provide_value: 200 } as const;
+const BAND = { correct_value: 0, resolve_conflict: 100, offer_assumption: 200, provide_value: 200, clarify_hours_composition: 200 } as const;
 
 function fieldRank(field: string): number {
   const index = FIELD_PRIORITY.indexOf(field as ScenarioFieldPath);
@@ -66,17 +66,59 @@ function answerModeFor(field: ScenarioFieldPath | 'work.hours'): { answerMode: A
 }
 
 function fallbackFor(field: ScenarioFieldPath | 'work.hours', assumptionAvailable: boolean): FallbackOption[] {
+  // F5: an hours question always has a way forward - split the hours by kind, or give a range.
+  if (field === 'work.hours') return ['split_hours', 'give_range'];
   const out: FallbackOption[] = [];
   if (DOCUMENT_DERIVABLE.has(field)) out.push('upload_document');
-  const entry = field === 'work.hours' ? undefined : assumptionFor(field);
+  const entry = assumptionFor(field);
   if (entry?.kind === 'alternatives') out.push('compute_both_variants');
   if (field === 'deductions.mode' && assumptionAvailable) out.push('use_estimate');
-  if (field !== 'work.hours' && SCENARIO_FIELDS[field].kind === 'number') out.push('give_range');
+  if (SCENARIO_FIELDS[field].kind === 'number') out.push('give_range');
+  if (field.startsWith('work.') && SCENARIO_FIELDS[field].kind === 'number') out.push('split_hours');
   return out;
 }
 
-function questionForRequirement(requirement: ScenarioRequirement, scenario: ScenarioV1, declined: ReadonlySet<string>): NextQuestionSpec {
+/** Params every question carries; weekday hours always say they mean Monday-Friday REGULAR hours (F1/F5). */
+function baseParams(field: ScenarioFieldPath | 'work.hours'): Record<string, string | number> {
+  return field === 'work.regularWeekdayHours' ? { field, hoursScope: 'weekday_regular_only' } : { field };
+}
+
+/**
+ * F1: the user stated a weekly total without saying the hours are Monday-Friday regular hours. ONE question
+ * about its composition - the total itself is never written to the Scenario until the user says what it is.
+ * After a "no" (`weekdayOnly: false`) the user is asked to split the hours by kind instead.
+ */
+function hoursCompositionQuestion(clarification: HoursClarification): NextQuestionSpec {
+  const total = clarification.statedWeeklyTotal;
+  const params: Record<string, string | number> = { field: 'work.hours', ...(typeof total === 'number' ? { statedWeeklyTotal: total } : {}) };
+  if (clarification.weekdayOnly === false) {
+    return {
+      kind: 'provide_value',
+      field: 'work.hours',
+      reasonCode: 'hours_include_other_categories',
+      answerMode: 'hours_by_category',
+      canUseAssumption: false,
+      fallbackOptions: ['split_hours', 'give_range'],
+      priority: BAND.provide_value + fieldRank('work.hours'),
+      prompt: { key: 'question.split_hours', params },
+    };
+  }
+  return {
+    kind: 'clarify_hours_composition',
+    field: 'work.hours',
+    reasonCode: 'ambiguous_hours',
+    answerMode: 'choice',
+    options: ['weekday_regular_only', 'includes_other_categories'],
+    canUseAssumption: false,
+    fallbackOptions: ['split_hours', 'give_range'],
+    priority: BAND.clarify_hours_composition + fieldRank('work.hours'),
+    prompt: { key: 'question.clarify_hours_composition', params },
+  };
+}
+
+function questionForRequirement(requirement: ScenarioRequirement, scenario: ScenarioV1, declined: ReadonlySet<string>, clarification: HoursClarification | null): NextQuestionSpec {
   const field = requirement.field;
+  if (field === 'work.hours' && clarification) return hoursCompositionQuestion(clarification);
   if (requirement.reason === 'conflict' && field !== 'work.hours') {
     const node = getAt(scenario, field);
     const candidates = isRecord(node) && Array.isArray(node.candidates)
@@ -110,7 +152,7 @@ function questionForRequirement(requirement: ScenarioRequirement, scenario: Scen
       suggestedAssumption: entry.kind === 'value' ? { value: entry.value, source: 'loonto_assumption' } : { options: [...entry.options], source: 'loonto_assumption' },
       fallbackOptions: fallbackFor(field, true).filter((f) => f !== 'use_estimate'),
       priority: BAND.offer_assumption + fieldRank(field),
-      prompt: { key: 'question.offer_assumption', params: { field, ...(entry.kind === 'value' ? { assumptionValue: entry.value } : { assumptionOptions: entry.options.length }) } },
+      prompt: { key: 'question.offer_assumption', params: { ...baseParams(field), ...(entry.kind === 'value' ? { assumptionValue: entry.value } : { assumptionOptions: entry.options.length }) } },
     };
   }
 
@@ -122,7 +164,7 @@ function questionForRequirement(requirement: ScenarioRequirement, scenario: Scen
     canUseAssumption: assumptionAvailable,
     fallbackOptions: fallbackFor(field, assumptionAvailable),
     priority: BAND.provide_value + fieldRank(field),
-    prompt: { key: 'question.provide_value', params: { field } },
+    prompt: { key: 'question.provide_value', params: baseParams(field) },
   };
 }
 
@@ -158,8 +200,9 @@ function correctionQuestion(issues: ScenarioIssue[], scenario: ScenarioV1): Next
   };
 }
 
-export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: ScenarioEvaluationResult; declinedAssumptions?: readonly string[] }): NextQuestionSpec | null {
+export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: ScenarioEvaluationResult; declinedAssumptions?: readonly string[]; hoursClarification?: HoursClarification | null }): NextQuestionSpec | null {
   const { scenario, evaluation } = input;
+  const clarification = input.hoursClarification ?? null;
   const declined = new Set(input.declinedAssumptions ?? []);
   switch (evaluation.status) {
     case 'computed':
@@ -174,7 +217,7 @@ export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: Sc
         return conflictA - conflictB || fieldRank(a.field) - fieldRank(b.field);
       });
       const first = ordered[0];
-      return first ? questionForRequirement(first, scenario, declined) : null;
+      return first ? questionForRequirement(first, scenario, declined, clarification) : null;
     }
   }
 }

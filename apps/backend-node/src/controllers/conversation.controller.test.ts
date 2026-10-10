@@ -80,7 +80,7 @@ function assertSanitized(body: unknown) {
 test('R2 HTTP: an ordinary turn - patch applied as user values, R1 public evaluation, one next question, sanitized', async () => {
   counters.clear();
   currentAgent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 16.8 }, { op: 'set', field: 'work.regularWeekdayHours', value: 40 }])]);
-  const res = await turn({ message: 'I earn 16.80 and work 40 hours', locale: 'en' });
+  const res = await turn({ message: 'I earn 16.80 and work 40 hours Monday to Friday', locale: 'en' });
   assert.equal(res.status, 200);
   const body = (await res.json()) as TurnBody;
   assert.deepEqual(Object.keys(body).sort(), PUBLIC_KEYS);

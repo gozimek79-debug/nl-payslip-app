@@ -1,16 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyScenarioPatch, authorizePatch } from './patch-authority.js';
+import { applyScenarioPatch as applyGuarded, authorizePatch } from './patch-authority.js';
 import { parseScenarioPatch, type PatchOp, type ScenarioPatchV1 } from './scenario-patch.js';
 import { getAt } from '../scenario/scenario-util.js';
 import { known, readyScenario, scenario } from '../test-support/conversation-fixtures.js';
-import type { ScenarioV1 } from '../scenario/scenario-types.js';
+import type { ScenarioFieldPath, ScenarioV1 } from '../scenario/scenario-types.js';
+/** F4: the guard needs to know which assumption the server is offering. These tests offer none unless they
+ * are about accepting one, in which case the offered field is passed explicitly. */
+const applyScenarioPatch = (s: ScenarioV1, p: ScenarioPatchV1, offeredAssumption: ScenarioFieldPath | null = null) => applyGuarded(s, p, { offeredAssumption });
+
 
 /** R2 §19 - ScenarioPatch V1: closed schema, field-table-bound ops, atomic and pure application. */
 
 const patch = (...ops: PatchOp[]): ScenarioPatchV1 => ({ version: 1, ops });
-function applied(s: ScenarioV1, p: ScenarioPatchV1): ScenarioV1 {
-  const r = applyScenarioPatch(s, p);
+function applied(s: ScenarioV1, p: ScenarioPatchV1, offered: ScenarioFieldPath | null = null): ScenarioV1 {
+  const r = applyScenarioPatch(s, p, offered);
   assert.equal(r.status, 'applied', JSON.stringify(r));
   return r.scenario;
 }
@@ -60,9 +64,9 @@ test('R2 patch #7: tax-credit state', () => {
 });
 
 test('R2 patch #8: an explicit Loonto assumption comes only from the catalogue and is marked as one', () => {
-  const s = applied(scenario({ work: { saturdayHours: known(8) } }), patch({ op: 'accept_assumption', field: 'pay.saturdayPremiumPercent' }));
+  const s = applied(scenario({ work: { saturdayHours: known(8) } }), patch({ op: 'accept_assumption', field: 'pay.saturdayPremiumPercent' }), 'pay.saturdayPremiumPercent');
   assert.deepEqual(s.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'loonto_assumption' });
-  const both = applied(scenario(), patch({ op: 'accept_assumption', field: 'tax.loonheffingskorting' }));
+  const both = applied(scenario(), patch({ op: 'accept_assumption', field: 'tax.loonheffingskorting' }), 'tax.loonheffingskorting');
   assert.deepEqual(both.tax.loonheffingskorting, { state: 'alternatives', options: ['applied', 'not_applied'], source: 'loonto_assumption' });
 });
 
@@ -116,7 +120,7 @@ test('R2 patch #16: mixed valid + invalid operations are atomic - nothing is app
 
 test('R2 patch #17: same patch + same Scenario -> byte-equivalent result', () => {
   const p = patch({ op: 'set', field: 'work.saturdayHours', value: 8 }, { op: 'accept_assumption', field: 'pay.saturdayPremiumPercent' }, { op: 'set_label', label: '  week 41  ' });
-  assert.equal(JSON.stringify(applied(readyScenario(), p)), JSON.stringify(applied(readyScenario(), p)));
+  assert.equal(JSON.stringify(applied(readyScenario(), p, 'pay.saturdayPremiumPercent')), JSON.stringify(applied(readyScenario(), p, 'pay.saturdayPremiumPercent')));
 });
 
 test('R2 patch #18: applying a patch does not mutate the input Scenario or the patch', () => {
@@ -148,7 +152,7 @@ test('R2 patch #20: a patch preserves every unrelated Scenario value', () => {
 test('R2 patch: duplicates, too many ops, wrong value types, unknown concepts', () => {
   assert.deepEqual(rejected(scenario(), patch({ op: 'set', field: 'pay.hourlyRate', value: 16 }, { op: 'set', field: 'pay.hourlyRate', value: 17 })).map((i) => i.code), ['duplicate_field_in_patch']);
   const many = Array.from({ length: 13 }, (_, i) => ({ op: 'set_label', label: `l${i}` }) as PatchOp);
-  assert.deepEqual(authorizePatch(patch(...many), scenario()), { status: 'rejected', issues: [{ code: 'too_many_ops', params: { count: 13, max: 12 } }] });
+  assert.deepEqual(authorizePatch(patch(...many), scenario(), { offeredAssumption: null }), { status: 'rejected', issues: [{ code: 'too_many_ops', params: { count: 13, max: 12 } }] });
   assert.deepEqual(rejected(scenario(), patch({ op: 'set', field: 'pay.hourlyRate', value: '16' })).map((i) => i.code), ['value_type_mismatch']);
   assert.deepEqual(rejected(scenario(), patch({ op: 'set', field: 'work.overtimeDistribution', value: 3 })).map((i) => i.code), ['value_type_mismatch']);
   assert.deepEqual(rejected(scenario(), patch({ op: 'request_concept', concept: 'free_money' })).map((i) => i.code), ['unknown_concept']);

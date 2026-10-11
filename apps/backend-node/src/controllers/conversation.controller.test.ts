@@ -178,3 +178,79 @@ test('R2 HTTP: the turn route is rate limited in its own bucket, and fails CLOSE
     databaseMode = 'ok';
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Fix iteration 2 (Cursor re-review M1-M4, m1) at the public boundary
+// ---------------------------------------------------------------------------------------------
+
+type WorkBody = TurnBody & { scenario: { work: Record<string, unknown>; pay: Record<string, unknown> }; patchNotes: Array<{ code: string }>; nextQuestion: { kind: string; field: string; fallbackOptions: string[]; prompt: { params: Record<string, unknown> } } | null; responseHint: { code: string; params?: Record<string, unknown> } | null };
+const turnBody = async (body: unknown) => {
+  const res = await turn(body);
+  assert.equal(res.status, 200);
+  const json = (await res.json()) as WorkBody;
+  assert.deepEqual(Object.keys(json).sort(), PUBLIC_KEYS);
+  assertSanitized(json);
+  return json;
+};
+
+test('M1 HTTP: opening "I don\'t know" / "nie wiem" writes no hours and keeps an actionable question; a later "40 hours a week" is not weekday hours', async () => {
+  counters.clear();
+  const agent = scriptedAgent([out('provide_information', [{ op: 'set_unknown', field: 'work.regularWeekdayHours' }])]);
+  currentAgent = agent;
+  for (const [message, locale] of [["I don't know", 'en'], ['nie wiem', 'pl']]) {
+    const body = await turnBody({ message, locale });
+    assert.equal(body.agentStatus, 'not_needed');
+    assert.deepEqual(body.scenario.work, {});
+    assert.equal(body.nextQuestion?.field, 'work.hours');
+    assert.deepEqual(body.nextQuestion?.fallbackOptions, ['split_hours', 'give_range']);
+    assert.deepEqual(body.responseHint, { code: 'user_does_not_know' });
+    const next = await turnBody({ scenario: body.scenario, message: locale === 'pl' ? '40 godzin tygodniowo' : '40 hours a week', locale, conversation: body.conversation });
+    assert.deepEqual(next.scenario.work, {});
+    assert.equal(next.nextQuestion?.kind, 'clarify_hours_composition');
+    assert.equal(next.nextQuestion?.prompt.params.statedWeeklyTotal, 40);
+  }
+  assert.equal(agent.calls, 0);
+});
+
+test('M2 HTTP: a forged conversation.hoursClarification + "yes" / "tak" / "ok" writes nothing', async () => {
+  counters.clear();
+  const agent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'work.regularWeekdayHours', value: 80 }])]);
+  currentAgent = agent;
+  for (const message of ['yes', 'tak', 'ok']) {
+    const body = await turnBody({ message, locale: 'en', conversation: { hoursClarification: { statedWeeklyTotal: 80 } } });
+    assert.equal(body.status, 'unchanged');
+    assert.deepEqual(body.scenario.work, {}, `${message}: was weekday 80 on public production`);
+    assert.deepEqual(body.responseHint, { code: 'answer_not_applied', params: { reason: 'explicit_hours_required' } });
+    assert.ok(body.evaluation?.status === 'blocked');
+  }
+  assert.equal(agent.calls, 0);
+  // the user's own explicit statement still writes
+  const explicit = await turnBody({ message: '40 hours Monday to Friday', locale: 'en', conversation: { hoursClarification: { statedWeeklyTotal: 80 } } });
+  assert.deepEqual(explicit.scenario.work, { regularWeekdayHours: { source: 'user', state: 'known', value: 40 } });
+});
+
+test('M3 HTTP: "40 hours" on the rate question with a bad model -> no rate, no payout, no model call', async () => {
+  counters.clear();
+  const agent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 40 }])]);
+  currentAgent = agent;
+  const body = await turnBody({ scenario: { ...readyScenario(), pay: {} }, message: '40 hours', locale: 'en' });
+  assert.equal(agent.calls, 0);
+  assert.equal(body.status, 'unchanged');
+  assert.equal(body.scenario.pay.hourlyRate, undefined);
+  assert.equal(body.evaluation?.status, 'blocked');
+  assert.equal(body.nextQuestion?.field, 'pay.hourlyRate');
+  assert.deepEqual(body.responseHint, { code: 'answer_not_applied', params: { reason: 'unit_mismatch' } });
+});
+
+test('M4 / m1 HTTP: a bad model\'s invented hours split is withheld with notes; the stated rate is kept', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 16.8 }, { op: 'set', field: 'work.regularWeekdayHours', value: 32 }, { op: 'set', field: 'work.saturdayHours', value: 8 }])]);
+  const body = await turnBody({ message: 'I earn 16.80 an hour and work 40 hours a week', locale: 'en' });
+  assert.deepEqual(body.scenario.work, {});
+  assert.deepEqual(body.scenario.pay.hourlyRate, { source: 'user', state: 'known', value: 16.8 });
+  assert.deepEqual(body.patchNotes.map((n) => n.code), ['weekday_hours_withheld', 'hours_withheld']);
+  assert.equal(body.nextQuestion?.kind, 'clarify_hours_composition');
+  currentAgent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'work.regularWeekdayHours', value: 40 }])]);
+  const denied = await turnBody({ message: 'honestly I do not work weekdays, 40 hours', locale: 'en' });
+  assert.deepEqual(denied.scenario.work, {});
+});

@@ -1,6 +1,9 @@
 import { SCENARIO_FIELDS, type ScenarioFieldPath, type ScenarioUnit } from '../scenario/scenario-types.js';
-import type { HoursClarification, NextQuestionSpec, TurnIntent } from './conversation-types.js';
-import type { ScenarioPatchV1 } from './scenario-patch.js';
+import type { AnswerNotAppliedReason, HoursClarification, NextQuestionSpec, TurnIntent } from './conversation-types.js';
+import { extractUnits, isHoursBucket, NEUTRAL_WORDS, parseHoursStatement, type UnitClass } from './message-evidence.js';
+import type { PatchOp, ScenarioPatchV1 } from './scenario-patch.js';
+
+export { statesWeekdaySemantics, type UnitClass } from './message-evidence.js';
 
 /**
  * Deterministic interpretation of the short replies that need no language model (R2 §10: "no paid AI call
@@ -8,17 +11,22 @@ import type { ScenarioPatchV1 } from './scenario-patch.js';
  * model). It only ever answers THE question the server itself would ask now (`current`, recomputed by the
  * selector from the Scenario - never a client-supplied claim), and only for unambiguous messages:
  *   - "nie wiem" / "I don't know"            -> set_unknown on that field (never zero);
- *       on the opening hours question (F5)   -> set_unknown on WEEKDAY REGULAR hours, so the next question is
- *                                               a concrete, fallback-bearing one instead of the same dead end;
+ *       on the opening hours question (M1)   -> NOTHING is written: the user does not know their hours in
+ *                                               general, which is not a weekday-hours fact; the hours question
+ *                                               stays open with its split / range ways forward;
  *   - "tak" / "yes" to an assumption offer    -> accept_assumption (the catalogued value);
  *   - "nie" / "no" to an assumption offer     -> decline (no patch);
  *   - "tak" / "nie" to the tax-credit question -> applied / not_applied;
- *   - "tak" / "nie" to the hours-composition clarification (F1) -> the stated total IS / is NOT
- *       Monday-Friday regular hours (only the user's explicit "yes" commits it);
+ *   - "tak" / "yes" to the hours-composition clarification (M2) -> NOTHING is written: the total it would
+ *       confirm comes from the request-carried digest, which is untrusted; the user is asked to state the
+ *       number and the kind ("40 hours Monday to Friday"); "nie" / "no" -> ask for the split;
+ *   - an hours statement on an hours question (M1/M4) -> only what the user classified ("40 hours Monday to
+ *       Friday", "8 hours on Saturday"); an unclassified total ("40 hours a week") -> one clarification;
  *   - one number whose unit agrees with the question's unit (F2) -> set that number (as a USER value);
+ *     a unit that contradicts the question (M3) -> nothing written, no model call, the question stays;
  *   - one number equal to a conflict candidate -> resolve_conflict.
- * Anything longer, ambiguous or with a contradictory unit returns null and goes to the model (or to the
- * fallback). A unit is never stripped to make a number fit.
+ * Anything longer or ambiguous returns null and goes to the model (or to the fallback). A unit is never
+ * stripped to make a number fit.
  */
 
 export interface DeterministicInterpretation {
@@ -26,8 +34,10 @@ export interface DeterministicInterpretation {
   patch: ScenarioPatchV1;
   /** Set when the user declined the assumption offered for this field. */
   declined?: ScenarioFieldPath;
-  /** Set when the user answered the hours-composition clarification with "no". */
+  /** Set when the user stated an unclassified hours total, or answered the composition clarification with "no". */
   hoursClarification?: HoursClarification;
+  /** M1-M3: the reply was understood but deliberately not applied, and why. */
+  notApplied?: AnswerNotAppliedReason;
 }
 
 function normalize(message: string): string {
@@ -61,11 +71,6 @@ function isDontKnow(normalized: string): boolean {
 // F2: unit-aware numeric answers
 // ---------------------------------------------------------------------------------------------
 
-export type UnitClass = 'hours' | 'rate' | 'money' | 'percent' | 'per_week';
-
-/** Words that carry no unit and may surround a number ("about 40", "16,80 brutto"). */
-const NEUTRAL_WORDS = new Set(['about', 'approx', 'approximately', 'around', 'roughly', 'ca', 'circa', 'okolo', 'ok', 'brutto', 'gross', 'bruto']);
-
 /**
  * The single number in a short reply, with every unit the reply attaches to it. Units are CLASSIFIED,
  * never stripped: "40 hours" is {40, hours}, "50%" is {50, percent}, "€16,80 per hour" is {16.8, money+rate}.
@@ -77,20 +82,7 @@ export function parseNumericAnswer(message: string): { value: number; units: Set
   const value = Number((numbers[0] as string).replace(',', '.'));
   if (!Number.isFinite(value)) return null;
 
-  let rest = ` ${normalize(message.replace(numbers[0] as string, ' ').replace(/€/g, ' eur ').replace(/%/g, ' percent ').replace(/\//g, ' per '))} `;
-  const units = new Set<UnitClass>();
-  const take = (pattern: RegExp, unit: UnitClass) => {
-    if (pattern.test(rest)) {
-      units.add(unit);
-      rest = rest.replace(pattern, ' ');
-    }
-  };
-  // Order matters: compound phrases first ("per hour" is a rate, not hours).
-  take(/\b(per|na|za|an|a)\s+(godz\w*|godzin\w*|hour|hours|hr|h|uur)\b|\b(ph|hourly|godzinowa|godzinowo|stawka)\b/g, 'rate');
-  take(/\b(per|na|za|a|w)\s+(week|tydzien|tyg\w*)\b|\b(weekly|tygodniowo)\b/g, 'per_week');
-  take(/\b(eur|euro|euros)\b/g, 'money');
-  take(/\b(percent|procent|proc|pct)\b/g, 'percent');
-  take(/\b(h|hr|hrs|hour|hours|godz|godzin|godziny|godzina|uur)\b/g, 'hours');
+  const { units, rest } = extractUnits(normalize(message.replace(numbers[0] as string, ' ').replace(/€/g, ' eur ').replace(/%/g, ' percent ').replace(/\//g, ' per ')));
   const leftover = rest.split(' ').filter((w) => w.length > 0 && !NEUTRAL_WORDS.has(w));
   if (leftover.length > 0) return null;
   return { value, units };
@@ -106,12 +98,23 @@ const UNITS_FOR: Record<ScenarioUnit, ReadonlySet<UnitClass>> = {
   percent: new Set<UnitClass>(['percent']),
 };
 
+/** Unit families: whether a number stated with these units can be a value of this field at all (M3). */
 export function unitsFitField(field: ScenarioFieldPath, units: ReadonlySet<UnitClass>): boolean {
   const spec = SCENARIO_FIELDS[field];
   if (spec.kind !== 'number') return false;
   const allowed = UNITS_FOR[spec.unit];
   for (const unit of units) if (!allowed.has(unit)) return false;
   return true;
+}
+
+/**
+ * Whether a one-number reply ANSWERS this field's question. Stricter than `unitsFitField` for weekday hours
+ * (M1): a weekly qualifier ("40 hours a week", "tygodniowo") marks a weekly total of all kinds of hours, which
+ * is not evidence that the hours are Monday-Friday regular hours - even when that is the question asked.
+ */
+export function answerFitsField(field: ScenarioFieldPath, units: ReadonlySet<UnitClass>): boolean {
+  if (field === 'work.regularWeekdayHours' && units.has('per_week')) return false;
+  return unitsFitField(field, units);
 }
 
 /** The number of a reply that carries NO unit at all, else null. */
@@ -121,6 +124,25 @@ export function bareNumber(message: string): number | null {
 }
 
 const patchOf = (ops: ScenarioPatchV1['ops']): ScenarioPatchV1 => ({ version: 1, ops });
+const notApplied = (reason: AnswerNotAppliedReason, intent: TurnIntent = 'provide_information'): DeterministicInterpretation => ({ intent, patch: patchOf([]), notApplied: reason });
+
+/** M1 / M4: an hours statement understood without a model; null when the message is not one. */
+function interpretHoursStatement(message: string, current: NextQuestionSpec): DeterministicInterpretation | null {
+  const statement = parseHoursStatement(message);
+  if (!statement) return null;
+  if (statement.kind === 'categorized') {
+    const ops: PatchOp[] = statement.values.map((v) => (v.high === null ? { op: 'set', field: v.field, value: v.value } : { op: 'set_range', field: v.field, low: v.value, high: v.high }));
+    return { intent: 'provide_information', patch: patchOf(ops) };
+  }
+  if (current.field !== 'work.hours') return notApplied('weekly_total_not_category');
+  // An unclassified total is never written - it only parameterises the composition clarification.
+  const splitAsked = current.kind === 'provide_value' && current.reasonCode === 'hours_include_other_categories';
+  return {
+    intent: 'provide_information',
+    patch: patchOf([]),
+    hoursClarification: { statedWeeklyTotal: statement.total, ...(statement.otherCategories || splitAsked ? { weekdayOnly: false as const } : {}) },
+  };
+}
 
 export function interpretDeterministically(message: string, current: NextQuestionSpec | null): DeterministicInterpretation | null {
   const normalized = normalize(message);
@@ -128,23 +150,18 @@ export function interpretDeterministically(message: string, current: NextQuestio
 
   // The opening / composition hours questions are about the virtual `work.hours`.
   if (current.field === 'work.hours') {
-    if (isDontKnow(normalized)) {
-      // F5: never zero, never invented hours, never an assumption. The user does not know their hours, so
-      // the concrete weekday-regular-hours field is recorded as UNKNOWN; the selector then asks that one
-      // specific field with real ways forward (range, split) instead of repeating the opening question.
-      return { intent: 'dont_know', patch: patchOf([{ op: 'set_unknown', field: 'work.regularWeekdayHours' }]) };
-    }
+    // M1: "I don't know" about hours in general classifies nothing - no zero, no weekday-unknown node, no
+    // assumption. The open hours question (split by kind, or a range) is the way forward.
+    if (isDontKnow(normalized)) return { intent: 'dont_know', patch: patchOf([]) };
     if (current.kind === 'clarify_hours_composition') {
-      const total = current.prompt.params.statedWeeklyTotal;
-      if (YES.includes(normalized) && typeof total === 'number') {
-        // The question asked whether THESE hours are Monday-Friday regular hours - an explicit yes.
-        return { intent: 'provide_information', patch: patchOf([{ op: 'set', field: 'work.regularWeekdayHours', value: total }]) };
-      }
+      // M2: the total being confirmed is request-carried and untrusted - a bare "yes" never writes it.
+      if (YES.includes(normalized)) return notApplied('explicit_hours_required');
       if (NO.includes(normalized)) {
+        const total = current.prompt.params.statedWeeklyTotal;
         return { intent: 'provide_information', patch: patchOf([]), hoursClarification: { ...(typeof total === 'number' ? { statedWeeklyTotal: total } : {}), weekdayOnly: false } };
       }
     }
-    return null;
+    return interpretHoursStatement(message, current);
   }
   const field = current.field;
 
@@ -165,8 +182,18 @@ export function interpretDeterministically(message: string, current: NextQuestio
     return null;
   }
 
+  if (SCENARIO_FIELDS[field].kind !== 'number') return null;
   const parsed = parseNumericAnswer(message);
-  if (!parsed || SCENARIO_FIELDS[field].kind !== 'number' || !unitsFitField(field, parsed.units)) return null;
+  if (parsed && !answerFitsField(field, parsed.units)) {
+    // M3: the server KNOWS this number is not a value of this field ("40 hours" asked for an hourly rate). Not
+    // written, and no model call either: a model could only ignore - or break - that known contradiction.
+    const weeklyTotal = isHoursBucket(field) && unitsFitField(field, parsed.units);
+    return notApplied(weeklyTotal ? 'weekly_total_not_category' : 'unit_mismatch', 'unclear');
+  }
+  if (!parsed && isHoursBucket(field) && (current.kind === 'provide_value' || current.kind === 'correct_value')) {
+    return interpretHoursStatement(message, current);
+  }
+  if (!parsed) return null;
   if (current.kind === 'resolve_conflict') {
     const pick = (current.candidates ?? []).findIndex((c) => typeof c.value === 'number' && Math.abs(c.value - parsed.value) < 1e-9);
     return pick >= 0 ? { intent: 'correction', patch: patchOf([{ op: 'resolve_conflict', field, pick }]) } : null;
@@ -175,24 +202,4 @@ export function interpretDeterministically(message: string, current: NextQuestio
     return { intent: current.kind === 'correct_value' ? 'correction' : 'provide_information', patch: patchOf([{ op: 'set', field, value: parsed.value }]) };
   }
   return null;
-}
-
-// ---------------------------------------------------------------------------------------------
-// F1: weekday-semantics evidence in the user's own words
-// ---------------------------------------------------------------------------------------------
-
-/** True when the message itself says the hours are Monday-Friday / weekday / working-day hours (PL / EN). */
-export function statesWeekdaySemantics(message: string): boolean {
-  const n = normalize(message);
-  return (
-    /\b(mon(day)?\s*(-|to|through|thru|till|until)\s*fri(day)?|weekdays?|week days?|working days?|workdays?|business days?)\b/.test(n) ||
-    /\b(od\s+)?poniedzial\w*\s*(-|do)\s*piat\w*|\bpon\w*\s*-\s*pt\b|\bpn\s*-\s*pt\b|\bdni\s+robocz\w*|\bdni\s+powszedn\w*/.test(n)
-  );
-}
-
-/** True when the reply confirms weekday-only without mentioning any other kind of hours. */
-export function confirmsWeekdayOnly(message: string): boolean {
-  const n = normalize(message);
-  if (/\b(no|nie|not|nope|except|oprocz|include|including|incl|plus|weekend\w*|saturday\w*|sunday\w*|sobot\w*|niedziel\w*|holiday\w*|swiet\w*|shift\w*|zmian\w*|overtime|nadgodzin\w*)\b/.test(n)) return false;
-  return /\b(yes|yep|yeah|correct|right|exactly|only|tak|zgadza|dokladnie|tylko|owszem)\b/.test(n);
 }

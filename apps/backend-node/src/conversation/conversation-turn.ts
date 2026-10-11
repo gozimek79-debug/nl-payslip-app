@@ -8,6 +8,7 @@ import { findForgedAssumptions } from './assumption-catalog.js';
 import type { AgentInput, ConversationAgent } from './conversation-agent.js';
 import type {
   AgentStatus,
+  AnswerNotAppliedReason,
   ConversationDigest,
   ConversationLocale,
   ConversationTurnResult,
@@ -19,10 +20,11 @@ import type {
   TurnIntent,
   TurnStatus,
 } from './conversation-types.js';
-import { confirmsWeekdayOnly, interpretDeterministically, statesWeekdaySemantics } from './deterministic-interpreter.js';
+import { interpretDeterministically } from './deterministic-interpreter.js';
 import { selectNextQuestion } from './next-question.js';
 import { applyScenarioPatch } from './patch-authority.js';
 import { EMPTY_PATCH, type ScenarioPatchV1 } from './scenario-patch.js';
+import { guardModelPatch, hoursCompositionEvidence } from './support-guard.js';
 import { findUnbackedVerifiedValues, isTrustedContext, mergeTrustedContext, type TrustedContext } from './trusted-context.js';
 
 /**
@@ -32,8 +34,9 @@ import { findUnbackedVerifiedValues, isTrustedContext, mergeTrustedContext, type
  *     -> trust checks: every verified value must be backed by the trusted context (RT-001), and every
  *        Loonto assumption must be the server's own catalogued node (F3) - else the turn is rejected
  *     -> deterministic interpreter, or ONE model call (or the deterministic fallback)
- *     -> F1 backstop: a model's weekday-hours write the user's own words do not support is withheld and
- *        turned into ONE hours-composition clarification
+ *     -> support guard (M3/M4): a model op the user's present message contradicts (unit) or does not support
+ *        (hours kind + quantity) is withheld with a note; an unclassified hours total becomes ONE
+ *        hours-composition clarification, never a Scenario value
  *     -> ScenarioPatch (schema-validated) -> authority / provenance guard (incl. the F4 offer binding)
  *     -> atomic application -> R1 Scenario Core: evaluateScenario (Tier A runs only inside it)
  *     -> public projection -> deterministic next-question selector
@@ -94,7 +97,10 @@ function cleanDeclined(list: readonly string[] | undefined): ScenarioFieldPath[]
   return out;
 }
 
-/** The request-carried clarification, kept only if well-formed (it can only steer which question is asked). */
+/**
+ * The request-carried clarification, kept only if well-formed. M2: it is unsigned client data - it steers which
+ * question is asked and what number that question displays, and NOTHING else: no reply turns it into a value.
+ */
 function cleanClarification(value: HoursClarification | undefined): HoursClarification | null {
   if (!value || typeof value !== 'object') return null;
   const total = value.statedWeeklyTotal;
@@ -102,27 +108,6 @@ function cleanClarification(value: HoursClarification | undefined): HoursClarifi
     ...(typeof total === 'number' && Number.isFinite(total) && total >= 0 && total <= 168 ? { statedWeeklyTotal: total } : {}),
     ...(value.weekdayOnly === false ? { weekdayOnly: false as const } : {}),
   };
-}
-
-/**
- * F1 backstop. The model may only write `work.regularWeekdayHours` when the user's own message says the hours
- * are Monday-Friday / weekday hours, or when the user is answering a question that is itself about weekday
- * hours (the weekday-hours question, or the composition clarification confirmed without naming other hours).
- * Otherwise the write is WITHHELD - never applied, never turned into a guessed split - and the stated number
- * only parameterises the one clarification. Other ops of the same patch (e.g. the hourly rate) are kept.
- */
-function withholdUnstatedWeekdayHours(patch: ScenarioPatchV1, message: string, current: NextQuestionSpec | null): { patch: ScenarioPatchV1; withheld: number | null } {
-  const answersWeekdayQuestion = current?.field === 'work.regularWeekdayHours';
-  const confirmsComposition = current?.kind === 'clarify_hours_composition' && confirmsWeekdayOnly(message);
-  if (answersWeekdayQuestion || confirmsComposition || statesWeekdaySemantics(message)) return { patch, withheld: null };
-  let withheld: number | null = null;
-  const ops = patch.ops.filter((op) => {
-    const writesWeekday = (op.op === 'set' || op.op === 'set_range' || op.op === 'set_alternatives' || op.op === 'set_conflict') && op.field === 'work.regularWeekdayHours';
-    if (!writesWeekday) return true;
-    withheld = op.op === 'set' && typeof op.value === 'number' ? op.value : op.op === 'set_range' ? op.high : withheld;
-    return false;
-  });
-  return ops.length === patch.ops.length ? { patch, withheld: null } : { patch: { ...patch, ops }, withheld: withheld ?? -1 };
 }
 
 const NO_MUTATION_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>(['off_topic', 'decline_assumption', 'clarification_request']);
@@ -133,9 +118,11 @@ function responseHintFor(args: {
   agentStatus: AgentStatus;
   usedModelOrFallback: boolean;
   evaluation: ScenarioEvaluationResult;
+  notApplied: AnswerNotAppliedReason | null;
 }): ResponseHint {
   const { status, intent, agentStatus, evaluation } = args;
   if (status === 'rejected') return { code: 'patch_rejected' };
+  if (args.notApplied) return { code: 'answer_not_applied', params: { reason: args.notApplied } };
   if (args.usedModelOrFallback && agentStatus !== 'ok' && agentStatus !== 'not_needed') return { code: 'agent_unavailable', params: { agentStatus } };
   if (intent === 'off_topic') return { code: 'off_topic' };
   if (evaluation.status === 'unsupported') {
@@ -148,6 +135,7 @@ function responseHintFor(args: {
   if (intent === 'calculation_request') return { code: 'cannot_calculate_without_inputs' };
   if (intent === 'clarification_request') return { code: 'clarification_requested' };
   if (intent === 'unclear') return { code: 'message_unclear' };
+  if (intent === 'dont_know' && status === 'unchanged') return { code: 'user_does_not_know' };
   return { code: 'needs_information' };
 }
 
@@ -211,6 +199,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
   let patch: ScenarioPatchV1 = EMPTY_PATCH;
   let usedModelOrFallback = false;
   let clarificationOut: HoursClarification | null = clarificationIn;
+  let notApplied: AnswerNotAppliedReason | null = null;
   const declined = [...declinedIn];
 
   const deterministic = interpretDeterministically(request.message, current);
@@ -219,17 +208,16 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
     patch = deterministic.patch;
     if (deterministic.declined && !declined.includes(deterministic.declined)) declined.push(deterministic.declined);
     if (deterministic.hoursClarification) clarificationOut = deterministic.hoursClarification;
+    notApplied = deterministic.notApplied ?? null;
   } else if (deps.agent) {
     usedModelOrFallback = true;
-    const statedTotal = current?.prompt.params.statedWeeklyTotal;
+    // M2: the request-carried total is NOT shown to the model - nothing it could copy into a patch.
     const outcome = await deps.agent.interpret({
       locale: request.locale,
       message: request.message,
       scenario: scenarioDigest(scenario),
       requestedConcepts: (scenario.requestedConcepts ?? []).map((c) => c.concept),
-      currentQuestion: current
-        ? { field: current.field, kind: current.kind, ...(current.suggestedAssumption ? { suggestedAssumption: current.suggestedAssumption } : {}), ...(typeof statedTotal === 'number' ? { statedWeeklyTotal: statedTotal } : {}) }
-        : null,
+      currentQuestion: current ? { field: current.field, kind: current.kind, ...(current.suggestedAssumption ? { suggestedAssumption: current.suggestedAssumption } : {}) } : null,
       missing: missingDigest(before),
     });
     agentStatus = outcome.status;
@@ -240,13 +228,19 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
         agentStatus = 'invalid_output';
         intent = 'unclear';
       } else {
-        // F1: withhold a weekday-hours classification the user did not state.
-        const filtered = withholdUnstatedWeekdayHours(outcome.output.patch, request.message, current);
-        patch = filtered.patch;
-        if (filtered.withheld !== null) notes.push({ code: 'weekday_hours_withheld', field: 'work.regularWeekdayHours' });
-        const stated = outcome.output.statedWeeklyHours ?? (filtered.withheld !== null && filtered.withheld >= 0 ? filtered.withheld : undefined);
-        if (outcome.output.hint === 'ambiguous_hours' || stated !== undefined || filtered.withheld !== null) {
-          clarificationOut = typeof stated === 'number' ? { statedWeeklyTotal: stated } : {};
+        // M3 / M4 / m1: withhold every op the user's present message contradicts or does not support.
+        const guarded = guardModelPatch(outcome.output.patch, request.message, current);
+        patch = guarded.patch;
+        notes.push(...guarded.notes);
+        const modelStated = outcome.output.statedWeeklyHours;
+        const composition = hoursCompositionEvidence(request.message, modelStated);
+        if (outcome.output.hint === 'ambiguous_hours' || modelStated !== undefined || guarded.hoursValueWithheld || composition.statedTotal !== null) {
+          // ONE composition clarification. A new number comes only from the present message; without one, the
+          // number the question already showed is kept (display only - it is never written).
+          const fresh = composition.statedTotal !== null;
+          const total = fresh ? composition.statedTotal : clarificationIn?.statedWeeklyTotal;
+          const weekdayOnlyFalse = composition.otherCategories || (!fresh && clarificationIn?.weekdayOnly === false);
+          clarificationOut = { ...(typeof total === 'number' ? { statedWeeklyTotal: total } : {}), ...(weekdayOnlyFalse ? { weekdayOnly: false as const } : {}) };
         }
         if (intent === 'decline_assumption' && current?.kind === 'offer_assumption' && current.field !== 'work.hours' && !declined.includes(current.field)) declined.push(current.field);
       }
@@ -298,6 +292,6 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
       declinedAssumptions: declined,
       ...(carryClarification ? { hoursClarification: carryClarification } : {}),
     },
-    responseHint: responseHintFor({ status, intent, agentStatus, usedModelOrFallback, evaluation }),
+    responseHint: responseHintFor({ status, intent, agentStatus, usedModelOrFallback, evaluation, notApplied }),
   };
 }

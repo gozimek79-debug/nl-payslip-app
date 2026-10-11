@@ -97,6 +97,11 @@ export const PATCH_NOTE_CODES = [
   'trusted_value_conflicts_with_user',
   /** F1: the model classified a weekly total as weekday hours without the user saying so - not written. */
   'weekday_hours_withheld',
+  /** M4: a model write of Saturday / Sunday / holiday / overtime hours (or the overtime distribution) that the
+   * user's present message does not support with both the kind and the quantity - not written. */
+  'hours_withheld',
+  /** M3: a model write of a number the user stated with an incompatible unit ("40 hours" as an hourly rate) - not written. */
+  'unit_mismatch_withheld',
 ] as const;
 export type PatchNoteCode = (typeof PATCH_NOTE_CODES)[number];
 export interface PatchNote {
@@ -138,7 +143,7 @@ export interface NextQuestionSpec {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Conversation digest (request-carried, untrusted, harmless - it only steers which question is asked)
+// Conversation digest (request-carried, untrusted, informational - it only steers which question is asked)
 // ---------------------------------------------------------------------------------------------
 
 export interface ConversationDigest {
@@ -150,6 +155,8 @@ export interface ConversationDigest {
    * F1: the user gave a weekly total of hours WITHOUT saying they are Monday-Friday regular hours. The total
    * is NOT committed to the Scenario (that would be a hidden default); it only parameterises the one
    * clarification question. `weekdayOnly: false` = the user said the total includes other kinds of hours.
+   * M2: it is client-carried and unsigned, so it is DISPLAY DATA ONLY - no reply ("yes", "tak", "ok") ever turns
+   * it into a Scenario value; hours are written only from numbers and kinds stated in the present message.
    */
   hoursClarification?: HoursClarification;
 }
@@ -171,8 +178,24 @@ export const RESPONSE_HINT_CODES = [
   'cannot_calculate_without_inputs',
   'clarification_requested',
   'message_unclear',
+  /** M1-M3: the reply was understood but deliberately not applied; `params.reason` says why. */
+  'answer_not_applied',
+  /** M1: the user does not know their hours; nothing was recorded, the question offers its ways forward. */
+  'user_does_not_know',
 ] as const;
 export type ResponseHintCode = (typeof RESPONSE_HINT_CODES)[number];
+
+/**
+ * Why a reply was not applied (`answer_not_applied`):
+ *   - `unit_mismatch`: one number whose unit contradicts the question ("40 hours" asked for an hourly rate);
+ *   - `weekly_total_not_category`: a weekly total ("40 hours a week", "... including weekends") given where a
+ *     specific kind of hours is asked - a total is not that kind;
+ *   - `explicit_hours_required`: a bare "yes" to the hours-composition clarification - the user must state the
+ *     number AND the kind ("40 hours Monday to Friday").
+ */
+export const ANSWER_NOT_APPLIED_REASONS = ['unit_mismatch', 'weekly_total_not_category', 'explicit_hours_required'] as const;
+export type AnswerNotAppliedReason = (typeof ANSWER_NOT_APPLIED_REASONS)[number];
+
 export interface ResponseHint {
   code: ResponseHintCode;
   params?: Record<string, string | number>;

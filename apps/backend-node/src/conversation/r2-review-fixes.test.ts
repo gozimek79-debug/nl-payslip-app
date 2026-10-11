@@ -13,6 +13,9 @@ import { RATES_2026, known, out, readyScenario, scenario, scriptedAgent, type Sc
  * Cursor R2 review findings F1-F5 (RAPORT-CURSOR-REVIEW-R2-CONVERSATION-CORE.md). Each block proves the OLD
  * behaviour now fails: model call counts, Scenario byte-equality, next-question identity, no evaluation and
  * no payout are asserted where they matter - not only the final status.
+ *
+ * Fix iteration 2 (RAPORT-CURSOR-REREVIEW-R2-F1-F5.md, M1-M4 + m1) changed tests here that had locked unsafe
+ * behaviour; each such change says why. The new adversarial tests are in r2-review-fixes-m1-m4.test.ts.
  */
 
 const run = (req: TurnRequest, agent: ScriptedAgent | null) => runConversationTurn(req, { agent, rates: RATES_2026, newId: () => 'fixed' });
@@ -35,20 +38,30 @@ test('F1 #1 / #2 / #7: explicit Monday-Friday / weekday wording may set weekday 
 });
 
 test('F1 #3 / #5 / #6 / #7: an unqualified, weekend-inclusive or varying weekly total is NEVER written as weekday hours', async () => {
-  for (const message of ['40 hours a week', 'I work 40 hours', '40 hours including weekends', '40 hours, shifts vary', '40 godzin tygodniowo', 'pracuję 40 godzin', '40 godzin łącznie z weekendami', '40 godzin, zmiany się zmieniają']) {
+  // Iteration 2 (M1): these short phrases are now recognised deterministically as an UNCLASSIFIED total, so the
+  // (bad) model is not even called (was: called once, then its weekday write withheld). A weekend-inclusive
+  // total asks for the split directly (it is known not to be weekday-only). The guard proof with a model that
+  // IS called is in r2-review-fixes-m1-m4.test.ts.
+  const cases: Array<[string, 'clarify' | 'split']> = [['40 hours a week', 'clarify'], ['I work 40 hours', 'clarify'], ['40 hours including weekends', 'split'], ['40 hours, shifts vary', 'clarify'], ['40 godzin tygodniowo', 'clarify'], ['pracuję 40 godzin', 'clarify'], ['40 godzin łącznie z weekendami', 'split'], ['40 godzin, zmiany się zmieniają', 'clarify']];
+  for (const [message, question] of cases) {
     const agent = weekdayWriter();
     const r = await run({ scenario: scenario(), message, locale: 'en' }, agent);
-    assert.equal(agent.calls, 1, message);
+    assert.equal(agent.calls, 0, `${message}: deterministic - no model call`);
     assert.equal(r.scenario.work.regularWeekdayHours, undefined, `${message}: weekday hours must not be written`);
     assert.deepEqual(hoursKeys(r.scenario), [], `${message}: no split invented`);
-    assert.deepEqual(r.patchNotes.map((n) => n.code), ['weekday_hours_withheld'], message);
-    // exactly ONE clarification about the composition of the stated total
-    assert.equal(r.nextQuestion?.kind, 'clarify_hours_composition', message);
+    // exactly ONE question about the composition of the stated total
     assert.equal(r.nextQuestion?.field, 'work.hours');
-    assert.equal(r.nextQuestion?.reasonCode, 'ambiguous_hours');
     assert.equal(r.nextQuestion?.prompt.params.statedWeeklyTotal, 40);
-    assert.deepEqual(r.nextQuestion?.options, ['weekday_regular_only', 'includes_other_categories']);
-    assert.deepEqual(r.conversation.hoursClarification, { statedWeeklyTotal: 40 });
+    if (question === 'clarify') {
+      assert.equal(r.nextQuestion?.kind, 'clarify_hours_composition', message);
+      assert.equal(r.nextQuestion?.reasonCode, 'ambiguous_hours');
+      assert.deepEqual(r.nextQuestion?.options, ['weekday_regular_only', 'includes_other_categories']);
+      assert.deepEqual(r.conversation.hoursClarification, { statedWeeklyTotal: 40 });
+    } else {
+      assert.equal(r.nextQuestion?.kind, 'provide_value', message);
+      assert.equal(r.nextQuestion?.reasonCode, 'hours_include_other_categories');
+      assert.deepEqual(r.conversation.hoursClarification, { statedWeeklyTotal: 40, weekdayOnly: false });
+    }
     assert.equal(r.evaluation?.status, 'blocked');
     assert.ok(!('figures' in (r.evaluation ?? {})), 'no payout');
   }
@@ -74,14 +87,22 @@ test('F1 #4: "I earn 16.80 an hour and work 40 hours a week" -> rate as user, we
   }
 });
 
-test('F1: the clarification resolves only on an explicit answer - "tak" commits the total as weekday hours, "nie" asks for a split', async () => {
+test('F1: the clarification resolves only on an explicit statement - "tak" alone writes nothing (M2), number + kind does, "nie" asks for a split', async () => {
   const first = await run({ message: 'I earn 16.80 an hour and work 40 hours a week.', locale: 'en' }, scriptedAgent([{ status: 'ok', output: { intent: 'provide_information', patch: { version: 1, ops: [{ op: 'set', field: 'pay.hourlyRate', value: 16.8 }] }, hint: 'ambiguous_hours', statedWeeklyHours: 40 } }]));
-  // "tak" - deterministic, no model
+  // Iteration 2 (M2): the total being confirmed is request-carried and unsigned, so a bare "tak" no longer
+  // commits it (was: weekday 40). Deterministic, no model; the question stays and asks for number + kind.
   const yesAgent = scriptedAgent([]);
   const yes = await run({ scenario: first.scenario, message: 'tak', locale: 'pl', conversation: first.conversation }, yesAgent);
   assert.equal(yesAgent.calls, 0);
-  assert.deepEqual(yes.scenario.work.regularWeekdayHours, { source: 'user', state: 'known', value: 40 });
-  assert.equal(yes.conversation.hoursClarification, undefined, 'the clarification is dropped once hours exist');
+  assert.equal(yes.status, 'unchanged');
+  assert.equal(yes.scenario.work.regularWeekdayHours, undefined);
+  assert.deepEqual(yes.responseHint, { code: 'answer_not_applied', params: { reason: 'explicit_hours_required' } });
+  assert.equal(yes.nextQuestion?.kind, 'clarify_hours_composition');
+  // the explicit statement in the present message commits it - still deterministic
+  const explicit = await run({ scenario: first.scenario, message: '40 godzin od poniedziałku do piątku', locale: 'pl', conversation: first.conversation }, yesAgent);
+  assert.equal(yesAgent.calls, 0);
+  assert.deepEqual(explicit.scenario.work.regularWeekdayHours, { source: 'user', state: 'known', value: 40 });
+  assert.equal(explicit.conversation.hoursClarification, undefined, 'the clarification is dropped once hours exist');
   // "nie" - nothing written, the next question asks for the hours split by kind
   const no = await run({ scenario: first.scenario, message: 'no', locale: 'en', conversation: first.conversation }, scriptedAgent([]));
   assert.equal(no.status, 'unchanged');
@@ -91,17 +112,26 @@ test('F1: the clarification resolves only on an explicit answer - "tak" commits 
   assert.equal(no.nextQuestion?.reasonCode, 'hours_include_other_categories');
   assert.deepEqual(no.nextQuestion?.fallbackOptions, ['split_hours', 'give_range']);
   assert.deepEqual(no.conversation.hoursClarification, { statedWeeklyTotal: 40, weekdayOnly: false });
-  // a model answer to the clarification is allowed only when the user confirms weekday-only
-  const confirm = await run({ scenario: first.scenario, message: 'yes, those are all regular hours', locale: 'en', conversation: first.conversation }, weekdayWriter());
-  assert.deepEqual(confirm.scenario.work.regularWeekdayHours, { source: 'user', state: 'known', value: 40 });
+  // Iteration 2 (M2): a model "confirmation" with no number in the message is withheld too (was: weekday 40)
+  const confirmAgent = weekdayWriter();
+  const confirm = await run({ scenario: first.scenario, message: 'yes, those are all regular hours', locale: 'en', conversation: first.conversation }, confirmAgent);
+  assert.equal(confirmAgent.calls, 1);
+  assert.equal(confirm.scenario.work.regularWeekdayHours, undefined);
+  assert.deepEqual(confirm.patchNotes.map((n) => n.code), ['weekday_hours_withheld']);
   const denies = await run({ scenario: first.scenario, message: 'no, that includes Saturdays', locale: 'en', conversation: first.conversation }, weekdayWriter());
   assert.equal(denies.scenario.work.regularWeekdayHours, undefined, 'a denial is never turned into weekday hours');
 });
 
-test('F1: answering the weekday-hours question itself may set weekday hours; ranges are withheld like single values', async () => {
+test('F1: answering the weekday-hours question with a number may set weekday hours; ranges are withheld like single values', async () => {
   const asked = { ...readyScenario(), work: { regularWeekdayHours: { state: 'unknown' } } } as ScenarioV1;
+  // Iteration 2 (M1): the blanket "current question is weekday hours" exemption is gone. A reply with no number
+  // in it gives no quantity evidence, so the model's 40 is withheld (was: written).
   const r = await run({ scenario: asked, message: 'around forty, I think', locale: 'en' }, weekdayWriter());
-  assert.deepEqual(r.scenario.work.regularWeekdayHours, { source: 'user', state: 'known', value: 40 });
+  assert.deepEqual(r.scenario.work.regularWeekdayHours, { state: 'unknown' });
+  assert.deepEqual(r.patchNotes.map((n) => n.code), ['weekday_hours_withheld']);
+  // the number itself answers that question (deterministic)
+  const numeric = await run({ scenario: asked, message: 'about 40', locale: 'en' }, null);
+  assert.deepEqual(numeric.scenario.work.regularWeekdayHours, { source: 'user', state: 'known', value: 40 });
   const ranged = await run({ scenario: scenario(), message: 'between 36 and 40 hours a week', locale: 'en' }, scriptedAgent([out('provide_information', [{ op: 'set_range', field: 'work.regularWeekdayHours', low: 36, high: 40 }])]));
   assert.equal(ranged.scenario.work.regularWeekdayHours, undefined);
   assert.equal(ranged.nextQuestion?.kind, 'clarify_hours_composition');
@@ -110,6 +140,8 @@ test('F1: answering the weekday-hours question itself may set weekday hours; ran
 test('F1: weekday-evidence detection (EN / PL)', () => {
   for (const yes of ['Monday to Friday', 'mon-fri', 'monday through friday', 'weekdays', 'on working days', 'od poniedziałku do piątku', 'pon-pt', 'w dni robocze', 'dni powszednie']) assert.ok(statesWeekdaySemantics(yes), yes);
   for (const no of ['40 hours a week', 'weekends', 'including the weekend', 'tygodniowo', 'w tygodniu', 'shifts vary', 'zmiany']) assert.ok(!statesWeekdaySemantics(no), no);
+  // Iteration 2 (m1): a denied weekday is not weekday evidence (was: true for all of these)
+  for (const denied of ['40 hours, not weekdays', 'I do not work weekdays, 40 hours', '40 hours, no weekdays', '40 godzin, nie w dni robocze', "I don't work Monday to Friday", 'bez dni roboczych', 'weekdays not included']) assert.ok(!statesWeekdaySemantics(denied), denied);
 });
 
 // =============================================================================================
@@ -126,16 +158,19 @@ async function accepted(s: ScenarioV1, message: string, path: [keyof ScenarioV1,
   assert.equal(agent.calls, 0, `${message}: deterministic`);
   assert.deepEqual((r.scenario[path[0]] as Record<string, unknown>)[path[1]], { source: 'user', state: 'known', value }, message);
 }
-async function notApplied(s: ScenarioV1, message: string) {
+async function notApplied(s: ScenarioV1, message: string, reason = 'unit_mismatch') {
   const none = await run({ scenario: s, message, locale: 'en' }, null);
   assert.equal(none.status, 'unchanged', `${message} (no model)`);
   assert.equal(canonicalJson(none.scenario), canonicalJson(s), `${message}: Scenario unchanged (zero mutation)`);
   assert.equal(none.patchApplied, null);
-  // with a model it falls through to the model (one call) instead of writing the wrong field
-  const agent = scriptedAgent([out('unclear', [])]);
+  assert.deepEqual(none.responseHint, { code: 'answer_not_applied', params: { reason } }, message);
+  // Iteration 2 (M3): a known unit contradiction no longer falls through to the model (was: one call, where a
+  // bad model could write the wrong field) - it is answered deterministically, the same question stays.
+  const agent = scriptedAgent([out('provide_information', [])]);
   const withModel = await run({ scenario: s, message, locale: 'en' }, agent);
-  assert.equal(agent.calls, 1, `${message}: falls through to the model`);
+  assert.equal(agent.calls, 0, `${message}: no model call on a known contradiction`);
   assert.equal(withModel.status, 'unchanged');
+  assert.deepEqual(withModel.nextQuestion, none.nextQuestion);
   return none;
 }
 
@@ -154,9 +189,15 @@ test('F2 #4: "40 hours" on the rate question is NEVER the hourly rate (old: rate
 });
 
 test('F2 #5-#7 / #11: the hours question accepts plain and hour-unit numbers, never a percentage', async () => {
-  for (const message of ['40', '40 hours', '40 h', '40 godzin', '40 hours a week']) await accepted(hoursQuestion(), message, ['work', 'regularWeekdayHours'], 40);
+  // Iteration 2 (M1): "40 hours a week" is a weekly total, not evidence of weekday hours - removed from the
+  // accepted list (was: written as weekday 40) and asserted as not applied below.
+  for (const message of ['40', '40 hours', '40 h', '40 godzin']) await accepted(hoursQuestion(), message, ['work', 'regularWeekdayHours'], 40);
   for (const message of ['50%', '50 procent', '16.80 €', '16.80 per hour']) {
     const r = await notApplied(hoursQuestion(), message);
+    assert.deepEqual(r.scenario.work.regularWeekdayHours, { state: 'unknown' }, message);
+  }
+  for (const message of ['40 hours a week', '40 godzin tygodniowo']) {
+    const r = await notApplied(hoursQuestion(), message, 'weekly_total_not_category');
     assert.deepEqual(r.scenario.work.regularWeekdayHours, { state: 'unknown' }, message);
   }
 });
@@ -299,7 +340,10 @@ test('F4: the guard itself is offer-bound (domain level)', () => {
 // F5 - "I don't know" on the opening hours question must not dead-end
 // =============================================================================================
 
-test('F5 #1-#6 / #10: empty Scenario + "nie wiem" / "I don\'t know" -> no model call, no zero, no assumption, a concrete next question with fallbacks', async () => {
+test('F5 #1-#6 / #10: empty Scenario + "nie wiem" / "I don\'t know" -> no model call, no zero, no assumption, no category, an actionable next question', async () => {
+  // Iteration 2 (M1): the F5 fix wrote work.regularWeekdayHours = unknown, which CLASSIFIED the user's unknown
+  // hours as Monday-Friday regular hours (the next weekly total then became weekday hours). Now nothing is
+  // written; the virtual hours question stays, with its split / range ways forward and a "does not know" hint.
   const opening = await run({ message: 'hello there', locale: 'en' }, null);
   assert.equal(opening.nextQuestion?.field, 'work.hours');
   assert.deepEqual(opening.nextQuestion?.fallbackOptions, ['split_hours', 'give_range'], 'even the opening question is never empty');
@@ -309,13 +353,13 @@ test('F5 #1-#6 / #10: empty Scenario + "nie wiem" / "I don\'t know" -> no model 
     const r = await run({ message, locale }, agent);
     assert.equal(agent.calls, 0, `${message}: no model call`);
     assert.equal(r.agentStatus, 'not_needed');
-    assert.deepEqual(r.scenario.work, { regularWeekdayHours: { state: 'unknown' } }, `${message}: recorded as unknown - never 0, nothing invented`);
+    assert.equal(r.status, 'unchanged');
+    assert.deepEqual(r.scenario.work, {}, `${message}: nothing recorded - never 0, no unknown weekday node, no category`);
     assert.ok(!bytes(r.scenario).includes('loonto_assumption'), `${message}: no hidden assumption`);
-    assert.notEqual(r.nextQuestion?.field, 'work.hours', `${message}: not the same dead end`);
-    assert.equal(r.nextQuestion?.field, 'work.regularWeekdayHours');
-    assert.equal(r.nextQuestion?.reasonCode, 'user_does_not_know');
-    assert.equal(r.nextQuestion?.prompt.params.hoursScope, 'weekday_regular_only', 'asks specifically about weekday REGULAR hours');
-    assert.deepEqual(r.nextQuestion?.fallbackOptions, ['give_range', 'split_hours']);
+    assert.equal(r.nextQuestion?.field, 'work.hours');
+    assert.equal(r.nextQuestion?.answerMode, 'hours_by_category');
+    assert.deepEqual(r.nextQuestion?.fallbackOptions, ['split_hours', 'give_range']);
+    assert.deepEqual(r.responseHint, { code: 'user_does_not_know' });
     assert.ok(!('figures' in (r.evaluation ?? {})));
     results.push(r);
   }
@@ -328,19 +372,25 @@ test('F5 #7: repeating "nie wiem" does not loop on an empty fallback (and change
   for (let i = 0; i < 3; i++) {
     r = await run({ scenario: r.scenario, message: 'nie wiem', locale: 'pl', conversation: r.conversation }, null);
     assert.equal(r.status, 'unchanged');
-    assert.equal(r.nextQuestion?.field, 'work.regularWeekdayHours');
+    assert.equal(r.nextQuestion?.field, 'work.hours');
     assert.ok((r.nextQuestion?.fallbackOptions.length ?? 0) > 0);
   }
-  // and a range moves it forward
-  const range = await run({ scenario: r.scenario, message: 'between 30 and 40', locale: 'en' }, scriptedAgent([out('provide_information', [{ op: 'set_range', field: 'work.regularWeekdayHours', low: 30, high: 40 }])]));
+  // Iteration 2 (M1): a range moves it forward when it says what the hours are (deterministic, no model) ...
+  const range = await run({ scenario: r.scenario, message: 'between 30 and 40 hours Monday to Friday', locale: 'en' }, null);
   assert.deepEqual(range.scenario.work.regularWeekdayHours, { high: 40, low: 30, source: 'user', state: 'range' });
+  // ... an unclassified range is not turned into weekday hours by a model (was: written on the forced weekday question)
+  const unclassified = await run({ scenario: r.scenario, message: 'between 30 and 40', locale: 'en' }, scriptedAgent([out('provide_information', [{ op: 'set_range', field: 'work.regularWeekdayHours', low: 30, high: 40 }])]));
+  assert.equal(unclassified.scenario.work.regularWeekdayHours, undefined);
 });
 
 test('F5 #8 / #9: with no provider or a failing provider the opening still progresses deterministically', async () => {
+  // Iteration 2 (M1): "progresses" = an actionable question with ways forward, not a written unknown node.
   for (const agent of [null, scriptedAgent([{ status: 'provider_error' }]), scriptedAgent([{ status: 'timeout' }])]) {
     const r = await run({ message: 'nie wiem', locale: 'pl' }, agent);
-    assert.equal(r.status, 'updated');
-    assert.equal(r.nextQuestion?.field, 'work.regularWeekdayHours');
+    assert.equal(r.status, 'unchanged');
+    assert.equal(r.nextQuestion?.field, 'work.hours');
+    assert.deepEqual(r.nextQuestion?.fallbackOptions, ['split_hours', 'give_range']);
+    assert.deepEqual(r.responseHint, { code: 'user_does_not_know' });
     if (agent) assert.equal(agent.calls, 0, 'the provider is not even needed');
   }
   // an unreadable message with a failing provider: unchanged, but the opening question still has ways forward

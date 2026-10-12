@@ -83,7 +83,10 @@ const CATEGORY_PATTERNS: ReadonlyArray<readonly [HoursCategory, RegExp]> = [
   ['weekday', WEEKDAY_PATTERN],
   ['saturday', /\bsaturdays?\b|\bsobot\w*|\bzaterdag\w*/g],
   ['sunday', /\bsundays?\b|\bniedziel\w*|\bzondag\w*/g],
-  ['holiday', /\b(?:public\s+|bank\s+)?holidays?\b|\bfeestdag\w*|\bswi[ae]t\w*/g],
+  // I1: the noun "święto" in its case forms and the adjective "świąteczny" - not the bare "świet..." prefix, which
+  // also matches "świetnie" / "świetny" ("great"). "świąt" / "święcie" are left out: they fold to "świat" / "świecie"
+  // ("world"). A missed holiday word only means the user is asked; a false one would invent holiday hours.
+  ['holiday', /\b(?:public\s+|bank\s+)?holidays?\b|\bfeestdag\w*|\bswiet(?:o|a|u|em|om|ami|ach)\b|\bswiateczn\w*/g],
   ['overtime', /\bover\s?time\b|\boveruren\b|\bnadgodzin\w*|\bnadliczbow\w*|\bextra\s+hours?\b/g],
   ['weekend', /\bweekend\w*/g],
 ];

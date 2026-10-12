@@ -1,6 +1,6 @@
 import { SCENARIO_FIELDS, type ScenarioFieldPath } from '../scenario/scenario-types.js';
 import type { NextQuestionSpec, PatchNote } from './conversation-types.js';
-import { answerFitsField, parseNumericAnswer, unitsFitField } from './deterministic-interpreter.js';
+import { answerFitsField, unitsFitField } from './deterministic-interpreter.js';
 import {
   analyzeMessage,
   describesDistribution,
@@ -26,8 +26,10 @@ import type { PatchOp, ScenarioPatchV1 } from './scenario-patch.js';
  * applied, never "repaired" into another value - when the user's present message contradicts it or does not
  * support it:
  *   - M3: a number the user stated with a unit the field cannot take ("40 hours" as an hourly rate, "€16.80"
- *     as hours, "50 hours" as a premium); and, when the whole reply is one number whose unit contradicts the
- *     question asked, that number written to ANY field;
+ *     as hours, "50 hours" as a premium); and, when the reply's only number has a unit that contradicts the
+ *     question asked ("40 hours", "40 hours thanks"), that number written to ANY field (I2: also with extra words);
+ *   - I2: a number written to a non-hours field that the user did not state in this message with a fitting unit
+ *     ("40 hours thanks" -> no hourly rate 99, 16.80 or any other value the model supplies);
  *   - M4 / M1: an hours bucket (weekday / Saturday / Sunday / public holiday / overtime) without the kind AND
  *     the quantity in the message - unless the reply is just that number to the server's own question about
  *     that bucket; a model never splits a stated, unclassified total ("40 total, including 8 Saturday" ->
@@ -35,7 +37,8 @@ import type { PatchOp, ScenarioPatchV1 } from './scenario-patch.js';
  *   - m1: a kind the message denies ("not weekdays") is never evidence for that kind;
  *   - the overtime distribution without the server asking it or the message describing it.
  * Every withheld op gets a diagnostic note. The remaining ops then go through the unchanged authority guard,
- * which still accepts or rejects them ATOMICALLY.
+ * which still accepts or rejects them ATOMICALLY. An op that claims a non-user source is never filtered here: it
+ * goes to the authority guard, which rejects the WHOLE patch for it (RT-001).
  */
 
 export interface GuardResult {
@@ -71,12 +74,39 @@ function contradicted(e: MessageEvidence, field: ScenarioFieldPath, value: numbe
   return said.length > 0 && said.every((n) => !unitsFitField(field, n.units));
 }
 
-/** M3: the reply is one number whose unit contradicts the question - that number is no value of anything here. */
-function mismatchedAnswer(message: string, current: NextQuestionSpec | null): number | null {
-  if (!current || current.field === 'work.hours') return null;
-  const parsed = parseNumericAnswer(message);
-  if (!parsed || parsed.units.size === 0) return null;
-  return answerFitsField(current.field, parsed.units) ? null : parsed.value;
+/**
+ * M3 / I2: the reply's ONLY number carries a unit that contradicts the question asked ("40 hours" or "40 hours
+ * thanks" to the hourly-rate question). That number is no value of anything here - except of an hours bucket the
+ * message itself classifies it as ("... Monday to Friday").
+ */
+function contradictedReply(e: MessageEvidence, current: NextQuestionSpec | null): NumberMention | null {
+  if (!current || current.field === 'work.hours' || e.numbers.length !== 1) return null;
+  const only = e.numbers[0] as NumberMention;
+  if (only.units.size === 0) return null;
+  return answerFitsField(current.field, only.units) ? null : only;
+}
+
+const isMention = (n: NumberMention, value: number) => sameNumber(n.value, value) || (n.high !== null && sameNumber(n.high, value));
+
+/**
+ * I2: the user stated this value for this (non-hours) field in this message - a number with a unit the field can
+ * take, or a bare number. The one conversion recognised is the documented premium convention: a stated total
+ * percentage of at least 100% ("150%") also states the premium above base (50).
+ */
+function statedFor(e: MessageEvidence, field: ScenarioFieldPath, value: number): boolean {
+  const spec = SCENARIO_FIELDS[field];
+  return e.numbers.some(
+    (n) =>
+      (isMention(n, value) && unitsFitField(field, n.units)) ||
+      (spec.kind === 'number' && spec.unit === 'premium_percent' && n.high === null && n.units.has('percent') && n.value >= 100 && sameNumber(n.value - 100, value)),
+  );
+}
+
+/** RT-001: an op claiming a non-user source is left to the authority guard, which rejects the whole patch. */
+function claimsProvenance(op: PatchOp): boolean {
+  if (op.op === 'set' || op.op === 'set_range' || op.op === 'set_alternatives') return op.source !== undefined && op.source !== 'user';
+  if (op.op === 'set_conflict') return op.candidates.some((c) => c.source !== undefined && c.source !== 'user');
+  return false;
 }
 
 function matchesAnswer(op: PatchOp, answer: NumberMention): boolean {
@@ -113,25 +143,33 @@ function distributionSupported(e: MessageEvidence, current: NextQuestionSpec | n
 
 export function guardModelPatch(patch: ScenarioPatchV1, message: string, current: NextQuestionSpec | null): GuardResult {
   const e = analyzeMessage(message);
-  const mismatch = mismatchedAnswer(message, current);
+  const contradiction = contradictedReply(e, current);
   const notes: PatchNote[] = [];
   let hoursValueWithheld = false;
   const ops = patch.ops.filter((op) => {
     if (!('field' in op) || !isScenarioField(op.field)) return true; // unknown fields: the authority guard rejects them
     if (op.op !== 'set' && op.op !== 'set_range' && op.op !== 'set_alternatives' && op.op !== 'set_conflict' && op.op !== 'set_unknown') return true;
+    if (claimsProvenance(op)) return true;
     const field = op.field;
     const values = numbersOf(op);
-    if (values.some((v) => (mismatch !== null && sameNumber(v, mismatch)) || contradicted(e, field, v))) {
+    const bucketSupported = isHoursBucket(field) && hoursWriteSupported(op, field, e, current);
+    const laundered = contradiction !== null && !bucketSupported && values.some((v) => isMention(contradiction, v));
+    if (laundered || values.some((v) => contradicted(e, field, v))) {
       notes.push({ code: 'unit_mismatch_withheld', field });
       return false;
     }
-    if (isHoursBucket(field) && !hoursWriteSupported(op, field, e, current)) {
+    if (isHoursBucket(field) && !bucketSupported) {
       notes.push({ code: field === 'work.regularWeekdayHours' ? 'weekday_hours_withheld' : 'hours_withheld', field });
       if (op.op !== 'set_unknown') hoursValueWithheld = true;
       return false;
     }
     if (field === 'work.overtimeDistribution' && op.op !== 'set_unknown' && !distributionSupported(e, current)) {
       notes.push({ code: 'hours_withheld', field });
+      return false;
+    }
+    // I2: a non-hours number the user did not state is the model's own value - never a user fact.
+    if (!isHoursBucket(field) && SCENARIO_FIELDS[field].kind === 'number' && values.some((v) => !statedFor(e, field, v))) {
+      notes.push({ code: 'value_not_stated_withheld', field });
       return false;
     }
     return true;

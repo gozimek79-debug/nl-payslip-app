@@ -102,6 +102,8 @@ export const PATCH_NOTE_CODES = [
   'hours_withheld',
   /** M3: a model write of a number the user stated with an incompatible unit ("40 hours" as an hourly rate) - not written. */
   'unit_mismatch_withheld',
+  /** I2: a model write of a number to a non-hours field that the user did not state in this message - not written. */
+  'value_not_stated_withheld',
 ] as const;
 export type PatchNoteCode = (typeof PATCH_NOTE_CODES)[number];
 export interface PatchNote {

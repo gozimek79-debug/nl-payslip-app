@@ -254,3 +254,33 @@ test('M4 / m1 HTTP: a bad model\'s invented hours split is withheld with notes; 
   const denied = await turnBody({ message: 'honestly I do not work weekdays, 40 hours', locale: 'en' });
   assert.deepEqual(denied.scenario.work, {});
 });
+
+// ---------------------------------------------------------------------------------------------
+// Final semantic safety (Cursor re-review of iteration 2: I1, I2) at the public boundary
+// ---------------------------------------------------------------------------------------------
+
+test('I1 HTTP: "40 godzin świetnie" never becomes public-holiday hours; "8 godzin w święto" still does', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'work.publicHolidayHours', value: 40 }])]);
+  const great = await turnBody({ message: '40 godzin świetnie', locale: 'pl' });
+  assert.deepEqual(great.scenario.work, {}, 'was: publicHolidayHours 40, source user');
+  assert.deepEqual(great.patchNotes.map((n) => n.code), ['hours_withheld']);
+  assert.equal(great.nextQuestion?.field, 'work.hours');
+  currentAgent = scriptedAgent([]);
+  const holiday = await turnBody({ message: '8 godzin w święto', locale: 'pl' });
+  assert.equal(holiday.agentStatus, 'not_needed');
+  assert.deepEqual(holiday.scenario.work, { publicHolidayHours: { source: 'user', state: 'known', value: 8 } });
+});
+
+test('I2 HTTP: "40 hours thanks" on the rate question - a bad model\'s invented rate 99 is withheld, no payout', async () => {
+  counters.clear();
+  const agent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 99 }])]);
+  currentAgent = agent;
+  const body = await turnBody({ scenario: { ...readyScenario(), pay: {} }, message: '40 hours thanks', locale: 'en' });
+  assert.equal(agent.calls, 1);
+  assert.equal(body.status, 'unchanged');
+  assert.equal(body.scenario.pay.hourlyRate, undefined, 'was: rate 99, payout 2055.43');
+  assert.deepEqual(body.patchNotes.map((n) => n.code), ['value_not_stated_withheld']);
+  assert.equal(body.evaluation?.status, 'blocked');
+  assert.equal(body.nextQuestion?.field, 'pay.hourlyRate');
+});

@@ -6,6 +6,7 @@ import {
   describesDistribution,
   HOURS_FIELD_CATEGORY,
   isHoursBucket,
+  mentionsForField,
   mentionsNumber,
   mentionsOtherHours,
   namesCategory,
@@ -30,6 +31,8 @@ import type { PatchOp, ScenarioPatchV1 } from './scenario-patch.js';
  *     question asked ("40 hours", "40 hours thanks"), that number written to ANY field (I2: also with extra words);
  *   - I2: a number written to a non-hours field that the user did not state in this message with a fitting unit
  *     ("40 hours thanks" -> no hourly rate 99, 16.80 or any other value the model supplies);
+ *   - C1: a stated number written to a different pay component than the one the user tied it to ("Za niedzielę
+ *     50%" -> no Saturday premium 50; "€50 travel" -> no hourly rate 50; "Saturday +50%, Sunday +100%" -> no swap);
  *   - M4 / M1: an hours bucket (weekday / Saturday / Sunday / public holiday / overtime) without the kind AND
  *     the quantity in the message - unless the reply is just that number to the server's own question about
  *     that bucket; a model never splits a stated, unclassified total ("40 total, including 8 Saturday" ->
@@ -89,17 +92,23 @@ function contradictedReply(e: MessageEvidence, current: NextQuestionSpec | null)
 const isMention = (n: NumberMention, value: number) => sameNumber(n.value, value) || (n.high !== null && sameNumber(n.high, value));
 
 /**
- * I2: the user stated this value for this (non-hours) field in this message - a number with a unit the field can
- * take, or a bare number. The one conversion recognised is the documented premium convention: a stated total
- * percentage of at least 100% ("150%") also states the premium above base (50).
+ * I2 + C1: does the user's message state this value for this (non-hours) field?
+ *   - `not_stated`: no number in the message is this value with a unit the field can take (or a bare number);
+ *   - `component_mismatch`: it is stated, but tied to another pay component (C1, `mentionsForField`);
+ *   - `stated`: stated, and for this field's component.
+ * The one conversion recognised is the documented premium convention, bound to the same component: a stated total
+ * percentage of at least 100% ("150% on Saturdays") also states that premium above base (50) - for the premium it names.
  */
-function statedFor(e: MessageEvidence, field: ScenarioFieldPath, value: number): boolean {
+function statedFor(e: MessageEvidence, field: ScenarioFieldPath, value: number, current: NextQuestionSpec | null): 'stated' | 'component_mismatch' | 'not_stated' {
   const spec = SCENARIO_FIELDS[field];
-  return e.numbers.some(
+  const candidates = e.numbers.filter(
     (n) =>
       (isMention(n, value) && unitsFitField(field, n.units)) ||
       (spec.kind === 'number' && spec.unit === 'premium_percent' && n.high === null && n.units.has('percent') && n.value >= 100 && sameNumber(n.value - 100, value)),
   );
+  if (candidates.length === 0) return 'not_stated';
+  const bound = mentionsForField(e, field, current?.field ?? null);
+  return candidates.some((n) => bound.includes(n)) ? 'stated' : 'component_mismatch';
 }
 
 /** RT-001: an op claiming a non-user source is left to the authority guard, which rejects the whole patch. */
@@ -167,10 +176,18 @@ export function guardModelPatch(patch: ScenarioPatchV1, message: string, current
       notes.push({ code: 'hours_withheld', field });
       return false;
     }
-    // I2: a non-hours number the user did not state is the model's own value - never a user fact.
-    if (!isHoursBucket(field) && SCENARIO_FIELDS[field].kind === 'number' && values.some((v) => !statedFor(e, field, v))) {
-      notes.push({ code: 'value_not_stated_withheld', field });
-      return false;
+    if (!isHoursBucket(field) && SCENARIO_FIELDS[field].kind === 'number') {
+      const support = values.map((v) => statedFor(e, field, v, current));
+      // I2: a non-hours number the user did not state is the model's own value - never a user fact.
+      if (support.includes('not_stated')) {
+        notes.push({ code: 'value_not_stated_withheld', field });
+        return false;
+      }
+      // C1: a stated number belongs to the component the user named - not to another field with the same unit.
+      if (support.includes('component_mismatch')) {
+        notes.push({ code: 'component_mismatch_withheld', field });
+        return false;
+      }
     }
     return true;
   });

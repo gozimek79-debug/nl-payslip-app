@@ -93,10 +93,16 @@ test('RT-001 #7: an accepted assumption remains an assumption after the user "co
   r = await runConversationTurn({ scenario: r.scenario, message: 'yes', locale: 'en' }, { agent: scriptedAgent([]), rates: RATES_2026 });
   assert.deepEqual(r.scenario.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'loonto_assumption' });
   // Turn 3: the user "confirms" the same value as a statement -> it is NOT laundered into a user fact.
+  // (C1: the statement names the Saturday premium, so the op reaches the authority guard; an unanchored
+  // "yes, 50% is right" on a complete Scenario is already withheld one layer earlier - see below.)
   const agent = scriptedAgent([out('correction', [{ op: 'set', field: 'pay.saturdayPremiumPercent', value: 50 }])]);
-  r = await runConversationTurn({ scenario: r.scenario, message: 'yes, 50% is right', locale: 'en' }, { agent, rates: RATES_2026 });
+  const confirmed = r.scenario;
+  r = await runConversationTurn({ scenario: confirmed, message: 'yes, the Saturday premium of 50% is right', locale: 'en' }, { agent, rates: RATES_2026 });
   assert.deepEqual(r.scenario.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'loonto_assumption' });
   assert.deepEqual(r.patchNotes.map((n) => n.code), ['assumption_kept_as_assumption']);
+  const unanchored = await runConversationTurn({ scenario: confirmed, message: 'yes, 50% is right', locale: 'en' }, { agent: scriptedAgent([out('correction', [{ op: 'set', field: 'pay.saturdayPremiumPercent', value: 50 }])]), rates: RATES_2026 });
+  assert.deepEqual(unanchored.scenario.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'loonto_assumption' }, 'still not laundered');
+  assert.deepEqual(unanchored.patchNotes.map((n) => n.code), ['component_mismatch_withheld']);
   assert.ok(r.evaluation?.status === 'computed' && r.evaluation.assumptionsUsed.some((a) => a.path === 'pay.saturdayPremiumPercent'));
   // A DIFFERENT value from the user is real information and replaces the assumption.
   const differs = applyScenarioPatch(r.scenario, patch({ op: 'set', field: 'pay.saturdayPremiumPercent', value: 35 }));

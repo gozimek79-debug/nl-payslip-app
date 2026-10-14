@@ -1,4 +1,4 @@
-import type { ScenarioFieldPath } from '../scenario/scenario-types.js';
+import { SCENARIO_FIELDS, type ScenarioFieldPath } from '../scenario/scenario-types.js';
 
 /**
  * Deterministic evidence in the user's OWN, PRESENT message (Cursor re-review M1-M4, m1).
@@ -104,6 +104,63 @@ const VARY_MARKER = /\b(?:vary|varies|varying|variable|different|shifts?|rota\w*
 const PER_DAY = /\b(?:a|per)\s+day\b|\bdaily\b|\bdziennie\b|\bna\s+dzien\b|\bkazdego\s+dnia\b/;
 const DISTRIBUTION_WORDS = /\b(?:even|evenly|equally|spread|each\s+day|every\s+day|per\s+day|a\s+day|daily|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:rs|rsday)?|fri(?:day)?|rowno|dziennie|kazdego\s+dnia|codziennie|poniedzial\w*|wtor\w*|srod\w*|czwart\w*|piat\w*)\b/;
 
+// ---------------------------------------------------------------------------------------------
+// C1: pay components a clause names
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The pay component each non-hours numeric Scenario field holds (C1). A model may write a number to one of these
+ * fields only when the user's message ties THAT number to THAT component. Day premiums and overtime reuse the hours
+ * categories above; the rest is a closed PL / EN / NL word list.
+ */
+export type PayComponent = 'rate' | 'saturday' | 'sunday' | 'holiday' | 'weekend' | 'overtime' | 'tier1' | 'tier2' | 'threshold' | 'travel' | 'pension' | 'paww' | 'sector' | 'post_tax' | 'vakantiegeld';
+export interface ComponentMention {
+  component: PayComponent;
+  negated: boolean;
+}
+
+export const FIELD_COMPONENT: Partial<Record<ScenarioFieldPath, PayComponent>> = {
+  'pay.hourlyRate': 'rate',
+  'pay.saturdayPremiumPercent': 'saturday',
+  'pay.sundayPremiumPercent': 'sunday',
+  'pay.publicHolidayPremiumPercent': 'holiday',
+  'pay.overtime.thresholdHoursPerDay': 'threshold',
+  'pay.overtime.tier1Percent': 'tier1',
+  'pay.overtime.tier2Percent': 'tier2',
+  'deductions.entered.pension': 'pension',
+  'deductions.entered.paww': 'paww',
+  'deductions.entered.sectorPremium': 'sector',
+  'deductions.entered.postTaxOther': 'post_tax',
+  'extras.travelAllowance': 'travel',
+  'extras.vakantiegeld.percent': 'vakantiegeld',
+};
+
+/** The kind of number a component takes - only components of the same kind compete for a number. */
+type ComponentKind = 'money' | 'percent' | 'hours_per_day';
+const COMPONENT_KINDS: Record<PayComponent, readonly ComponentKind[]> = {
+  rate: ['money'], travel: ['money'], pension: ['money'], paww: ['money'], sector: ['money'], post_tax: ['money'],
+  saturday: ['percent'], sunday: ['percent'], holiday: ['percent'], weekend: ['percent'], tier1: ['percent'], tier2: ['percent'], vakantiegeld: ['percent'],
+  overtime: ['percent', 'hours_per_day'], threshold: ['hours_per_day'],
+};
+/** A broader word that qualifies a component instead of competing with it ("overtime, first tier, 25%"). */
+const QUALIFIERS: Partial<Record<PayComponent, readonly PayComponent[]>> = { tier1: ['overtime'], tier2: ['overtime'], threshold: ['overtime'] };
+
+/** Holiday ALLOWANCE ("holiday pay", "vakantiegeld") is never public-holiday work - masked before the day categories. */
+const VAKANTIEGELD = /\b(?:vakantiegeld\w*|vacation\s+pay|holiday\s+(?:pay|allowance|money)|dodat\w*\s+urlopow\w*|urlopow\w*|wakacyjn\w*)\b/g;
+const COMPONENT_PATTERNS: ReadonlyArray<readonly [PayComponent, RegExp]> = [
+  ['rate', /\b(?:rate|hourly|wages?|salary|earn\w*|uurloon|loon|stawk\w*|zarab\w*|zarob\w*|pensj\w*|wynagrodz\w*|verdien\w*)\b/g],
+  ['tier1', /\b(?:first|pierwsz\w*)\s+(?:tier|level|band|prog\w*|poziom\w*)\b|\b(?:tier|level|band|prog\w*|poziom\w*)\s+one\b/g],
+  ['tier2', /\b(?:second|drug\w*)\s+(?:tier|level|band|prog\w*|poziom\w*)\b|\b(?:tier|level|band|prog\w*|poziom\w*)\s+two\b/g],
+  ['threshold', /\b(?:threshold|limit)\b/g],
+  ['travel', /\b(?:travel\w*|reiskost\w*|reisvergoed\w*|kilomet\w*|kilometr\w*|commut\w*|dojazd\w*|dojezd\w*|podroz\w*|przejazd\w*)\b/g],
+  ['pension', /\b(?:pension\w*|pensioen\w*|emerytur\w*|emerytaln\w*)\b/g],
+  ['paww', /\b(?:paww|aww)\b/g],
+  ['sector', /\b(?:sector\w*|sektor\w*)\b/g],
+  ['post_tax', /\b(?:after|post)[\s-]?tax\b|\bpo\s+(?:opodatkowaniu|podatku)\b|\bnetto[\s-]?inhoud\w*/g],
+  ['vakantiegeld', VAKANTIEGELD],
+];
+const DAY_COMPONENTS: ReadonlySet<string> = new Set(['saturday', 'sunday', 'holiday', 'weekend', 'overtime']);
+
 /** Words a short hours statement may contain besides numbers, units, categories, negations and markers. */
 const FILLER: ReadonlySet<string> = new Set([
   'i', 'im', 'ive', 'my', 'we', 'work', 'works', 'worked', 'working', 'do', 'did', 'does', 'have', 'had', 'on', 'in', 'at', 'the', 'a', 'an',
@@ -139,12 +196,15 @@ export interface ClauseEvidence {
   text: string;
   numbers: NumberMention[];
   categories: CategoryMention[];
+  /** C1: the pay components this clause names (affirmative or denied). */
+  components: ComponentMention[];
   perDay: boolean;
 }
 export interface MessageEvidence {
   clauses: ClauseEvidence[];
   numbers: NumberMention[];
   categories: CategoryMention[];
+  components: ComponentMention[];
 }
 
 const toNumber = (raw: string) => Number(raw.replace(',', '.'));
@@ -153,6 +213,10 @@ const CURRENCY_BEFORE = /(?:^|\s)(?:eur|euro|euros)\s*$/;
 function splitClauses(message: string): string[] {
   let text = message.replace(/(^|\s)i(?=\s)/g, '$1|');
   text = foldText(text).replace(/€/g, ' eur ').replace(/%/g, ' percent ').replace(/\//g, ' per ');
+  // C1: "Saturday +50%" - a plus sign on a number is a sign, not a clause break ("32 + 8" / "32+8" still are);
+  // "tier 1" / "1st tier" name a tier, they are not numbers.
+  text = text.replace(/(?<![\d.,]\s*)\+(?=\d)/g, ' ');
+  text = text.replace(/\b(tier|level|band|prog|poziom)\s*([12])\b/g, (_m, word: string, digit: string) => `${word} ${digit === '1' ? 'one' : 'two'}`).replace(/\b1st\b/g, 'first').replace(/\b2nd\b/g, 'second');
   text = text.replace(RANGE_BETWEEN, ' $1~$2 ').replace(RANGE_PLAIN, ' $1~$2 ');
   text = text.replace(/[;:!?()[\]\n"+&]/g, '|').replace(/(?<!\d)[.,]|[.,](?!\d)/g, '|').replace(CONNECTIVES, '|');
   text = text.replace(NUMBER_TOKEN, (m) => ` ${m} `);
@@ -180,22 +244,39 @@ function clauseNumbers(clause: string): NumberMention[] {
   });
 }
 
-function clauseCategories(clause: string): CategoryMention[] {
-  const out: CategoryMention[] = [];
-  for (const [category, pattern] of CATEGORY_PATTERNS) {
+function mentions<K extends string>(clause: string, patterns: ReadonlyArray<readonly [K, RegExp]>): Array<{ kind: K; negated: boolean }> {
+  const out: Array<{ kind: K; negated: boolean }> = [];
+  for (const [kind, pattern] of patterns) {
     for (const m of clause.matchAll(pattern)) {
       const index = m.index ?? 0;
       const before = clause.slice(0, index).replace(DONT_KNOW_PHRASES, ' ');
       const after = clause.slice(index + m[0].length);
-      out.push({ category, negated: NEGATION.test(before) || NEGATION_AFTER.test(after) });
+      out.push({ kind, negated: NEGATION.test(before) || NEGATION_AFTER.test(after) });
     }
   }
   return out;
 }
 
+function clauseCategories(clause: string): CategoryMention[] {
+  return mentions(clause, CATEGORY_PATTERNS).map((m) => ({ category: m.kind, negated: m.negated }));
+}
+
+function clauseComponents(clause: string, perDay: boolean): ComponentMention[] {
+  const out: ComponentMention[] = mentions(clause, COMPONENT_PATTERNS).map((m) => ({ component: m.kind, negated: m.negated }));
+  for (const m of mentions(clause.replace(VAKANTIEGELD, ' '), CATEGORY_PATTERNS)) {
+    if (DAY_COMPONENTS.has(m.kind)) out.push({ component: m.kind as PayComponent, negated: m.negated });
+  }
+  // overtime counted per day is the overtime threshold ("overtime after 8 hours a day")
+  if (perDay && out.some((m) => m.component === 'overtime' && !m.negated)) out.push({ component: 'threshold', negated: false });
+  return out;
+}
+
 export function analyzeMessage(message: string): MessageEvidence {
-  const clauses = splitClauses(message).map((text) => ({ text, numbers: clauseNumbers(text), categories: clauseCategories(text), perDay: PER_DAY.test(text) }));
-  return { clauses, numbers: clauses.flatMap((c) => c.numbers), categories: clauses.flatMap((c) => c.categories) };
+  const clauses = splitClauses(message).map((text) => {
+    const perDay = PER_DAY.test(text);
+    return { text, numbers: clauseNumbers(text), categories: clauseCategories(text), components: clauseComponents(text, perDay), perDay };
+  });
+  return { clauses, numbers: clauses.flatMap((c) => c.numbers), categories: clauses.flatMap((c) => c.categories), components: clauses.flatMap((c) => c.components) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -225,6 +306,56 @@ export function namesCategory(e: MessageEvidence, category: HoursCategory): bool
 /** The message mentions this exact number (or range end). */
 export function mentionsNumber(e: MessageEvidence, value: number): boolean {
   return e.numbers.some((n) => sameNumber(n.value, value) || (n.high !== null && sameNumber(n.high, value)));
+}
+
+function componentKindOf(field: ScenarioFieldPath): ComponentKind | null {
+  const spec = SCENARIO_FIELDS[field];
+  if (spec.kind !== 'number') return null;
+  if (spec.unit === 'eur_per_hour' || spec.unit === 'eur_per_week') return 'money';
+  if (spec.unit === 'premium_percent' || spec.unit === 'percent') return 'percent';
+  return spec.unit === 'hours_per_day' ? 'hours_per_day' : null;
+}
+
+/**
+ * C1: the numbers of this message that belong to `field`'s pay component - a model's value for that field may come
+ * only from one of them. A number belongs to the component when
+ *   - its own clause names that component and nothing competing ("Sunday premium 50%", "€50 travel"; a number
+ *     stated "per hour" with no other component around it is the hourly rate);
+ *   - or it is the message's only number, its clause names nothing, and the message names exactly that component
+ *     elsewhere ("Za niedzielę, 50%");
+ *   - or the message names no competing component at all and the server's own current question is this field: a
+ *     pure quantity ("50%", "50 percent I think") answers the question asked - but "50% for Sunday" never answers
+ *     a Saturday question.
+ * Competing = another component taking the same kind of number; for the hourly rate, any other component at all
+ * ("overtime rate €25", "Saturday €5 extra" are not the base rate). A component the message denies is never evidence.
+ */
+export function mentionsForField(e: MessageEvidence, field: ScenarioFieldPath, currentField: string | null): NumberMention[] {
+  const own = FIELD_COMPONENT[field];
+  const kind = componentKindOf(field);
+  if (!own || !kind) return [];
+  const competes = (k: PayComponent) => own === 'rate' || COMPONENT_KINDS[k].includes(kind);
+  const fits = (names: PayComponent[]) => names.includes(own) && names.every((k) => k === own || (QUALIFIERS[own] ?? []).includes(k));
+  const relevant = e.components.filter((m) => competes(m.component));
+  if (relevant.some((m) => m.component === own && m.negated)) return [];
+  const named = relevant.filter((m) => !m.negated).map((m) => m.component);
+  const out: NumberMention[] = [];
+  for (const c of e.clauses) {
+    const inClause = c.components.filter((m) => !m.negated).map((m) => m.component);
+    const competing = inClause.filter(competes);
+    for (const n of c.numbers) {
+      if (own === 'rate' && n.units.has('rate') && inClause.every((k) => k === 'rate')) out.push(n);
+      else if (competing.length > 0) {
+        if (fits(competing)) out.push(n);
+      } else if (inClause.length > 0) {
+        continue; // the clause ties this number to another kind of component
+      } else if (e.numbers.length === 1 && named.length > 0) {
+        if (fits(named)) out.push(n);
+      } else if (relevant.length === 0 && currentField === field) {
+        out.push(n);
+      }
+    }
+  }
+  return out;
 }
 
 /**

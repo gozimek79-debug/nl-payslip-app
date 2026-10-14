@@ -284,3 +284,35 @@ test('I2 HTTP: "40 hours thanks" on the rate question - a bad model\'s invented 
   assert.equal(body.evaluation?.status, 'blocked');
   assert.equal(body.nextQuestion?.field, 'pay.hourlyRate');
 });
+
+// ---------------------------------------------------------------------------------------------
+// C1 category grounding at the public boundary
+// ---------------------------------------------------------------------------------------------
+
+const premiumScenario = () => scenario({ work: { regularWeekdayHours: known(32), saturdayHours: known(8) }, pay: { hourlyRate: known(16.8) }, tax: { loonheffingskorting: known('applied') }, deductions: { mode: known('estimate', 'loonto_assumption') } });
+
+test('C1 HTTP: "Za niedzielę otrzymuję dodatek 50%." is never the Saturday premium; a bare "50%" still answers the Saturday question', async () => {
+  counters.clear();
+  const agent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.saturdayPremiumPercent', value: 50 }])]);
+  currentAgent = agent;
+  const body = await turnBody({ scenario: premiumScenario(), message: 'Za niedzielę otrzymuję dodatek 50%.', locale: 'pl' });
+  assert.equal(agent.calls, 1);
+  assert.equal(body.status, 'unchanged');
+  assert.equal(body.scenario.pay.saturdayPremiumPercent, undefined, 'was: Saturday 50, payout 613.76');
+  assert.deepEqual(body.patchNotes.map((n) => n.code), ['component_mismatch_withheld']);
+  assert.equal(body.evaluation?.status, 'blocked');
+  assert.equal(body.nextQuestion?.field, 'pay.saturdayPremiumPercent');
+  currentAgent = scriptedAgent([]);
+  const bare = await turnBody({ scenario: premiumScenario(), message: '50%', locale: 'pl' });
+  assert.equal(bare.agentStatus, 'not_needed');
+  assert.deepEqual(bare.scenario.pay.saturdayPremiumPercent, { source: 'user', state: 'known', value: 50 });
+});
+
+test('C1 HTTP: "€50 travel reimbursement" is never the hourly rate', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.hourlyRate', value: 50 }])]);
+  const body = await turnBody({ scenario: { ...readyScenario(), pay: {} }, message: 'I receive €50 travel reimbursement', locale: 'en' });
+  assert.equal(body.scenario.pay.hourlyRate, undefined, 'was: rate 50, payout 1185.15');
+  assert.deepEqual(body.patchNotes.map((n) => n.code), ['component_mismatch_withheld']);
+  assert.equal(body.evaluation?.status, 'blocked');
+});

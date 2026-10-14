@@ -104,6 +104,8 @@ export const PATCH_NOTE_CODES = [
   'unit_mismatch_withheld',
   /** I2: a model write of a number to a non-hours field that the user did not state in this message - not written. */
   'value_not_stated_withheld',
+  /** C1: a model write of a number the user stated for ANOTHER pay component ("Sunday 50%" as the Saturday premium) - not written. */
+  'component_mismatch_withheld',
 ] as const;
 export type PatchNoteCode = (typeof PATCH_NOTE_CODES)[number];
 export interface PatchNote {

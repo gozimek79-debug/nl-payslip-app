@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { alphaEntry } from './r3b-entry.ts';
+import { appEntry } from './r3b-entry.ts';
 
 /**
- * R3-B containment: reachable only through the private owner-review URLs; the existing app stays the default; the
+ * R3-B containment: R3-B is the default application (R3-B.1); the previous app is the `?legacy=1` fallback; the
  * R3-B code calls exactly the existing endpoints (reader routes via the shared adapter, profile resolve, R2 turn),
  * stores nothing but the language preference, and never renders HTML from data.
  */
@@ -15,14 +15,19 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (file: string) => readFileSync(path.join(here, file), 'utf-8');
 const sources = readdirSync(here).filter((f) => /\.(ts|tsx)$/.test(f) && !f.endsWith('.test.ts') && f !== 'r3b-test-support.ts');
 
-test('R3-B entry: `?r3a=1` opens R3-B, `?r3a=demo` the R3-A demo, everything else the existing app', () => {
-  assert.equal(alphaEntry('?r3a=1'), 'r3b');
-  assert.equal(alphaEntry('?diag=1&r3a=1'), 'r3b');
-  assert.equal(alphaEntry('?r3a=demo'), 'r3a_demo');
-  for (const search of ['', '?', '?r3a=0', '?r3a=true', '?r3a', '?R3A=1', '?r3a=DEMO', '?diag=1']) assert.equal(alphaEntry(search), null, search);
+test('R3-B.1 entry: R3-B is the default at `/`; the previous app only at `?legacy=1` (or its `?auth=` sign-in return)', () => {
+  for (const search of ['', '?', '?r3a=1', '?diag=1&r3a=1', '?r3a=0', '?legacy=0', '?legacy=true', '?LEGACY=1', '?diag=1']) assert.equal(appEntry(search), 'r3b', search);
+  assert.equal(appEntry('?legacy=1'), 'legacy');
+  assert.equal(appEntry('?legacy=1&diag=1'), 'legacy');
+  for (const search of ['?auth=success', '?auth=expired', '?auth=invalid', '?auth=error']) assert.equal(appEntry(search), 'legacy', 'the magic-link sign-in returns to the previous app');
+  assert.equal(appEntry('?r3a=demo'), 'r3a_demo');
   const main = readFileSync(path.join(here, '..', 'main.tsx'), 'utf-8');
-  assert.match(main, /lazy\(\(\) => import\('\.\/r3b\/R3BDocumentConversation\.tsx'\)/, 'loaded on demand only');
+  assert.match(main, /entry === 'legacy' \? <App \/> : entry === 'r3a_demo' \? <Suspense fallback=\{null\}><R3AConversationDemo \/><\/Suspense> : <Suspense fallback=\{null\}><R3BDocumentConversation \/><\/Suspense>/);
+  assert.match(main, /lazy\(\(\) => import\('\.\/r3b\/R3BDocumentConversation\.tsx'\)/, 'loaded on demand');
   assert.ok(!/r3b|R3B/.test(readFileSync(path.join(here, '..', 'App.tsx'), 'utf-8')), 'App.tsx does not know about R3-B');
+  assert.match(read('R3BDocumentConversation.tsx'), /<a href="\/\?legacy=1">\{c\.backToCurrent\}<\/a>/, 'the banner links to the previous app');
+  // Crawler hygiene only - access control is Vercel Authentication on the whole deployment.
+  assert.match(readFileSync(path.join(here, '..', '..', 'index.html'), 'utf-8'), /<meta name="robots" content="noindex, nofollow"\/>/);
 });
 
 test('R3-B entry: the only network calls are the existing endpoints, through the existing helpers', () => {

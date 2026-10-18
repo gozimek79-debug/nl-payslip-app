@@ -88,7 +88,7 @@ export function R3BDocumentConversation({ store: injected, initialLang }: { stor
 
       <div className="r3a-banner r3b-test-banner" role="note">
         <AlertTriangle size={18} aria-hidden="true" />
-        <p><strong>{c.testBanner}</strong> <span className="r3b-banner-detail">{c.bannerDetail} <a href="/">{c.backToCurrent}</a></span></p>
+        <p><strong>{c.testBanner}</strong> <span className="r3b-banner-detail">{c.bannerDetail} <a href="/?legacy=1">{c.backToCurrent}</a></span></p>
       </div>
 
       <div className="r3a-layout">

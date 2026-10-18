@@ -80,7 +80,7 @@ test('R3-B screen: a chosen file shows its state and the explicit Gemini read ac
   assert.ok(!markup.includes('<img src=x'), 'no markup injection from a file name');
   assert.ok(text.includes('<img src=x onerror=alert(1)>.pdf'), 'shown as plain text');
   assert.ok(text.includes('Wybrany — jeszcze nieodczytany'));
-  assert.ok(text.includes('zewnętrznego czytnika AI — Google Gemini'));
+  assert.ok(text.includes('zewnętrznego czytnika AI — Google Gemini, przetwarzanie poza UE'), 'the reader and where it processes are named');
   assert.ok(text.includes('Odczytaj dokument przez Gemini'));
   assert.ok(text.includes('Nic nie jest wysyłane, dopóki nie klikniesz przycisku poniżej'));
 });

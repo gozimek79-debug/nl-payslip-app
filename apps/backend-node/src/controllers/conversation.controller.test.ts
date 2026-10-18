@@ -316,3 +316,46 @@ test('C1 HTTP: "€50 travel reimbursement" is never the hourly rate', async () 
   assert.deepEqual(body.patchNotes.map((n) => n.code), ['component_mismatch_withheld']);
   assert.equal(body.evaluation?.status, 'blocked');
 });
+
+// ---------------------------------------------------------------------------------------------
+// R3-B: the selection-only `conversation.deferredFields` hint at the public boundary
+// ---------------------------------------------------------------------------------------------
+
+test('R3-B HTTP: deferredFields only changes WHICH question is asked - nothing is written, the evaluation stays blocked', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([]);
+  const start = scenario({ work: { regularWeekdayHours: known(40) } });
+  const plain = await turnBody({ scenario: start, message: 'nie wiem', locale: 'pl' });
+  assert.equal(plain.conversation.deferredFields, undefined, 'without the list the turn is exactly as before');
+  const body = await turnBody({ scenario: scenario(), message: '40 godzin od poniedziałku do piątku', locale: 'pl', conversation: { deferredFields: ['pay.hourlyRate', 'tax.loonheffingskorting', 'deductions.mode', 'not.a.field', 'payout_amount'] } });
+  assert.equal(body.agentStatus, 'not_needed');
+  assert.equal(body.nextQuestion, null, 'the deferred rate is not asked; nothing else in the goal is missing');
+  assert.equal(body.scenario.pay.hourlyRate, undefined, 'a deferred field is never a value');
+  assert.equal(body.evaluation?.status, 'blocked', 'no result without the rate - deferral is never readiness');
+  assert.deepEqual(body.conversation.deferredFields, ['pay.hourlyRate', 'tax.loonheffingskorting', 'deductions.mode'], 'unknown paths are dropped');
+});
+
+test('R3-B HTTP: "nie wiem" on the rate question defers it (unknown, never zero) instead of asking it again', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([]);
+  const body = await turnBody({ scenario: scenario({ work: { regularWeekdayHours: known(40) } }), message: 'nie wiem', locale: 'pl', conversation: { deferredFields: [] } });
+  assert.deepEqual(body.scenario.pay.hourlyRate, { state: 'unknown' });
+  assert.notEqual(body.nextQuestion?.field, 'pay.hourlyRate', 'no "nie wiem" loop');
+  assert.deepEqual(body.conversation.deferredFields, ['pay.hourlyRate']);
+  assert.equal(body.evaluation?.status, 'blocked');
+});
+
+test('R3-B HTTP: the hint cannot carry values or sources, and a self-declared document source is still rejected with it', async () => {
+  counters.clear();
+  currentAgent = scriptedAgent([]);
+  for (const bad of [{ deferredFields: 'pay.hourlyRate' }, { deferredFields: [{ field: 'pay.hourlyRate', value: 16.8, source: 'document' }] }, { deferredFields: Array.from({ length: 41 }, () => 'pay.hourlyRate') }, { deferredFields: ['x'.repeat(81)] }, { documentFacts: [{ field: 'pay.hourlyRate', value: 16.8 }] }]) {
+    const res = await turn({ message: 'x', locale: 'pl', conversation: bad });
+    assert.equal(res.status, 400, JSON.stringify(bad).slice(0, 80));
+  }
+  const forged = scenario({ work: { regularWeekdayHours: known(40) }, pay: { hourlyRate: known(16.8, 'document', 'doc-1') } });
+  const body = await turnBody({ scenario: forged, message: 'hello', locale: 'pl', conversation: { deferredFields: ['pay.hourlyRate'] } });
+  assert.equal(body.status, 'rejected');
+  assert.equal(body.responseHint?.code, 'untrusted_scenario');
+  assert.equal(body.evaluation, null);
+  assert.deepEqual(body.conversation.deferredFields, ['pay.hourlyRate']);
+});

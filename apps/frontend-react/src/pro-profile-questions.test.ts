@@ -510,10 +510,13 @@ test('S5 §20/§31.24/31.25/31.30: ProDocuments has ONE resolve path carrying th
   const flow = proDocuments.slice(proDocuments.indexOf('async function resolveDecisionSet'), proDocuments.indexOf('function applyPendingDecisions'));
   assert.ok(flow.indexOf('if (!outcome) { setGlobalError(t.profileError); return; }') < flow.indexOf('applyOutcome(outcome, sent)'), 'on failure: the error, and return before anything is replaced');
   assert.ok(!/setProfile|setIssues|setPending|decisionsRef\.current =/.test(flow.slice(0, flow.indexOf('applyOutcome'))), 'no state is touched before the result lands');
-  // The reading / batching path is unchanged and knows nothing about decisions.
+  // The reading / batching path is unchanged and knows nothing about decisions. R3-B: its loop moved, unchanged, into
+  // the shared adapter document-facts-reader.ts (also used by R3-B), which ProDocuments' readDocument now calls.
   const reading = proDocuments.slice(proDocuments.indexOf('async function readDocument'), proDocuments.indexOf('async function submitAll'));
-  for (const kept of ['planDocumentBatches(source)', 'readDocumentSource(entry.file)', '/api/pro/${kind}-facts', 'failedPages.push(...batch.pages)']) assert.ok(reading.includes(kept), kept);
-  assert.ok(!/resolveWithDecisions|decisionsRef|pending|issues/.test(reading), 'reading documents is independent of decisions');
+  const adapter = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'document-facts-reader.ts'), 'utf-8');
+  assert.ok(reading.includes('readDocumentFacts(entry.file, kind, READER_DEPS)'));
+  for (const kept of ['planDocumentBatches(source)', 'deps.readSource(file)', '/api/pro/${kind}-facts', 'failedPages.push(...batch.pages)']) assert.ok(adapter.includes(kept), kept);
+  assert.ok(!/resolveWithDecisions|decisionsRef|pending|issues/.test(reading + adapter), 'reading documents is independent of decisions');
   assert.ok(proDocuments.includes('<TierACalculator key={submitCount}'), 'the calculator still remounts with the profile');
 });
 

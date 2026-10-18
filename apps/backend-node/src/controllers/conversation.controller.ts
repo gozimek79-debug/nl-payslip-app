@@ -34,6 +34,8 @@ const turnRequestSchema = z.strictObject({
       pendingQuestion: z.strictObject({ field: z.string().max(80), kind: z.enum(NEXT_QUESTION_KINDS) }).optional(),
       declinedAssumptions: z.array(z.string().max(80)).max(25).optional(),
       hoursClarification: z.strictObject({ statedWeeklyTotal: z.number().min(0).max(168).optional(), weekdayOnly: z.literal(false).optional() }).optional(),
+      // R3-B: selection-only (conversation-types.ts ConversationDigest.deferredFields) - never a value or a source.
+      deferredFields: z.array(z.string().max(80)).max(40).optional(),
     })
     .optional(),
 });

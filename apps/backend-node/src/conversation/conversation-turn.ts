@@ -110,6 +110,24 @@ function cleanClarification(value: HoursClarification | undefined): HoursClarifi
   };
 }
 
+/** R3-B: the request-carried deferral list, kept only for real fields (selection only - see ConversationDigest). */
+function cleanDeferred(list: readonly string[] | undefined): Array<ScenarioFieldPath | 'work.hours'> {
+  const out: Array<ScenarioFieldPath | 'work.hours'> = [];
+  for (const field of list ?? []) {
+    const valid = field === 'work.hours' || Object.prototype.hasOwnProperty.call(SCENARIO_FIELDS, field);
+    if (valid && !out.includes(field as ScenarioFieldPath | 'work.hours')) out.push(field as ScenarioFieldPath | 'work.hours');
+  }
+  return out;
+}
+
+/** R3-B: after "nie wiem" (or a declined offer) the selector would ask for the same value again - a loop. An offer
+ * of the catalogued assumption right after "nie wiem" is a different way forward, so it is not a repeat. */
+function repeatsAfterDontKnow(intent: TurnIntent, current: NextQuestionSpec | null, next: NextQuestionSpec | null): boolean {
+  if (intent !== 'dont_know' && intent !== 'decline_assumption') return false;
+  if (!current || !next || next.field !== current.field) return false;
+  return next.kind === current.kind || next.kind === 'provide_value';
+}
+
 const NO_MUTATION_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>(['off_topic', 'decline_assumption', 'clarification_request']);
 
 function responseHintFor(args: {
@@ -139,7 +157,7 @@ function responseHintFor(args: {
   return { code: 'needs_information' };
 }
 
-function rejectedTurn(turnId: string, scenario: ScenarioV1, issues: PatchIssue[], declined: ScenarioFieldPath[], code: ResponseHint['code']): ConversationTurnResult {
+function rejectedTurn(turnId: string, scenario: ScenarioV1, issues: PatchIssue[], declined: ScenarioFieldPath[], code: ResponseHint['code'], deferred: Array<ScenarioFieldPath | 'work.hours'> | null = null): ConversationTurnResult {
   return {
     turnId,
     status: 'rejected',
@@ -151,7 +169,7 @@ function rejectedTurn(turnId: string, scenario: ScenarioV1, issues: PatchIssue[]
     patchNotes: [],
     evaluation: null,
     nextQuestion: null,
-    conversation: { declinedAssumptions: declined },
+    conversation: { declinedAssumptions: declined, ...(deferred ? { deferredFields: deferred } : {}) },
     responseHint: { code },
   };
 }
@@ -166,18 +184,21 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
   const turnId = newId();
   const declinedIn = cleanDeclined(request.conversation?.declinedAssumptions);
   const clarificationIn = cleanClarification(request.conversation?.hoursClarification);
+  // R3-B: deferral is opted into by carrying the list (even empty); without it the turn behaves exactly as before.
+  const deferralMode = Array.isArray(request.conversation?.deferredFields);
+  const deferredIn = cleanDeferred(request.conversation?.deferredFields);
   const incoming = request.scenario ? (canonicalize(request.scenario) as ScenarioV1) : emptyScenario(newId());
 
   // 1a. RT-001: a verified value must be backed by THIS turn's trusted context. Otherwise it is
   //     self-declared trust - the turn is rejected before any interpretation, model call or evaluation.
   const unbacked = findUnbackedVerifiedValues(incoming, trusted);
   if (unbacked.length > 0) {
-    return rejectedTurn(turnId, incoming, unbacked.map((u) => ({ code: 'untrusted_provenance_in_scenario' as const, field: u.field, params: { source: u.source } })), declinedIn, 'untrusted_scenario');
+    return rejectedTurn(turnId, incoming, unbacked.map((u) => ({ code: 'untrusted_provenance_in_scenario' as const, field: u.field, params: { source: u.source } })), declinedIn, 'untrusted_scenario', deferralMode ? deferredIn : null);
   }
   // 1b. F3: a Loonto assumption must be exactly the server's own catalogued node - never caller-minted.
   const forged = findForgedAssumptions(incoming);
   if (forged.length > 0) {
-    return rejectedTurn(turnId, incoming, forged.map((f) => ({ code: 'untrusted_loonto_assumption' as const, field: f.field, params: { reason: f.reason } })), declinedIn, 'untrusted_scenario');
+    return rejectedTurn(turnId, incoming, forged.map((f) => ({ code: 'untrusted_loonto_assumption' as const, field: f.field, params: { reason: f.reason } })), declinedIn, 'untrusted_scenario', deferralMode ? deferredIn : null);
   }
 
   // 2. Server-trusted facts (internal path only).
@@ -191,7 +212,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
 
   // 3. What the server would ask now - computed deterministically, never taken from the client.
   const before = evaluateScenario(scenario, deps.rates);
-  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: before, declinedAssumptions: declinedIn, hoursClarification: clarificationIn });
+  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: before, declinedAssumptions: declinedIn, hoursClarification: clarificationIn, deferredFields: deferredIn });
 
   // 4. Interpretation: deterministic first; otherwise at most ONE model call; otherwise no change.
   let intent: TurnIntent = 'unclear';
@@ -272,7 +293,13 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
 
   // 6. R1 is the arithmetic and readiness authority; the client only ever sees its public projection.
   const evaluation = status === 'updated' ? evaluateScenario(scenario, deps.rates) : before;
-  const nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut });
+  const deferred = [...deferredIn];
+  let nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
+  // R3-B: "nie wiem" must not loop - the field stays unknown (never zero) and is put aside; the next one is asked.
+  if (deferralMode && current && repeatsAfterDontKnow(intent, current, nextQuestion) && !deferred.includes(current.field)) {
+    deferred.push(current.field);
+    nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
+  }
   // The clarification is only carried while the opening hours question is still the one being asked.
   const carryClarification = nextQuestion?.field === 'work.hours' && clarificationOut ? clarificationOut : null;
 
@@ -291,6 +318,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
       ...(nextQuestion ? { pendingQuestion: { field: nextQuestion.field, kind: nextQuestion.kind } } : {}),
       declinedAssumptions: declined,
       ...(carryClarification ? { hoursClarification: carryClarification } : {}),
+      ...(deferralMode ? { deferredFields: deferred } : {}),
     },
     responseHint: responseHintFor({ status, intent, agentStatus, usedModelOrFallback, evaluation, notApplied }),
   };

@@ -200,10 +200,17 @@ function correctionQuestion(issues: ScenarioIssue[], scenario: ScenarioV1): Next
   };
 }
 
-export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: ScenarioEvaluationResult; declinedAssumptions?: readonly string[]; hoursClarification?: HoursClarification | null }): NextQuestionSpec | null {
+/**
+ * R3-B: `deferredFields` are requirements the selector does not ask about now (the user put them aside, the
+ * interface already shows a provisional document reading for them, or they are outside the user's current goal).
+ * Selection only: the requirement stays in R1's result, the evaluation stays `blocked`, nothing is written and
+ * no source is implied. It never hides an `invalid` correction question - an invalid Scenario is always corrected.
+ */
+export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: ScenarioEvaluationResult; declinedAssumptions?: readonly string[]; hoursClarification?: HoursClarification | null; deferredFields?: readonly string[] }): NextQuestionSpec | null {
   const { scenario, evaluation } = input;
   const clarification = input.hoursClarification ?? null;
   const declined = new Set(input.declinedAssumptions ?? []);
+  const deferred = new Set(input.deferredFields ?? []);
   switch (evaluation.status) {
     case 'computed':
     case 'unsupported':
@@ -211,7 +218,7 @@ export function selectNextQuestion(input: { scenario: ScenarioV1; evaluation: Sc
     case 'invalid':
       return correctionQuestion(evaluation.issues, scenario);
     case 'blocked': {
-      const ordered = [...evaluation.requirements].sort((a, b) => {
+      const ordered = evaluation.requirements.filter((r) => !deferred.has(r.field)).sort((a, b) => {
         const conflictA = a.reason === 'conflict' ? 0 : 1;
         const conflictB = b.reason === 'conflict' ? 0 : 1;
         return conflictA - conflictB || fieldRank(a.field) - fieldRank(b.field);

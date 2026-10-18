@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Trash2, Upload, AlertTriangle } from 'lucide-react';
 import { renderPageImages, readDocumentSource, photoWithinBudget } from './local-ocr.ts';
-import { planDocumentBatches } from './document-batches.ts';
+import { browserReaderDeps, readDocumentFacts } from './document-facts-reader.ts';
 import { translations, type Lang } from './translations.ts';
 import { addDocument, removeDocument, setDocumentType, setEffectiveDate, routeForDocument, isReadyToSubmit, type ProDocumentType } from './pro-documents-policy.ts';
 import { isResolvableAsOfDate, profilePrefill, sourceDocumentLabels, type CalculationReadinessView, type DecisionResultView, type ExtractionRowView, type PayrollProfileView, type ProfileDecisionView, type ProfileFieldView, type ProfileIssueView, type ProfileRequestDocument, type ProfileSourceView } from './pro-profile-prefill.ts';
@@ -18,6 +18,8 @@ import {
   openNeedsConfirmation,
   money, type TierCPeriodResponse, type Outcome, type Discrepancy, type NetPosition, type TechnicalDetails, type ConsistencyIssue,
 } from './tier-c-shared.ts';
+
+const READER_DEPS = browserReaderDeps({ readDocumentSource, renderPageImages, photoWithinBudget });
 
 /**
  * Stage 3.0 (audit v40, "PRO accepts several documents"): the shell that replaces PRO's old
@@ -212,45 +214,16 @@ export function ProDocuments({ lang, onNavigateToDictionary }: { lang: Lang; onN
   }
 
   /**
-   * P2 (§P2.3/§P2.5/§P2.8/§P2.9): reads one document as payroll facts. Its pages are planned into
-   * batches (document-batches.ts - text-layer documents from their page-indexed text, scans and photos
-   * from page images), each batch is one reader call, and every page is either read or reported as
-   * not read. A failed batch does not discard the others: its pages are reported, the rest are used.
+   * P2 (§P2.3/§P2.5/§P2.8/§P2.9): reads one document as payroll facts through the shared reader adapter
+   * (document-facts-reader.ts - batch planning, one reader call per batch, every page read or reported
+   * as not read; R3-B extracted it unchanged). The diagnostic replay stays here.
    */
   async function readDocument(entry: DocEntry): Promise<Partial<DocEntry>> {
     const kind = routeForDocument(entry.documentType) === 'tier_c' ? 'payslip' : 'contract';
-    const source = await readDocumentSource(entry.file);
-    const plan = planDocumentBatches(source);
-    const hasTextLayer = plan.mode === 'text';
-    const factBatches: unknown[] = [];
-    const failedPages: number[] = [];
-    let lastError: string | undefined;
-    for (const batch of plan.batches) {
-      try {
-        const images = batch.imagePages.length === 0 ? []
-          : source.isPdf ? (await renderPageImages(entry.file, hasTextLayer, batch.imagePages)).images
-            : [(await photoWithinBudget(entry.file)).image];
-        const textLines = source.lines.filter((l) => batch.pages.includes(l.page));
-        const res = await fetch(`/api/pro/${kind}-facts`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pages: batch.pages, totalPages: source.pageCount, images, imagePages: batch.imagePages, textLines }),
-        });
-        const data = await res.json() as { batch?: unknown; error_code?: string };
-        if (!res.ok || !data.batch) { failedPages.push(...batch.pages); lastError = data.error_code; continue; }
-        factBatches.push(data.batch);
-      } catch {
-        failedPages.push(...batch.pages);
-      }
-    }
-    if (factBatches.length === 0) return { status: 'error', errorMessage: translateErrorCode(lastError) };
-    const notProcessedPages = [...plan.notProcessedPages, ...failedPages].sort((x, y) => x - y);
-    const coverage = {
-      totalPages: source.pageCount,
-      notProcessedPages,
-      reason: failedPages.length > 0 ? ('batch_failed' as const) : plan.notProcessedReason,
-    };
-    const replay = kind === 'payslip' ? await replayPayslip(factBatches) : {};
-    return { status: 'done', factBatches, coverage, ...replay };
+    const read = await readDocumentFacts(entry.file, kind, READER_DEPS);
+    if (read.status === 'error') return { status: 'error', errorMessage: translateErrorCode(read.errorCode) };
+    const replay = kind === 'payslip' ? await replayPayslip(read.factBatches) : {};
+    return { status: 'done', factBatches: read.factBatches, coverage: read.coverage, ...replay };
   }
 
   async function submitAll() {

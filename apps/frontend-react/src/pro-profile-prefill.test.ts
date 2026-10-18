@@ -61,6 +61,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const proDocumentsSource = readFileSync(path.join(here, 'ProDocuments.tsx'), 'utf-8');
 /** Source without comments - the file's own history comments still NAME the retired functions. */
 const proDocumentsCode = proDocumentsSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+/** R3-B: PRO's reader loop moved, unchanged, into the shared adapter (document-facts-reader.ts, also used by R3-B) -
+ * the read-path assertions below follow it there; ProDocuments must call it (document-facts-reader.test.ts). */
+const readerAdapterCode = readFileSync(path.join(here, 'document-facts-reader.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 test('P1.8 #13: live ProDocuments no longer imports or calls the old whole-payslip sourcing gate', () => {
   for (const retired of ['selectMostRecentReproducedPayslip', 'derivePayslipOvertimePercents', 'isPayslipFullyReproduced', 'ReproducedPayslipCandidate', 'isFullyReproduced', 'payslipEligibleForProjection']) {
@@ -161,8 +164,10 @@ test('P1.1 #9: live ProDocuments re-resolves on an as-of date change from cached
 // --- P2 ---------------------------------------------------------------------------------------
 
 test('P2.17 #18/#3: the live PRO read path uses the fact routes only - no Tier C reader, no contract-analysis (Groq) route', () => {
-  assert.ok(proDocumentsCode.includes('/api/pro/${kind}-facts'), 'documents are read through the PRO fact routes');
-  assert.ok(proDocumentsCode.includes('planDocumentBatches(source)'), 'every document is planned into page batches');
+  assert.ok(proDocumentsCode.includes('readDocumentFacts(entry.file, kind, READER_DEPS)'), 'PRO reads through the shared reader adapter');
+  assert.ok(readerAdapterCode.includes('/api/pro/${kind}-facts'), 'documents are read through the PRO fact routes');
+  assert.ok(readerAdapterCode.includes('planDocumentBatches(source)'), 'every document is planned into page batches');
+  assert.ok(!readerAdapterCode.includes('/api/tier-c/analyze') && !readerAdapterCode.includes('/api/contracts/analyze'), 'nor in the adapter');
   assert.ok(!proDocumentsCode.includes('/api/tier-c/analyze'), 'the whole-payslip reader is no longer on the PRO path');
   assert.ok(!proDocumentsCode.includes('/api/contracts/analyze'), 'the contract route that adds Groq translation/explanation is no longer on the PRO path');
   assert.ok(proDocumentsCode.includes("fetch('/api/pro/payslip-replay'"), 'the diagnostic replay is computed from the same facts, without a second read');
@@ -183,7 +188,8 @@ test('P2.17 #15: local-ocr reads every page of a document; the old three-page ca
   assert.ok(source.includes('pageNumber <= pdf.numPages'), 'text/page discovery covers every page');
   assert.ok(!source.includes('Math.min(pdf.numPages, 3)'));
   assert.ok(/const wanted = pageNumbers \?\? /.test(ocr), 'an explicit page list (PRO batches) is rendered as given');
-  assert.ok(proDocumentsCode.includes('renderPageImages(entry.file, hasTextLayer, batch.imagePages)'), 'PRO always passes the batch pages explicitly');
+  assert.ok(readerAdapterCode.includes('deps.renderImages(file, hasTextLayer, batch.imagePages)'), 'PRO always passes the batch pages explicitly');
+  assert.ok(readerAdapterCode.includes('ocr.renderPageImages(file, hasTextLayer, pages)'), '...and the browser dependency forwards them to local-ocr');
 });
 
 // --- P3.1 S2 ----------------------------------------------------------------------------------

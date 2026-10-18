@@ -163,6 +163,15 @@ export interface ConversationDigest {
    * it into a Scenario value; hours are written only from numbers and kinds stated in the present message.
    */
   hoursClarification?: HoursClarification;
+  /**
+   * R3-B: fields the selector does not ask about now - put aside by the user ("nie wiem"), already shown to the
+   * user as a provisional document reading, or outside the user's current goal. Unsigned client data that steers
+   * WHICH question is asked and nothing else: never a value, never a source, never an input to R1; an evaluation
+   * it touches stays `blocked`. Carrying the list (even empty) opts the turn into deferral: when the user says
+   * they do not know (or declines the offered assumption) and the selector would only ask the same field again,
+   * the server adds that field here and asks the next one instead - no "nie wiem" loop.
+   */
+  deferredFields?: Array<ScenarioFieldPath | 'work.hours'>;
 }
 
 export interface HoursClarification {

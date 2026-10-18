@@ -113,7 +113,7 @@ const DISTRIBUTION_WORDS = /\b(?:even|evenly|equally|spread|each\s+day|every\s+d
  * fields only when the user's message ties THAT number to THAT component. Day premiums and overtime reuse the hours
  * categories above; the rest is a closed PL / EN / NL word list.
  */
-export type PayComponent = 'rate' | 'saturday' | 'sunday' | 'holiday' | 'weekend' | 'overtime' | 'tier1' | 'tier2' | 'threshold' | 'travel' | 'pension' | 'paww' | 'sector' | 'post_tax' | 'vakantiegeld';
+export type PayComponent = 'rate' | 'saturday' | 'sunday' | 'holiday' | 'weekend' | 'overtime' | 'tier1' | 'tier2' | 'threshold' | 'travel' | 'pension' | 'paww' | 'sector' | 'post_tax' | 'vakantiegeld' | 'other_premium';
 export interface ComponentMention {
   component: PayComponent;
   negated: boolean;
@@ -141,6 +141,7 @@ const COMPONENT_KINDS: Record<PayComponent, readonly ComponentKind[]> = {
   rate: ['money'], travel: ['money'], pension: ['money'], paww: ['money'], sector: ['money'], post_tax: ['money'],
   saturday: ['percent'], sunday: ['percent'], holiday: ['percent'], weekend: ['percent'], tier1: ['percent'], tier2: ['percent'], vakantiegeld: ['percent'],
   overtime: ['percent', 'hours_per_day'], threshold: ['hours_per_day'],
+  other_premium: ['percent', 'money'],
 };
 /** A broader word that qualifies a component instead of competing with it ("overtime, first tier, 25%"). */
 const QUALIFIERS: Partial<Record<PayComponent, readonly PayComponent[]>> = { tier1: ['overtime'], tier2: ['overtime'], threshold: ['overtime'] };
@@ -158,6 +159,10 @@ const COMPONENT_PATTERNS: ReadonlyArray<readonly [PayComponent, RegExp]> = [
   ['sector', /\b(?:sector\w*|sektor\w*)\b/g],
   ['post_tax', /\b(?:after|post)[\s-]?tax\b|\bpo\s+(?:opodatkowaniu|podatku)\b|\bnetto[\s-]?inhoud\w*/g],
   ['vakantiegeld', VAKANTIEGELD],
+  // R3-B (narrow L1 subset, Contract v1.1 §5.5 / §8.3): night, evening, shift and irregular-hours allowances have no
+  // Scenario field (Tier A: the unsupported night/evening/shift premium concepts) - a number tied to one is never the
+  // Saturday, Sunday, holiday or overtime premium, nor the base rate, however the question was worded.
+  ['other_premium', /\b(?:noc\w*|wieczor\w*|zmianow\w*|nieregularn\w*|night\w*|evening\w*|shifts?|shiftwork|irregular\w*|nacht\w*|avond\w*|ploeg\w*|onregelmatig\w*|ort)\b/g],
 ];
 const DAY_COMPONENTS: ReadonlySet<string> = new Set(['saturday', 'sunday', 'holiday', 'weekend', 'overtime']);
 

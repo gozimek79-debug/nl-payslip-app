@@ -16,6 +16,8 @@ export { statesWeekdaySemantics, type UnitClass } from './message-evidence.js';
  *                                               stays open with its split / range ways forward;
  *   - "tak" / "yes" to an assumption offer    -> accept_assumption (the catalogued value);
  *   - "nie" / "no" to an assumption offer     -> decline (no patch);
+ *   - "nie wiem" to an assumption offer (R3-B) -> NOT an acceptance (Contract v1.1, CEO decision 10): nothing is
+ *       written and no model is asked to guess what the user meant;
  *   - "tak" / "nie" to the tax-credit question -> applied / not_applied;
  *   - "tak" / "yes" to the hours-composition clarification (M2) -> NOTHING is written: the total it would
  *       confirm comes from the request-carried digest, which is untrusted; the user is asked to state the
@@ -168,6 +170,7 @@ export function interpretDeterministically(message: string, current: NextQuestio
   if (current.kind === 'offer_assumption') {
     if (YES.includes(normalized)) return { intent: 'accept_assumption', patch: patchOf([{ op: 'accept_assumption', field }]) };
     if (NO.includes(normalized)) return { intent: 'decline_assumption', patch: patchOf([]), declined: field };
+    if (isDontKnow(normalized)) return { intent: 'dont_know', patch: patchOf([]) };
     return null;
   }
 

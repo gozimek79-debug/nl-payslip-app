@@ -1,0 +1,89 @@
+/* R3-B additions on top of the R3-A shell (r3a.css) - scoped to `.r3b-*`. Mobile first; 44px+ targets. Not the final
+   Loonto Glass design (a separate CEO review) - only what the document-first flow needs to be visible and usable. */
+
+.r3b-test-banner{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--text-primary)}
+.r3b-test-banner svg{color:var(--status-warning)}
+.r3b-test-banner p{margin:0}
+.r3b-test-banner strong{color:var(--status-warning)}
+.r3b-test-banner a{color:var(--text-primary)}
+.r3b-banner-detail{display:block;margin-top:2px;font-size:13px;line-height:1.4;color:var(--text-secondary)}
+/* The welcome message says what the lead says - on a phone the lead gives its room to the document actions. */
+.r3b-hero h1{margin-bottom:0}
+@media (max-width:559px){.r3b-hero p{display:none}}
+
+.r3b-question{font-weight:700}
+.r3b-warn{color:var(--status-warning) !important;font-weight:600}
+.r3b-no-result{font-weight:700;color:var(--text-secondary)}
+.r3b-typing p{color:var(--text-muted);font-style:italic}
+.r3b-thread-end{list-style:none;height:1px}
+
+/* ===== Document offer (first screen) ===== */
+.r3b-offer-item{list-style:none}
+.r3b-offer{padding:12px;border-radius:16px;background:rgba(255,255,255,.92);border:1px solid rgba(22,37,31,.1);box-shadow:0 6px 18px rgba(20,70,50,.06)}
+.r3b-offer-title{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:16px}
+.r3b-offer-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.r3b-add{display:block;position:relative}
+.r3b-add-button,.r3b-continue,.r3b-read{width:100%;height:100%;min-height:52px;padding:8px 10px;border-radius:14px;font-size:15px;font-weight:700;line-height:1.25;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;text-align:center}
+.r3b-add-button{border:1.5px solid var(--loonto-primary);background:#fff;color:var(--loonto-primary-hover)}
+.r3b-add-button:hover:not(:disabled){background:var(--loonto-primary-soft)}
+.r3b-continue{border:1px solid rgba(22,37,31,.2);background:transparent;color:var(--text-primary)}
+.r3b-read{border:0;background:var(--loonto-primary);color:#fff}
+.r3b-add-button:disabled,.r3b-continue:disabled,.r3b-read:disabled{opacity:.55;cursor:not-allowed}
+.r3b-types{margin:8px 2px 0 !important;font-size:13px;color:var(--text-muted)}
+
+.r3b-file-errors{margin:10px 0 0;padding-left:18px;color:var(--status-error);font-size:14px;font-weight:600}
+
+.r3b-doc-list{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.r3b-doc{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;align-items:start;padding:10px 10px 10px 12px;border-radius:12px;background:#fff;border:1px solid rgba(22,37,31,.1)}
+.r3b-doc-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.r3b-doc-name{font-weight:700}
+.r3b-doc-file{font-size:13px;color:var(--text-muted);overflow-wrap:anywhere}
+.r3b-doc-status{font-size:13px;font-weight:700;color:var(--text-secondary)}
+.r3b-doc-status-read{color:var(--status-success)}
+.r3b-doc-status-failed{color:var(--status-error)}
+.r3b-doc-status-reading{color:var(--status-info)}
+.r3b-doc-error{font-size:13px;color:var(--status-warning);font-weight:600}
+.r3b-annex-date{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:14px;font-weight:700}
+.r3b-annex-date input,.r3b-period-day input{min-height:44px;padding:8px 10px;border-radius:10px;border:1px solid rgba(22,37,31,.22);font-size:16px;background:#fff;color:var(--text-primary)}
+.r3b-remove{grid-row:1;grid-column:2;width:44px;height:44px;border-radius:12px;border:1px solid rgba(22,37,31,.16);background:#fff;color:var(--text-secondary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.r3b-remove:disabled{opacity:.5;cursor:not-allowed}
+
+.r3b-consent{margin-top:12px;padding:10px 12px;border-radius:12px;background:var(--status-info-bg);border:1px solid var(--status-info-border)}
+.r3b-consent h3{display:flex;align-items:center;gap:6px;margin:0 0 4px;font-size:15px;color:var(--status-info)}
+.r3b-consent p{margin:0 0 10px !important;font-size:14px;line-height:1.5;color:var(--text-secondary)}
+
+/* ===== Period question ===== */
+.r3b-period-day{margin-top:8px}
+.r3b-period-day label{display:block;font-size:14px;font-weight:700;margin-bottom:4px}
+.r3b-period-day-row{display:flex;flex-wrap:wrap;gap:8px}
+
+/* ===== Summary ===== */
+.r3b-summary-title{font-weight:800;margin-bottom:6px !important}
+.r3b-summary ul{gap:10px}
+.r3b-fact{flex-direction:column;align-items:stretch !important;padding-bottom:6px;border-bottom:1px solid rgba(22,37,31,.06)}
+.r3b-fact:last-child{border-bottom:0}
+.r3b-fact-main{display:flex;flex-wrap:wrap;justify-content:space-between;gap:2px 10px}
+.r3b-fact-label{font-weight:600}
+.r3b-fact-value{font-weight:800;font-variant-numeric:tabular-nums}
+.r3b-tag{align-self:flex-start;display:inline-flex;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid transparent}
+.r3b-tag-document_reading,.r3b-tag-documents_agree{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning)}
+.r3b-tag-user_confirmed,.r3b-tag-user_corrected{background:var(--status-info-bg);border-color:var(--status-info-border);color:var(--status-info)}
+.r3b-tag-conflict{background:var(--status-error-bg);border-color:var(--status-error-border);color:var(--status-error)}
+.r3b-tag-unknown{background:#eef1ee;border-color:#d6ddd8;color:var(--text-secondary)}
+.r3b-candidates{margin:6px 0 0;padding-left:18px !important;list-style:disc !important;display:block !important;font-size:14px}
+.r3b-candidates li{display:list-item !important}
+.r3b-other-period{margin:4px 0 0 !important;font-size:13px;color:var(--text-muted)}
+.r3b-source{padding:4px 0;border-top:1px dashed rgba(22,37,31,.1)}
+.r3b-source:first-of-type{border-top:0}
+.r3b-source p{margin:0 !important;font-size:13px !important;overflow-wrap:anywhere}
+
+/* ===== Panel source tags ===== */
+.r3b-source-user,.r3b-source-correction,.r3b-source-user_confirmed,.r3b-source-user_corrected{background:var(--status-info-bg);border-color:var(--status-info-border);color:var(--status-info)}
+.r3b-source-document_reading,.r3b-source-documents_agree,.r3b-source-loonto_assumption{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning)}
+.r3b-source-conflict{background:var(--status-error-bg);border-color:var(--status-error-border);color:var(--status-error)}
+.r3b-source-unknown{background:#eef1ee;border-color:#d6ddd8;color:var(--text-secondary)}
+
+@media (min-width:560px){
+  .r3b-offer-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .r3b-add-button,.r3b-continue,.r3b-read{font-size:16px}
+}

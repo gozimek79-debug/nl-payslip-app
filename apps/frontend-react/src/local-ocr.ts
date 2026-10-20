@@ -1,7 +1,6 @@
-import { createWorker } from 'tesseract.js';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import type { TextItem } from 'pdfjs-dist/types/src/display/api';
-import { TEXT_LAYER_STEP, TARGET_MAX_BYTES, selectRenderSteps, type RenderStep } from './render-step-policy.ts';
+import { TARGET_MAX_BYTES, selectRenderSteps, type RenderStep } from './render-step-policy.ts';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -20,47 +19,6 @@ export interface DocumentTextItem {
   text: string;
   x: number;
   y: number;
-}
-
-export type OcrFields = {
-  hours: number;
-  hourlyRate: number;
-  grossBase: number;
-  additions: number;
-  deductions: number;
-  netPaid: number;
-};
-
-export type OcrResult = { fields: OcrFields; confidence: number; rawText: string; previewImageBase64: string };
-
-function parseDutchNumber(value?: string): number {
-  if (!value) return 0;
-  const compact = value.replace(/\s/g, '').replace(/€/g, '');
-  const normalized = compact.includes(',')
-    ? compact.replace(/\./g, '').replace(',', '.')
-    : compact;
-  const number = Number.parseFloat(normalized.replace(/[^0-9.-]/g, ''));
-  return Number.isFinite(number) ? number : 0;
-}
-
-function findAmount(text: string, labels: string[]): number {
-  for (const label of labels) {
-    const expression = new RegExp(`${label}[^\\d-]{0,24}(-?\\d[\\d., ]*)`, 'i');
-    const match = text.match(expression);
-    if (match?.[1]) return parseDutchNumber(match[1]);
-  }
-  return 0;
-}
-
-function mapTextToFields(text: string): OcrFields {
-  return {
-    hours: findAmount(text, ['gewerkte uren', 'normale uren', 'uren totaal', 'uren']),
-    hourlyRate: findAmount(text, ['uurloon', 'uurtarief', 'basisloon per uur']),
-    grossBase: findAmount(text, ['brutoloon', 'bruto loon', 'totaal bruto']),
-    additions: findAmount(text, ['netto vergoedingen', 'netto toevoegingen', 'reiskosten', 'etk']),
-    deductions: findAmount(text, ['netto inhoudingen', 'inhoudingen totaal', 'totaal inhouding']),
-    netPaid: findAmount(text, ['te betalen', 'nettoloon', 'netto loon', 'uit te betalen']),
-  };
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -125,19 +83,6 @@ async function renderPageAtStep(page: Awaited<ReturnType<Awaited<ReturnType<type
   });
 }
 
-/** Legacy path (the unused `recognizePayslip`/tesseract flow) - kept at the same fixed, moderate
- * setting it always used; not part of the adaptive budget below, and not this stage's scope. */
-async function pdfPages(file: File): Promise<Blob[]> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const pdf = await getDocument({ data: bytes }).promise;
-  const pages: Blob[] = [];
-  const pageCount = Math.min(pdf.numPages, 3);
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    pages.push(await renderPageAtStep(page, TEXT_LAYER_STEP));
-  }
-  return pages;
-}
 
 /**
  * Stage 2i (§2i.0d): renders all pages (max 3) of a PDF, adapting the render settings to whether a
@@ -194,9 +139,9 @@ export async function renderPageImages(file: File, hasTextLayer: boolean, pageNu
 }
 
 /**
- * Stage 2g (§2g.1): reads the PDF's own embedded text layer via `page.getTextContent()`, on the same
- * pages `pdfPages` above rasterises for the vision call - never a different page range, so the two
- * never disagree about which pages exist. A plain image upload (JPG/PNG) has no text layer at all and
+ * Stage 2g (§2g.1): reads the PDF's own embedded text layer via `page.getTextContent()`, on the first
+ * three pages - the same range the Tier C vision call renders, so the two never disagree about which
+ * pages exist. A plain image upload (JPG/PNG) has no text layer at all and
  * always returns `[]`. `2g.4`'s "amount-like items the model did not use" and `2g.3`'s verbatim guard
  * both depend on this being complete, not a best-effort sample - every text item on the read pages is
  * included, positions rounded to whole points (no sub-pixel precision needed for a consistency check).
@@ -221,33 +166,6 @@ export async function extractTextItems(file: File): Promise<DocumentTextItem[]> 
     }
   }
   return items.length >= MIN_TEXT_ITEMS_FOR_USABLE_LAYER ? items : [];
-}
-
-export async function recognizePayslip(file: File, onProgress: (progress: number) => void): Promise<OcrResult> {
-  const images = file.type === 'application/pdf' ? await pdfPages(file) : [file];
-  const worker = await createWorker(['nld', 'eng'], undefined, {
-    logger: (message) => {
-      if (message.status === 'recognizing text') onProgress(Math.round(message.progress * 100));
-    },
-  });
-
-  try {
-    const texts: string[] = [];
-    const confidences: number[] = [];
-    for (const image of images) {
-      const result = await worker.recognize(image);
-      texts.push(result.data.text);
-      confidences.push(result.data.confidence);
-    }
-    const rawText = texts.join('\n');
-    const confidence = confidences.length
-      ? Math.round(confidences.reduce((sum, value) => sum + value, 0) / confidences.length)
-      : 0;
-    const previewImageBase64 = await blobToBase64(images[0]!);
-    return { fields: mapTextToFields(rawText), confidence, rawText, previewImageBase64 };
-  } finally {
-    await worker.terminate();
-  }
 }
 
 /**

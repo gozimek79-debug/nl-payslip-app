@@ -179,12 +179,13 @@ test('R3-B.2 screen: document answers are labelled readings, the trusted rate sh
   const text = textOf(markup);
   assert.ok(text.includes('Wydrukowane na dokumencie'), 'the summary lists the printed facts');
   assert.ok(text.includes('Na dokumencie widzę:'));
-  assert.ok(text.includes('Stawka godzinowa: €15,55/h („Uurloon”) — Pasek wypłaty 1, week 41/2026'));
+  assert.ok(text.includes('Stawka godzinowa: €15,55/h („Uurloon / Loon normaal”) — Pasek wypłaty 1, week 41/2026'));
   assert.ok(text.includes('Przelano na konto: €584,92 („Overgemaakt”) — Pasek wypłaty 1, week 41/2026'));
   assert.ok(text.includes('To odczyt z dokumentu, nie przeliczenie Loonto — wymaga weryfikacji.'));
   assert.ok(text.includes('Różnicy między brutto a netto nie wyliczam w tej wersji'));
   assert.ok(text.includes('Stawkę biorę z Twojego dokumentu: €15,55/h — nie pytam o nią ponownie.'));
-  assert.ok(text.includes('Kwoty wypłaty w tej wersji jeszcze nie wyliczam'));
+  assert.ok(text.includes('Zablokowane jest wyliczenie netto dla tego wariantu (prognoza)'));
+  assert.ok(text.includes('Na pasku (week 41/2026) wydrukowano netto €509,92 — to historyczny odczyt dokumentu, nie prognoza dla tego wariantu.'));
   assert.ok(text.includes('Stawka godzinowa brutto: uwzględniam odczyt z Twojego dokumentu'), 'the server-trusted value is announced in words');
   assert.ok(!text.includes('Część odpowiedzi pomijam'), 'no misleading generic note');
   assert.ok(!text.includes('Ile wynosi Twoja stawka'), 'the rate is never asked');
@@ -204,7 +205,7 @@ test('R3-B.2 screen (EN): the same answers in English', async () => {
   const markup = render(store);
   const text = textOf(markup);
   assert.ok(text.includes('On the document I can see:'));
-  assert.ok(text.includes('Hourly rate: €15.55/h („Uurloon”) — Payslip 1, week 41/2026'));
+  assert.ok(text.includes('Hourly rate: €15.55/h („Uurloon / Loon normaal”) — Payslip 1, week 41/2026'));
   assert.ok(text.includes('Regular hours paid: 36 h („Loon normaal”)'));
   assert.ok(text.includes('This is what the document prints, not a Loonto calculation — it needs verification.'));
   assertHonest(withoutReadings(markup));

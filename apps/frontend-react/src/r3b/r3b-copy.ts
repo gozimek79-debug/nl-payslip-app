@@ -135,7 +135,7 @@ export interface R3BCopy {
     saved: (label: string, value: string) => string; assumed: (label: string, value: string) => string; unknown: (label: string) => string; deferred: (label: string) => string;
     notes: Record<string, (label: string) => string>; hints: Record<string, string>; notApplied: Record<string, string>;
     failed: Record<TurnFailure, string>; done: string; open: (items: string) => string; noResult: string; unsupported: string; computedHidden: string;
-    calculationGated: string; rateFromDocument: (value: string) => string;
+    calculationGated: string; rateFromDocument: (value: string) => string; historicNet: (value: string, period: string | null) => string;
   };
   /** R3-B.2: an answer from the document's printed facts. */
   answer: {
@@ -304,7 +304,8 @@ const PL: R3BCopy = {
     noResult: 'Wynik jeszcze niedostępny — szczegóły w panelu „Scenariusz”.',
     unsupported: 'Tego wariantu ta wersja jeszcze nie liczy.',
     computedHidden: 'Mam komplet danych do wariantu, ale w tej wersji nie pokazuję kwoty.',
-    calculationGated: 'Kwoty wypłaty w tej wersji jeszcze nie wyliczam — zbieram dane do wariantu, a wynik pokażę dopiero po weryfikacji obliczeń.',
+    calculationGated: 'Zablokowane jest wyliczenie netto dla tego wariantu (prognoza): obliczenia płacowe Loonto nie przeszły jeszcze weryfikacji bezpieczeństwa, więc nie pokazuję żadnej kwoty — zbieram tylko dane do wariantu.',
+    historicNet: (value, period) => `Na pasku${period ? ` (${period})` : ''} wydrukowano netto ${value} — to historyczny odczyt dokumentu, nie prognoza dla tego wariantu.`,
     rateFromDocument: (value) => `Stawkę biorę z Twojego dokumentu: ${value} — nie pytam o nią ponownie.`,
   },
   answer: {
@@ -526,7 +527,8 @@ const EN: R3BCopy = {
     noResult: 'Result not available yet — details in the “Scenario” panel.',
     unsupported: 'This version does not calculate this variant yet.',
     computedHidden: 'I have all data for the variant, but this version does not show an amount.',
-    calculationGated: 'This version does not calculate the pay amount yet — I collect the data for the variant, and the result will appear only after the calculation is verified.',
+    calculationGated: 'The net calculation for this variant (a forecast) is blocked: Loonto\'s payroll calculations have not passed safety verification yet, so I show no amount — I only collect the data for the variant.',
+    historicNet: (value, period) => `The payslip${period ? ` (${period})` : ''} prints a net of ${value} — a historical document reading, not a forecast for this variant.`,
     rateFromDocument: (value) => `I take the rate from your document: ${value} — I will not ask for it again.`,
   },
   answer: {

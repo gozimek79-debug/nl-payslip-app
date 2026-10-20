@@ -102,18 +102,20 @@ function rateFacts(field: ProfileField | undefined, documents: ProfileDocumentIn
   if (!field) return [];
   const all = field.candidates.filter((c) => typeof c.value === 'number' && c.source.sourceType === 'document');
   const distinct = new Set(all.map((c) => Math.round((c.value as number) * 100)));
-  // One document printing the same rate twice (header "Uurloon" + the regular wage line) is ONE reading of it.
-  const seen = new Set<string>();
-  const candidates = all.filter((c) => {
+  // One document printing the same rate twice (header "Uurloon" + the regular wage line) is ONE reading of it - with
+  // both printed places named ("Uurloon / Loon normaal").
+  const readings = new Map<string, { candidate: (typeof all)[number]; labels: string[] }>();
+  for (const c of all) {
     const k = `${c.source.documentIndex}:${Math.round((c.value as number) * 100)}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  return candidates.map((c) => {
+    const printed = label(c.source.printedLabel);
+    const reading = readings.get(k);
+    if (!reading) readings.set(k, { candidate: c, labels: printed ? [printed] : [] });
+    else if (printed && !reading.labels.includes(printed)) reading.labels.push(printed);
+  }
+  return [...readings.values()].map(({ candidate: c, labels }) => {
     const doc = documents.find((d) => d.index === c.source.documentIndex);
     return {
-      topic: 'hourly_rate' as const, key: 'hourly_rate', label: label(c.source.printedLabel), value: c.value as number, unit: 'eur_per_hour' as const,
+      topic: 'hourly_rate' as const, key: 'hourly_rate', label: labels.length > 0 ? labels.join(' / ') : null, value: c.value as number, unit: 'eur_per_hour' as const,
       status: distinct.size > 1 ? ('conflict' as const) : ('document_reading' as const),
       documentIndex: c.source.documentIndex ?? -1, documentId: c.source.documentId ?? null,
       role: (doc?.role ?? (c.source.role === 'payslip' || c.source.role === 'contract_annex' ? c.source.role : 'contract_base')) as KnowledgeFact['role'],
@@ -149,7 +151,9 @@ export function answerFacts(knowledge: DocumentKnowledge | null, topics: readonl
   // printed wage lines are then the only printed starting point. Readings side by side, never a computed difference.
   const grossTotalPrinted = knowledge.facts.some((f) => f.key === 'gross_total');
   const wageLines = asked.has('gross') || (asked.has('deductions') && !grossTotalPrinted);
-  return knowledge.facts.filter((f) => wanted.has(f.topic) && (f.topic !== 'gross' || wageLines || f.key === 'gross_total'));
+  const facts = knowledge.facts.filter((f) => wanted.has(f.topic) && (f.topic !== 'gross' || wageLines || f.key === 'gross_total'));
+  // One question, its answer first ("Ile przelano?" -> the payout, then what it consists of).
+  return asked.size === 1 ? [...facts.filter((f) => asked.has(f.topic)), ...facts.filter((f) => !asked.has(f.topic))] : facts;
 }
 
 /** The model's view: the minimum to understand a question about the document - typed keys and values only. No ids,

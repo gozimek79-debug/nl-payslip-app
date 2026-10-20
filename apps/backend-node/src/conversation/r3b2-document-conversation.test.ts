@@ -146,6 +146,7 @@ test('R3-B.2: Document Knowledge lists the printed facts (one rate reading per d
   const { knowledge } = documentContext();
   const byKey = (key: string) => knowledge.facts.filter((f) => f.key === key).map((f) => f.value);
   assert.deepEqual(byKey('hourly_rate'), [15.55], 'header and line are ONE reading of one document');
+  assert.deepEqual(knowledge.facts.filter((f) => f.key === 'hourly_rate').map((f) => f.label), ['Uurloon / Loon normaal'], 'both printed places are named');
   assert.deepEqual(byKey('regular_hours'), [36], 'ADV hours are not paid hours');
   assert.deepEqual(byKey('surcharge_percent'), [1.54]);
   assert.deepEqual(byKey('wage_line_amount'), [559.8, 8.62]);
@@ -181,7 +182,7 @@ test('R3-B.2: "Jaka jest moja stawka?" - answered from the document (15.55), no 
 
 test('R3-B.2: hours, payout, "why is net lower" and "what is on it" are answered from printed facts only', async () => {
   assert.deepEqual(items((await ask(Q.hours)).r), [['regular_hours', 36]]);
-  assert.deepEqual(items((await ask(Q.payout)).r), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.deepEqual(items((await ask(Q.payout)).r), [['payout', 584.92], ['net', 509.92], ['reimbursement', 75]]);
   const why = (await ask(Q.whyNet)).r;
   assert.deepEqual(why.documentAnswer?.topics, ['deductions', 'net']);
   assert.deepEqual(items(why), [['wage_line_amount', 559.8], ['surcharge_percent', 1.54], ['wage_line_amount', 8.62], ['net', 509.92]], 'printed readings side by side - no computed difference, no invented deduction');
@@ -193,7 +194,7 @@ test('R3-B.2: hours, payout, "why is net lower" and "what is on it" are answered
 test('R3-B.2: English questions work the same way', async () => {
   assert.deepEqual(items((await ask('What is my hourly rate?', 'en')).r), [['hourly_rate', 15.55]]);
   assert.deepEqual(items((await ask('How many hours was I paid?', 'en')).r), [['regular_hours', 36]]);
-  assert.deepEqual(items((await ask('How much was actually transferred?', 'en')).r), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.deepEqual(items((await ask('How much was actually transferred?', 'en')).r), [['payout', 584.92], ['net', 509.92], ['reimbursement', 75]]);
 });
 
 test('R3-B.2: without a document context a document question says so (available: false) - nothing invented, nothing written', async () => {
@@ -276,7 +277,7 @@ test('R3-B.2: a model can classify a document question, but cannot write anythin
   const asks = scriptedAgent([ok({ intent: 'document_question', patch: { version: 1, ops: [] }, documentTopics: ['payout'] })]);
   const r = await runConversationTurn({ message: 'kasa która wpłynęła', locale: 'pl', conversation: { deferredFields: [] } }, { agent: asks, rates: RATES_2026, trusted, documentKnowledge: knowledge });
   assert.deepEqual([r.intent, r.answerSource], ['document_question', 'document_facts']);
-  assert.deepEqual(items(r), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.deepEqual(items(r), [['payout', 584.92], ['net', 509.92], ['reimbursement', 75]]);
 
   const writes = scriptedAgent([ok({ intent: 'document_question', patch: { version: 1, ops: [{ op: 'set', field: 'work.regularWeekdayHours', value: 36 }] }, documentTopics: ['hours'] })]);
   const w = await runConversationTurn({ message: 'kasa która wpłynęła', locale: 'pl', conversation: { deferredFields: [] } }, { agent: writes, rates: RATES_2026, trusted, documentKnowledge: knowledge });

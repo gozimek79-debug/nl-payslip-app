@@ -516,7 +516,7 @@ test('R3-B.2 contract: by reference, the worker\'s questions are answered from t
   assert.ok(records.every((r) => r.request.documentContextRef === R3B2_CONTEXT_REF));
   assert.deepEqual(records.map((r) => r.response.answerSource), ['document_facts', 'document_facts', 'document_facts', 'none', 'user_input']);
   assert.deepEqual(records[0]?.response.documentAnswer?.items.map((i) => [i.key, i.value]), [['hourly_rate', 15.55]]);
-  assert.deepEqual(records[1]?.response.documentAnswer?.items.map((i) => [i.key, i.value]), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.deepEqual(records[1]?.response.documentAnswer?.items.map((i) => [i.key, i.value]), [['payout', 584.92], ['net', 509.92], ['reimbursement', 75]]);
   assert.ok(!asked(records).includes('pay.hourlyRate'), 'the document rate is never asked');
   assert.equal(records[3]?.response.nextQuestion?.kind, 'clarify_hours_composition', '"Ile dostanę za 40 godzin?" clarifies the hours - it does not re-ask the rate');
   const final = records[records.length - 1] as TurnRecord;

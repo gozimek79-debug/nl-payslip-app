@@ -105,3 +105,10 @@ test('R3-B.2 reader adapter: the server-held batch references are kept - only wh
   const failedBatch = await readDocumentFacts(file(), 'payslip', deps(scanSource(4), (call) => (call.body.pages.includes(4) ? { status: 503, json: { error_code: 'vision_unavailable' } } : { status: 200, json: { batch: { kind: 'payslip', pages: call.body.pages }, batchRef: 'ref-1' } })));
   assert.deepEqual(failedBatch.status === 'done' && failedBatch.batchRefs, ['ref-1'], 'references of the batches that were read');
 });
+
+test('R3-B.2: Gemini is the only AI document reader - the unused in-browser Tesseract OCR path is removed, not merely unused', () => {
+  const ocr = readFileSync(path.join(here, 'local-ocr.ts'), 'utf-8');
+  assert.ok(!/tesseract|recognizePayslip|createWorker/i.test(ocr), 'no second OCR engine in the browser reader');
+  const adapter = readFileSync(path.join(here, 'document-facts-reader.ts'), 'utf-8');
+  assert.match(adapter, /Pick<typeof import\('\.\/local-ocr\.ts'\), 'readDocumentSource' \| 'renderPageImages' \| 'photoWithinBudget'>/, 'the reader prepares input only (text layer, page images, photo)');
+});

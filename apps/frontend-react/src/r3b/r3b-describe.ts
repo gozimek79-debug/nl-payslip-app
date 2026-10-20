@@ -123,7 +123,7 @@ export function documentAnswerLines(answer: DocumentAnswerView, docs: readonly R
 const HIDDEN_HINTS = new Set(['needs_information', 'cannot_calculate_without_inputs', 'result_ready', 'document_answer']);
 
 /** What one R2 turn did, what it asks next, and - when nothing is left to ask - what stays open. */
-export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BCopy, lang: R3BLang): { lines: string[]; question: string | null; closing: string[] } {
+export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BCopy, lang: R3BLang): { lines: string[]; question: string | null; closing: string[]; historic: string | null } {
   const r: TurnResultView = block.result;
   const lines: string[] = [];
   const pendingField = r.conversation?.pendingQuestion?.field ?? null;
@@ -152,6 +152,9 @@ export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BC
     if (rate?.state === 'known' && rate.source === 'document' && typeof rate.value === 'number') lines.push(copy.turn.rateFromDocument(formatValue('eur_per_hour', rate.value, lang)));
     lines.push(copy.turn.calculationGated);
   }
+  // The document's own net is a historical reading - shown apart from the (blocked) forecast, never as its result.
+  const net = block.context.printedNet;
+  const historic = r.intent === 'calculation_request' && r.status !== 'rejected' && net ? copy.turn.historicNet(formatValue('eur', net.value, lang), net.periodLabel) : null;
   const asked = r.nextQuestion ? questionText(r.nextQuestion, block.context, copy, lang) : null;
   const question = asked && r.documentAnswer ? `${copy.answer.backTo} ${asked}` : asked;
   const closing: string[] = [];
@@ -166,7 +169,7 @@ export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BC
     }
     closing.push(copy.turn.noResult);
   }
-  return { lines, question, closing };
+  return { lines, question, closing, historic };
 }
 
 function openAfterTurn(r: TurnResultView, ctx: TurnContext, copy: R3BCopy, lang: R3BLang): string[] {

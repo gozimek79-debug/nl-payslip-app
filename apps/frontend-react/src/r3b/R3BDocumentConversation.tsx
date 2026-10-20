@@ -187,6 +187,7 @@ function BlockView({ block, state, store, copy, latest }: { block: Block; state:
             </div>
           )}
           {d.lines.map((line, i) => <p key={`l${i}`}>{line}</p>)}
+          {d.historic && <div className="r3b-doc-answer"><p className="r3b-doc-answer-note">{d.historic}</p></div>}
           {d.question && <p className="r3b-question">{d.question}</p>}
           {d.closing.map((line, i) => <p key={`c${i}`} className={i === d.closing.length - 1 ? 'r3b-no-result' : undefined}>{line}</p>)}
         </>

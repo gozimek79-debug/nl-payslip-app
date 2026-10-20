@@ -34,6 +34,8 @@ export interface TurnContext {
   documentFields: string[];
   /** Scenario fields the documents disagree on. */
   conflictFields: string[];
+  /** R3-B.2: the net printed on the read payslip (a historical document reading), if the server-held context has one. */
+  printedNet?: { value: number; periodLabel: string | null } | null;
 }
 
 export type ChoiceRef =
@@ -218,6 +220,12 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
   const say = (from: ThreadMessage['from'], block: Block) => set({ ...state, messages: [...state.messages, { id: state.nextMessageId, from, block }], nextMessageId: state.nextMessageId + 1 });
   const updateDoc = (id: string, p: Partial<R3BDocument>) => patch({ docs: state.docs.map((d) => (d.id === id ? { ...d, ...p } : d)) });
 
+  function printedNet(): TurnContext['printedNet'] {
+    const nets = (state.documentContext?.knowledge.facts ?? []).filter((f) => f.key === 'net' && typeof f.value === 'number');
+    // Only one unambiguous printed net is quoted - several payslips print several, none is "the" net.
+    return nets.length === 1 ? { value: nets[0]?.value as number, periodLabel: nets[0]?.periodLabel ?? null } : null;
+  }
+
   function context(): TurnContext {
     const k = state.knowledge;
     const rate = factFor(k, 'pay.hourlyRate');
@@ -229,6 +237,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
       contractHours: hours && typeof hours.value === 'number' && hours.status !== 'conflict' ? hours.value : null,
       documentFields: k?.deferrableFields ?? [],
       conflictFields: (k?.facts ?? []).filter((f) => f.status === 'conflict' && f.scenarioField).map((f) => f.scenarioField as string),
+      printedNet: printedNet(),
     };
   }
 

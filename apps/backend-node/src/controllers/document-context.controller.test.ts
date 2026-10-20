@@ -203,7 +203,7 @@ test('R3-B.2 HTTP: the turn answers "Jaka jest moja stawka?" from the server-hel
   const next = await post('/api/scenario/turn', { scenario: r.json.scenario, message: 'Ile faktycznie przelano?', locale: 'pl', conversation: { deferredFields: [] }, documentContextRef: contextRef }, cookie);
   assert.equal(next.status, 200);
   assert.notEqual(next.json.status, 'rejected');
-  assert.deepEqual(next.json.documentAnswer.items.map((i: Json) => [i.key, i.value]), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.deepEqual(next.json.documentAnswer.items.map((i: Json) => [i.key, i.value]), [['payout', 584.92], ['net', 509.92], ['reimbursement', 75]]);
 
   // Replaying that scenario WITHOUT the reference: its document source is now self-declared -> rejected (RT-001).
   const replay = await post('/api/scenario/turn', { scenario: r.json.scenario, message: 'Jaka jest moja stawka?', locale: 'pl' }, cookie);

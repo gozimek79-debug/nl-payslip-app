@@ -57,10 +57,10 @@ test('R3-B.2: "Jaka jest moja stawka?", "Ile faktycznie przelano?", "Dlaczego ne
 
   const blocks = turnBlocks(store);
   const answer = (i: number) => documentAnswerLines(blocks[i]?.result.documentAnswer as NonNullable<TurnResultView['documentAnswer']>, store.getState().docs, PL, 'pl');
-  assert.deepEqual(answer(0).items, ['Stawka godzinowa: €15,55/h („Uurloon”) — Pasek wypłaty 1, week 41/2026']);
+  assert.deepEqual(answer(0).items, ['Stawka godzinowa: €15,55/h („Uurloon / Loon normaal”) — Pasek wypłaty 1, week 41/2026']);
   assert.deepEqual(answer(1).items, [
-    'Netto: €509,92 („Totaal netto”) — Pasek wypłaty 1, week 41/2026',
     'Przelano na konto: €584,92 („Overgemaakt”) — Pasek wypłaty 1, week 41/2026',
+    'Netto: €509,92 („Totaal netto”) — Pasek wypłaty 1, week 41/2026',
     'Zwrot kosztów: €75,00 („Onb. Reiskosten”) — Pasek wypłaty 1, week 41/2026',
   ]);
   assert.ok(answer(1).notes.includes(PL.answer.note), 'labelled as a reading, not a Loonto calculation');
@@ -72,7 +72,8 @@ test('R3-B.2: "Jaka jest moja stawka?", "Ile faktycznie przelano?", "Dlaczego ne
   assert.ok(first.question?.startsWith(PL.answer.backTo), 'after the answer the conversation simply continues');
   const calc = describeTurn(blocks[3] as TurnBlock, PL, 'pl');
   assert.ok(calc.lines.includes(PL.turn.rateFromDocument('€15,55/h')), '"Ile dostanę za 40 godzin?" does not re-ask the rate');
-  assert.ok(calc.lines.includes(PL.turn.calculationGated), 'and explains that the amount stays gated');
+  assert.ok(calc.lines.includes(PL.turn.calculationGated), 'and explains which calculation is blocked and why');
+  assert.equal(calc.historic, PL.turn.historicNet('€509,92', 'week 41/2026'), 'the printed net is a historical reading, not the forecast');
   assert.equal(blocks[3]?.result.nextQuestion?.kind, 'clarify_hours_composition');
 
   const s = store.getState();
@@ -89,7 +90,7 @@ test('R3-B.2: English questions are answered from the document as well', async (
   assert.equal(h.remainingTurns(), 0);
   const blocks = turnBlocks(store);
   const lines = blocks.map((b) => documentAnswerLines(b.result.documentAnswer as NonNullable<TurnResultView['documentAnswer']>, store.getState().docs, EN, 'en').items);
-  assert.deepEqual(lines, [['Hourly rate: €15.55/h („Uurloon”) — Payslip 1, week 41/2026'], ['Regular hours paid: 36 h („Loon normaal”) — Payslip 1, week 41/2026']]);
+  assert.deepEqual(lines, [['Hourly rate: €15.55/h („Uurloon / Loon normaal”) — Payslip 1, week 41/2026'], ['Regular hours paid: 36 h („Loon normaal”) — Payslip 1, week 41/2026']]);
 });
 
 test('R3-B.2: an expired server context fails closed - its document values leave the Scenario, the documents wait for a new read, the message is resent without it', async () => {

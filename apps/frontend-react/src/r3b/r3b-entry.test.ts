@@ -34,7 +34,8 @@ test('R3-B entry: the only network calls are the existing endpoints, through the
   const urls = new Set<string>();
   const code = (file: string) => read(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   for (const file of sources) for (const m of code(file).matchAll(/['`](\/api\/[^'`]+)['`]/g)) urls.add(m[1] as string);
-  assert.deepEqual([...urls], ['/api/scenario/turn'], 'R2 turn directly; profile resolve via pro-profile-prefill.ts, reader routes via document-facts-reader.ts');
+  // P0: plus the existing read-only `GET /api/ai/status` - whether THIS host has a configured reader, asked before any upload.
+  assert.deepEqual([...urls].sort(), ['/api/ai/status', '/api/scenario/turn'], 'R2 turn directly; profile resolve via pro-profile-prefill.ts, reader routes via document-facts-reader.ts');
   const fetchers = sources.filter((f) => /\bfetch\(/.test(read(f)));
   assert.deepEqual(fetchers.sort(), ['R3BDocumentConversation.tsx'], 'the browser fetch is bound once, in the screen\'s dependencies');
   for (const file of sources) {

@@ -28,6 +28,12 @@ export interface DocumentCoverage {
   reason: 'document_too_long' | 'batch_failed' | null;
 }
 
+/**
+ * Failure codes: the reader route's own `error_code` (`vision_unavailable` - no reader configured on this host,
+ * `reader_timeout`, `reader_provider_error`, `extraction_failed`, `rate_limit_exceeded`, ...) or, P0, what the adapter
+ * itself observed: `network_error` (no answer at all), `reader_timeout` (the platform's 504), `request_too_large`
+ * (413), `unexpected_response` (any other non-JSON answer), `page_render_failed` (the page could not be prepared here).
+ */
 export type DocumentReadOutcome =
   /** R3-B.2: `batchRefs` - the reader route's server-held, session-bound references, one per batch; present only when
    * EVERY batch came with one (otherwise the document can only be echoed, which never becomes trusted context). */
@@ -60,16 +66,32 @@ export async function readDocumentFacts(file: File, kind: FactReaderKind, deps: 
         : source.isPdf ? (await deps.renderImages(file, hasTextLayer, batch.imagePages)).images
           : [(await deps.photo(file)).image];
       const textLines = source.lines.filter((l) => batch.pages.includes(l.page));
-      const res = await deps.fetchImpl(`/api/pro/${kind}-facts`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pages: batch.pages, totalPages: source.pageCount, images, imagePages: batch.imagePages, textLines }),
-      });
-      const data = await res.json() as { batch?: unknown; batchRef?: unknown; error_code?: string };
-      if (!res.ok || !data.batch) { failedPages.push(...batch.pages); lastError = data.error_code; continue; }
+      let res: Response;
+      try {
+        res = await deps.fetchImpl(`/api/pro/${kind}-facts`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pages: batch.pages, totalPages: source.pageCount, images, imagePages: batch.imagePages, textLines }),
+        });
+      } catch {
+        // P0: the request never got an answer (offline, connection dropped) - not an unreadable document.
+        failedPages.push(...batch.pages);
+        lastError = 'network_error';
+        continue;
+      }
+      let data: { batch?: unknown; batchRef?: unknown; error_code?: string };
+      try {
+        data = await res.json() as typeof data;
+      } catch {
+        // P0: a non-JSON answer is the platform's, not the reader's - say which (a 504 is the function time limit).
+        data = { error_code: res.status === 504 ? 'reader_timeout' : res.status === 413 ? 'request_too_large' : 'unexpected_response' };
+      }
+      if (!res.ok || !data.batch) { failedPages.push(...batch.pages); lastError = data.error_code ?? 'unexpected_response'; continue; }
       factBatches.push(data.batch);
       if (typeof data.batchRef === 'string') batchRefs.push(data.batchRef);
     } catch {
+      // The page could not be prepared in this browser (render / photo budget) - nothing was sent for it.
       failedPages.push(...batch.pages);
+      lastError = 'page_render_failed';
     }
   }
   if (factBatches.length === 0) return { status: 'error', errorCode: lastError };

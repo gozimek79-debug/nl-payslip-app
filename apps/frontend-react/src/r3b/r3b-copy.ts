@@ -115,6 +115,7 @@ export interface R3BCopy {
     listLabel: string; remove: (name: string) => string; annexDate: string; annexDateMissing: string; size: (bytes: number) => string;
     status: Record<R3BDocStatus, string>; rejected: Record<FileRejection, (name: string) => string>; types: string;
     consentTitle: string; consent: string; read: (n: number) => string; reading: string; unreadFirst: string; nothingToRead: string; contextExpired: string;
+    readerUnavailable: string;
   };
   roles: Record<'payslip' | 'contract_base' | 'contract_annex' | 'user' | 'rules', string>;
   readReport: {
@@ -192,6 +193,7 @@ const PL: R3BCopy = {
     unreadFirst: 'Masz wybrane dokumenty, które nie zostały jeszcze odczytane. Odczytaj je albo usuń — albo wybierz „Kontynuuj bez dokumentów”.',
     nothingToRead: 'Nie ma nic do odczytania.',
     contextExpired: 'Odczyt dokumentów przechowywany na serwerze wygasł (po 2 godzinach). Rozmowę prowadzę dalej bez niego — aby znów odpowiadać z dokumentu, odczytaj go ponownie przyciskiem powyżej.',
+    readerUnavailable: 'Na tym adresie odczyt dokumentów nie działa: czytnik (Gemini) nie jest tu skonfigurowany. To zwykle kopia testowa (Preview), a nie główna wersja. Główna wersja Loonto: nl-payslip-app.vercel.app. Tutaj możesz kontynuować bez dokumentów.',
   },
   roles: { payslip: 'pasek wypłaty', contract_base: 'umowa', contract_annex: 'aneks', user: 'Twoja decyzja', rules: 'przepis' },
   readReport: {
@@ -199,8 +201,14 @@ const PL: R3BCopy = {
     partial: (doc, pages, total, tooLong) => `${doc}: odczytany częściowo — nie odczytano stron ${pages} z ${total}${tooLong ? ' (dokument jest za długi)' : ' (błąd odczytu)'}. Korzystam z tego, co udało się odczytać.`,
     failed: (doc, reason) => `${doc}: nie udało się odczytać — ${reason}. Niczego z niego nie przyjmuję.`,
     errors: {
-      vision_unavailable: 'czytnik dokumentów (Gemini) jest teraz niedostępny',
-      extraction_failed: 'czytnik nie zwrócił danych',
+      vision_unavailable: 'na tym adresie czytnik dokumentów (Gemini) nie jest skonfigurowany — to zwykle kopia testowa (Preview); główna wersja Loonto: nl-payslip-app.vercel.app',
+      reader_timeout: 'czytnik (Gemini) nie zdążył odczytać dokumentu w limicie czasu — spróbuj ponownie za chwilę',
+      reader_provider_error: 'usługa Gemini zwróciła błąd (np. chwilowe przeciążenie lub limit) — spróbuj ponownie za kilka minut',
+      extraction_failed: 'czytnik zwrócił odpowiedź, której nie da się bezpiecznie odczytać',
+      network_error: 'brak połączenia z serwerem Loonto — sprawdź internet i spróbuj ponownie',
+      unexpected_response: 'serwer zwrócił nieoczekiwaną odpowiedź — spróbuj ponownie',
+      request_too_large: 'strony dokumentu są za duże do wysłania — spróbuj mniejszego pliku lub zdjęcia',
+      page_render_failed: 'nie udało się przygotować stron pliku w tej przeglądarce',
       invalid_input: 'tych danych nie da się wysłać do odczytu',
       text_layer_too_large: 'tekst dokumentu jest za duży',
       rate_limit_exceeded: 'zbyt wiele odczytów w krótkim czasie — spróbuj za kilka minut',
@@ -415,6 +423,7 @@ const EN: R3BCopy = {
     unreadFirst: 'You have selected documents that have not been read yet. Read or remove them — or choose “Continue without documents”.',
     nothingToRead: 'There is nothing to read.',
     contextExpired: 'The document reading kept on the server has expired (after 2 hours). I continue without it — to answer from the document again, read it again with the button above.',
+    readerUnavailable: 'Document reading does not work at this address: the reader (Gemini) is not configured here. This is usually a test copy (Preview), not the main version. Main Loonto version: nl-payslip-app.vercel.app. Here you can continue without documents.',
   },
   roles: { payslip: 'payslip', contract_base: 'contract', contract_annex: 'annex', user: 'your decision', rules: 'rule' },
   readReport: {
@@ -422,8 +431,14 @@ const EN: R3BCopy = {
     partial: (doc, pages, total, tooLong) => `${doc}: partly read — pages ${pages} of ${total} were not read${tooLong ? ' (the document is too long)' : ' (reading error)'}. I use what could be read.`,
     failed: (doc, reason) => `${doc}: could not be read — ${reason}. Nothing from it is used.`,
     errors: {
-      vision_unavailable: 'the document reader (Gemini) is unavailable right now',
-      extraction_failed: 'the reader returned no data',
+      vision_unavailable: 'the document reader (Gemini) is not configured at this address — usually a test copy (Preview); the main Loonto version: nl-payslip-app.vercel.app',
+      reader_timeout: 'the reader (Gemini) did not finish within the time limit — please try again shortly',
+      reader_provider_error: 'the Gemini service returned an error (e.g. temporary overload or quota) — try again in a few minutes',
+      extraction_failed: 'the reader returned an answer that cannot be read safely',
+      network_error: 'no connection to the Loonto server — check your internet connection and try again',
+      unexpected_response: 'the server returned an unexpected answer — please try again',
+      request_too_large: 'the document pages are too large to send — try a smaller file or photo',
+      page_render_failed: 'the file pages could not be prepared in this browser',
       invalid_input: 'this data cannot be sent for reading',
       text_layer_too_large: 'the document text is too large',
       rate_limit_exceeded: 'too many reads in a short time — try again in a few minutes',

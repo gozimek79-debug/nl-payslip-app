@@ -72,10 +72,24 @@ test('reader adapter: a scan is read three pages per call; a failed batch is rep
 test('reader adapter: nothing read is an error with the route\'s own code - never a "done" document', async () => {
   const unavailable = await readDocumentFacts(file(), 'payslip', deps(scanSource(1), () => ({ status: 503, json: { error_code: 'vision_unavailable' } })));
   assert.deepEqual(unavailable, { status: 'error', errorCode: 'vision_unavailable' });
+  // P0: a failure the adapter itself observed is named instead of being left undefined ("unreadable document").
   const network = await readDocumentFacts(file(), 'payslip', deps(scanSource(1), () => 'throw'));
-  assert.deepEqual(network, { status: 'error', errorCode: undefined });
+  assert.deepEqual(network, { status: 'error', errorCode: 'network_error' });
   const html = await readDocumentFacts(file(), 'payslip', deps(scanSource(1), () => 'bad_json'));
-  assert.deepEqual(html, { status: 'error', errorCode: undefined }, 'a non-JSON error page (e.g. a 413) is a failure');
+  assert.deepEqual(html, { status: 'error', errorCode: 'unexpected_response' }, 'a non-JSON error page (502) is a failure');
+});
+
+test('P0 reader adapter: the platform non-JSON 504 is a reader timeout, a provider error keeps its own code, a render failure is named', async () => {
+  const nonJson = (status: number) => ({ ok: false, status, json: async () => { throw new SyntaxError('not json'); } }) as unknown as Response;
+  const withResponse = (respond: () => Response): DocumentReaderDeps => ({ ...deps(scanSource(1), okBatch), fetchImpl: (async () => respond()) as unknown as typeof fetch });
+  assert.deepEqual(await readDocumentFacts(file(), 'payslip', withResponse(() => nonJson(504))), { status: 'error', errorCode: 'reader_timeout' });
+  assert.deepEqual(await readDocumentFacts(file(), 'payslip', withResponse(() => nonJson(413))), { status: 'error', errorCode: 'request_too_large' });
+  const provider = await readDocumentFacts(file(), 'payslip', deps(scanSource(1), () => ({ status: 502, json: { error_code: 'reader_provider_error', provider_status: 429 } })));
+  assert.deepEqual(provider, { status: 'error', errorCode: 'reader_provider_error' });
+  const timeout = await readDocumentFacts(file(), 'payslip', deps(scanSource(1), () => ({ status: 504, json: { error_code: 'reader_timeout' } })));
+  assert.deepEqual(timeout, { status: 'error', errorCode: 'reader_timeout' });
+  const renderFails: DocumentReaderDeps = { ...deps(scanSource(1), okBatch), renderImages: async () => { throw new Error('canvas'); } };
+  assert.deepEqual(await readDocumentFacts(file(), 'payslip', renderFails), { status: 'error', errorCode: 'page_render_failed' });
 });
 
 test('reader adapter: a photo is one page sent through the photo budget; a document over 30 pages names the pages not read', async () => {

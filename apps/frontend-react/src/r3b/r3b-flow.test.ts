@@ -189,7 +189,7 @@ test('R3-B case 4: a partly read document keeps its valid facts; a failed read i
   assert.ok(!s2.getState().messages.some((m) => m.block.kind === 'summary'));
   const lines = readReportLines((s2.getState().messages.at(-1)?.block as Extract<ThreadMessage['block'], { kind: 'read_report' }>).items, false, s2.getState().docs, PL);
   assert.deepEqual(lines, [
-    'Pasek wypłaty 1: nie udało się odczytać — czytnik dokumentów (Gemini) jest teraz niedostępny. Niczego z niego nie przyjmuję.',
+    'Pasek wypłaty 1: nie udało się odczytać — na tym adresie czytnik dokumentów (Gemini) nie jest skonfigurowany — to zwykle kopia testowa (Preview); główna wersja Loonto: nl-payslip-app.vercel.app. Niczego z niego nie przyjmuję.',
     'Pasek wypłaty 2: nie udało się odczytać — nie udało się otworzyć pliku. Niczego z niego nie przyjmuję.',
     PL.readReport.noneRead,
   ]);

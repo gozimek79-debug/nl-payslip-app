@@ -149,3 +149,70 @@ test('P2: a failing reader yields a structured 502 and nothing of the request re
   }
   assert.ok(logged.every((l) => !l.includes('Testkowalski') && !l.includes('NL00BANK')), `leaked: ${logged.join(' | ')}`);
 });
+
+/** P0: each reader failure has its own explicit, content-free answer - never the platform's non-JSON timeout page. */
+function captureErrors(): { logged: string[]; restore: () => void } {
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = ((...args: unknown[]) => { logged.push(args.map(String).join(' ')); }) as typeof console.error;
+  return { logged, restore: () => { console.error = original; } };
+}
+const READ = { pages: [1], totalPages: 1, images: [IMAGE], imagePages: [1], textLines: [{ page: 1, text: 'Jan Testkowalski' }] };
+
+test('P0: a Gemini read slower than the deadline is cancelled and answered 504 reader_timeout (JSON), nothing logged', async () => {
+  process.env.LOONTO_READER_DEADLINE_MS = '60';
+  let aborted = false;
+  globalThis.fetch = ((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => { aborted = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+  })) as typeof fetch;
+  const errors = captureErrors();
+  try {
+    const res = await post('/api/pro/payslip-facts', READ);
+    assert.equal(res.status, 504);
+    assert.deepEqual(await res.json(), { error_code: 'reader_timeout' });
+    assert.ok(aborted, 'the Gemini request itself is cancelled - nothing finishes later');
+  } finally {
+    errors.restore();
+    delete process.env.LOONTO_READER_DEADLINE_MS;
+  }
+  assert.ok(errors.logged.every((l) => !l.includes('Testkowalski')));
+});
+
+test('P0: a Gemini HTTP error is reported as reader_provider_error with its status only - never its body', async () => {
+  globalThis.fetch = (async () => new Response('quota exceeded for Jan Testkowalski', { status: 429 })) as typeof fetch;
+  const errors = captureErrors();
+  try {
+    const res = await post('/api/pro/payslip-facts', READ);
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error_code: 'reader_provider_error', provider_status: 429 });
+  } finally {
+    errors.restore();
+  }
+  assert.ok(errors.logged.every((l) => !l.includes('Testkowalski') && !l.includes('quota')), `leaked: ${errors.logged.join(' | ')}`);
+});
+
+test('P0: without a configured Gemini key (e.g. a Preview deployment) the route says so - 503 vision_unavailable, no call', async () => {
+  const saved = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  let called = false;
+  globalThis.fetch = (async () => { called = true; throw new Error('must not be called'); }) as typeof fetch;
+  try {
+    const res = await post('/api/pro/payslip-facts', READ);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), { error_code: 'vision_unavailable' });
+    assert.equal(called, false);
+  } finally {
+    process.env.GEMINI_API_KEY = saved;
+  }
+});
+
+test('P0: the reader deadline sits inside the function limit with margin for the rest of the request', async () => {
+  const { DEFAULT_READER_DEADLINE_MS } = await import('./pro-facts.controller.js');
+  const { readFileSync } = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const vercel = JSON.parse(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../vercel.json'), 'utf-8')) as { functions: Record<string, { maxDuration: number }> };
+  const maxDurationMs = (vercel.functions['api/index.ts']?.maxDuration ?? 0) * 1000;
+  assert.equal(maxDurationMs, 300_000, 'the plan allows 300 s with fluid compute; 60 s killed real reads (2026-10-20)');
+  assert.ok(DEFAULT_READER_DEADLINE_MS <= maxDurationMs - 30_000, 'at least 30 s left to answer with JSON');
+});

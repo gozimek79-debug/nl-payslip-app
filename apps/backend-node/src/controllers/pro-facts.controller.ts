@@ -1,6 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
-import { isGeminiConfigured, extractPayslipFacts, extractContractFacts, type FactReadRequest } from '../ai-service/gemini-client.js';
+import { isGeminiConfigured, extractPayslipFacts, extractContractFacts, GeminiHttpError, type FactReadOptions, type FactReadRequest } from '../ai-service/gemini-client.js';
 import { ipRateLimit } from '../rate-limiter.js';
 import { getMinimumWageAt } from '../rules-repository.js';
 import { mergePayslipBatches, payslipFactsToTierCExtraction } from '../payroll-engine/document-facts.js';
@@ -69,22 +69,47 @@ export function validateFactRead(body: unknown): { ok: true; req: FactReadReques
   return { ok: true, req: { pages, totalPages, images, imagePages, textLines } };
 }
 
+/**
+ * P0 (2026-10-20, two Production reads killed by the platform at 60 s): the reader call has its own deadline, well
+ * inside the function limit (vercel.json `maxDuration` 300 s). A slow Gemini answer becomes an explicit 504
+ * `reader_timeout` the interface can explain - never the platform's non-JSON timeout page. Read per request so tests
+ * can shorten it (`LOONTO_READER_DEADLINE_MS`).
+ */
+export const DEFAULT_READER_DEADLINE_MS = 240_000;
+
+function readerDeadlineMs(): number {
+  const configured = Number(process.env.LOONTO_READER_DEADLINE_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_READER_DEADLINE_MS;
+}
+
 /** R3-B.2: besides the batch, the route keeps it SERVER-SIDE (short-lived, bound to this browser session) and returns
  * an opaque `batchRef`. Only such a reference - never echoed batch JSON - lets the Payroll Profile build a trusted
  * document context for the conversation. `batchRef` is omitted when the store is unavailable. */
-function factRoute(read: (req: FactReadRequest) => Promise<unknown>, documentKind: 'payslip' | 'contract') {
+function factRoute(read: (req: FactReadRequest, options: FactReadOptions) => Promise<unknown>, documentKind: 'payslip' | 'contract') {
   return async (req: express.Request, res: express.Response) => {
     if (!isGeminiConfigured()) return res.status(503).json({ error_code: 'vision_unavailable' });
     const validated = validateFactRead(req.body);
     if (!validated.ok) return res.status(400).json({ error_code: validated.error });
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(), readerDeadlineMs());
     try {
-      const batch = await read(validated.req);
+      const batch = await read(validated.req, { signal: deadline.signal });
       const batchRef = await putRecord(ensureSessionHash(req, res), { kind: 'batch', documentKind, batch });
       return res.json({ batch, ...(batchRef ? { batchRef } : {}) });
     } catch (error) {
-      // Never log the reader's content (personal data) - the error class only.
+      // Never log the reader's content (personal data) - the error class / status only.
+      if (deadline.signal.aborted) {
+        console.error('PRO fact read timeout');
+        return res.status(504).json({ error_code: 'reader_timeout' });
+      }
+      if (error instanceof GeminiHttpError) {
+        console.error('PRO fact read provider error', error.status);
+        return res.status(502).json({ error_code: 'reader_provider_error', provider_status: error.status });
+      }
       console.error('PRO fact read error', error instanceof Error ? error.name : 'unknown');
       return res.status(502).json({ error_code: 'extraction_failed' });
+    } finally {
+      clearTimeout(timer);
     }
   };
 }

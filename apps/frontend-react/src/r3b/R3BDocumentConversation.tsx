@@ -36,6 +36,12 @@ export function browserDeps(): R3BDeps {
   return {
     readFacts: async (file, kind) => readDocumentFacts(file, kind, browserReaderDeps(await import('../local-ocr.ts'))),
     fetchImpl: (input, init) => fetch(input, init),
+    readerStatus: async () => {
+      const res = await fetch('/api/ai/status');
+      if (!res.ok) return null;
+      const data = (await res.json()) as { visionAvailable?: unknown };
+      return typeof data.visionAvailable === 'boolean' ? data.visionAvailable : null;
+    },
     today: todayIso,
     now: () => new Date().toISOString(),
     newDecisionId,
@@ -58,6 +64,8 @@ export function R3BDocumentConversation({ store: injected, initialLang }: { stor
   useEffect(() => {
     if (state.messages.length > 1) threadEnd.current?.scrollIntoView?.({ block: 'nearest' });
   }, [state.messages.length]);
+
+  useEffect(() => { void store.checkReader(); }, [store]);
 
   const inputDisabled = state.busy || state.phase === 'reading';
   async function submit(event: FormEvent) {
@@ -232,6 +240,7 @@ function DocumentOffer({ state, store, copy }: { state: R3BState; store: R3BStor
         )}
       </div>
       <p className="r3b-types">{copy.offer.types}</p>
+      {state.readerAvailable === false && <p className="r3b-reader-unavailable" role="alert">{copy.offer.readerUnavailable}</p>}
       {state.fileErrors.length > 0 && (
         <ul className="r3b-file-errors" role="alert">
           {state.fileErrors.map((e, i) => <li key={i}>{copy.offer.rejected[e.reason](e.name)}</li>)}
@@ -271,7 +280,7 @@ function DocumentOffer({ state, store, copy }: { state: R3BState; store: R3BStor
         <div className="r3b-consent" role="group" aria-labelledby="r3b-consent-title">
           <h3 id="r3b-consent-title"><Info size={16} aria-hidden="true" /> {copy.offer.consentTitle}</h3>
           <p id="r3b-consent-text">{copy.offer.consent}</p>
-          <button type="button" className="r3b-read" aria-describedby="r3b-consent-text" disabled={state.busy} onClick={() => void store.read()}>{copy.offer.read(unread.length)}</button>
+          <button type="button" className="r3b-read" aria-describedby="r3b-consent-text" disabled={state.busy || state.readerAvailable === false} onClick={() => void store.read()}>{copy.offer.read(unread.length)}</button>
         </div>
       )}
     </section>

@@ -139,7 +139,9 @@ test('R3-B screen: a failed read is named with its reason - no summary, continui
   store.addFiles([pdf('pasek.pdf')], 'payslip');
   await store.read();
   const text = textOf(render(store));
-  assert.ok(text.includes('Pasek wypłaty 1: nie udało się odczytać — czytnik dokumentów (Gemini) jest teraz niedostępny. Niczego z niego nie przyjmuję.'));
+  // P0: vision_unavailable means "no reader configured on THIS host" (a Preview) - said so, with the main address.
+  assert.ok(text.includes('Pasek wypłaty 1: nie udało się odczytać — na tym adresie czytnik dokumentów (Gemini) nie jest skonfigurowany — to zwykle kopia testowa (Preview); główna wersja Loonto: nl-payslip-app.vercel.app. Niczego z niego nie przyjmuję.'));
+  assert.ok(text.includes('Na tym adresie odczyt dokumentów nie działa'), 'and reading is switched off for this host');
   assert.ok(!text.includes('Co wynika z dokumentów'));
   assert.ok(text.includes('Kontynuuj bez dokumentów'));
   assert.ok(text.includes('Nie udało się odczytać'), 'the document status');
@@ -209,4 +211,16 @@ test('R3-B.2 screen (EN): the same answers in English', async () => {
   assert.ok(text.includes('Regular hours paid: 36 h („Loon normaal”)'));
   assert.ok(text.includes('This is what the document prints, not a Loonto calculation — it needs verification.'));
   assertHonest(withoutReadings(markup));
+});
+
+test('P0 screen: on a host without a configured reader the warning is shown before reading and the read button is disabled', async () => {
+  const store = createStore({ ...harness().deps, readerStatus: async () => false }, 'pl') as Store & { checkReader: () => Promise<void> };
+  await store.checkReader();
+  store.addFiles([pdf('pasek.pdf')], 'payslip');
+  const markup = render(store);
+  const text = textOf(markup);
+  assert.ok(text.includes('Na tym adresie odczyt dokumentów nie działa: czytnik (Gemini) nie jest tu skonfigurowany.'));
+  assert.match(markup, /<p class="r3b-reader-unavailable" role="alert">/);
+  assert.match(markup, /<button type="button" class="r3b-read"[^>]*disabled=""/, 'the Gemini read cannot be started here');
+  assert.ok(text.includes('Kontynuuj bez dokumentów'), 'the conversation without documents stays available');
 });

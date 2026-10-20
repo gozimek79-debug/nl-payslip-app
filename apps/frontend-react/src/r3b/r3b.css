@@ -30,6 +30,7 @@
 .r3b-read{border:0;background:var(--loonto-primary);color:#fff}
 .r3b-add-button:disabled,.r3b-continue:disabled,.r3b-read:disabled{opacity:.55;cursor:not-allowed}
 .r3b-types{margin:8px 2px 0 !important;font-size:13px;color:var(--text-muted)}
+.r3b-reader-unavailable{margin:10px 0 0 !important;padding:8px 10px;border-radius:10px;background:var(--status-error-bg);border:1px solid var(--status-error-border);color:var(--status-error);font-size:14px;font-weight:600;line-height:1.45}
 
 .r3b-file-errors{margin:10px 0 0;padding-left:18px;color:var(--status-error);font-size:14px;font-weight:600}
 

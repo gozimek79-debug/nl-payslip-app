@@ -44,6 +44,15 @@ export function readingProviderStatus(): { provider: string | null; status: 'rea
   return { provider: `Google Gemini (${geminiModel()}) - reading is NOT EU-hosted`, status: 'ready', euOnly: false };
 }
 
+/** P0: Gemini answered with a non-OK HTTP status (quota, overload, rejected request). Carries the status only - never
+ * the response body, which could echo document content. */
+export class GeminiHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Gemini generateContent call failed: HTTP ${status}`);
+    this.name = 'GeminiHttpError';
+  }
+}
+
 interface GeminiCallResult {
   status: number;
   text: string;
@@ -72,7 +81,7 @@ async function callGemini(promptText: string, imageDataUrls: string[], schema: u
     }),
     ...(signal ? { signal } : {}),
   });
-  if (!res.ok) throw new Error(`Gemini generateContent call failed: HTTP ${res.status}`);
+  if (!res.ok) throw new GeminiHttpError(res.status);
   const body = (await res.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }> };
   const candidate = body.candidates?.[0];
   const text = candidate?.content?.parts?.[0]?.text;

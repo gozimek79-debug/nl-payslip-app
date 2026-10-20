@@ -116,6 +116,8 @@ export interface R3BState {
   pendingPercent: { value: number; field: string } | null;
   corrections: UserCorrection[];
   panelOpen: boolean;
+  /** P0: false = this host has no configured reader (e.g. a Preview) - reading is disabled and explained up front. */
+  readerAvailable: boolean | null;
 }
 
 export interface R3BDeps {
@@ -123,6 +125,8 @@ export interface R3BDeps {
   readFacts: (file: File, kind: FactReaderKind) => Promise<DocumentReadOutcome>;
   /** For `/api/profile/resolve` and `/api/scenario/turn`. */
   fetchImpl: typeof fetch;
+  /** P0: whether THIS host has a configured document reader (`GET /api/ai/status`); null = could not tell. Optional. */
+  readerStatus?: () => Promise<boolean | null>;
   /** The technical as-of date of a document set the date cannot change (see r3b-documents.ts asOfNeed). */
   today: () => string;
   now: () => string;
@@ -134,7 +138,7 @@ export function initialState(lang: R3BLocale = 'pl'): R3BState {
   return {
     lang, phase: 'documents', busy: false, docs: [], fileErrors: [], messages: [{ id: 1, from: 'loonto', block: { kind: 'welcome' } }], nextMessageId: 2, nextDocId: 1,
     started: false, asOf: null, knowledge: null, documentContext: null, resolved: null, decisions: [], scenario: null, digest: null, userDeferred: [], deferredExtra: [],
-    nextQuestion: null, evaluation: null, pendingGoal: null, pendingPercent: null, corrections: [], panelOpen: false,
+    nextQuestion: null, evaluation: null, pendingGoal: null, pendingPercent: null, corrections: [], panelOpen: false, readerAvailable: null,
   };
 }
 
@@ -330,6 +334,14 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
     },
     setLang(next: R3BLocale) { patch({ lang: next }); },
     setPanel(open: boolean) { patch({ panelOpen: open }); },
+
+    /** P0: asks the server whether this host can read documents at all, before anything is uploaded. */
+    async checkReader() {
+      if (!deps.readerStatus) return;
+      let available: boolean | null = null;
+      try { available = await deps.readerStatus(); } catch { available = null; }
+      patch({ readerAvailable: available });
+    },
     canEditDocuments: () => !state.busy && (state.phase === 'documents' || state.phase === 'goal' || state.phase === 'conversation'),
 
     addFiles(files: readonly File[], documentType: ProDocumentType) {
@@ -366,7 +378,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
     /** The ONLY call that sends document content anywhere - an explicit user action (Contract / task C1). */
     async read() {
       const pending = toRead(state.docs);
-      if (state.busy || pending.length === 0) return;
+      if (state.busy || pending.length === 0 || state.readerAvailable === false) return;
       if (!annexDatesComplete(state.docs)) { say('loonto', { kind: 'note', note: 'annex_date_missing' }); return; }
       const before = state.phase;
       say('user', { kind: 'user_choice', choice: { kind: 'read', count: pending.length } });
@@ -388,6 +400,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
           items.push({ docId: doc.id, outcome: 'failed', notProcessedPages: [], totalPages: 0, tooLong: false, errorCode: outcome.errorCode ?? 'unknown' });
         }
       }
+      if (items.some((i) => i.errorCode === 'vision_unavailable')) patch({ readerAvailable: false });
       const anyNew = items.some((i) => i.outcome !== 'failed');
       say('loonto', { kind: 'read_report', items, anyRead: state.docs.some((d) => d.status === 'read') });
       if (!anyNew) {
@@ -532,7 +545,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
     },
 
     /** Everything is dropped - files included. Only the language preference survives. */
-    reset() { set(initialState(state.lang)); },
+    reset() { set({ ...initialState(state.lang), readerAvailable: state.readerAvailable }); },
   };
   return store;
 }

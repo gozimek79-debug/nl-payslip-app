@@ -166,6 +166,8 @@ export interface ResolvedProfileView {
   issues: ProfileIssueView[];
   /** P3.1 S4: null only when the backend sent none - a readiness is never made up here. */
   readiness: CalculationReadinessView | null;
+  /** R3-B.2: present only when the server issued one (every document sent by reference). */
+  documentContext?: DocumentContextView;
 }
 
 export function isUsableField(field: ProfileFieldView | undefined): field is ProfileFieldView & { value: ProfileValueView } {
@@ -237,7 +239,32 @@ export interface ProfileRequestDocument {
   /** User-entered annex effective date (null for anything else). */
   effectiveDate: string | null;
   /** P2: the document-fact batches /api/pro/*-facts returned for this document (all its pages). */
-  factBatches: unknown[];
+  factBatches?: unknown[];
+  /** R3-B.2: instead of `factBatches` - the reader route's server-held references to the same batches. Only a request
+   * whose documents ALL come by reference gets a `documentContext` back (the batches themselves stay on the server). */
+  batchRefs?: string[];
+}
+
+/** R3-B.2: one printed fact of the server-held Document Knowledge (backend document-context/knowledge.ts) - a READING
+ * of the document, never recalculated. */
+export interface PrintedFactView {
+  topic: string;
+  key: string;
+  label: string | null;
+  value: number | string;
+  unit: string;
+  status: 'document_reading' | 'conflict';
+  documentIndex: number;
+  documentId: string | null;
+  role: 'payslip' | 'contract_base' | 'contract_annex';
+  page: number | null;
+  periodLabel: string | null;
+}
+
+/** R3-B.2: the context the server keeps for this browser session; the client holds only its opaque reference. */
+export interface DocumentContextView {
+  ref: string;
+  knowledge: { version: 1; facts: PrintedFactView[] };
 }
 
 /** Only a complete ISO date is a meaningful as-of date - a cleared or half-typed date input is not. */
@@ -265,9 +292,10 @@ export async function resolveProfile(asOfDate: string, documents: ProfileRequest
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ asOfDate, documents, ...(decisions.length > 0 ? { decisions } : {}), ...(requirements ? { requirements } : {}) }),
     });
-    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[]; decisionResults?: DecisionResultView[]; issues?: ProfileIssueView[]; readiness?: CalculationReadinessView };
+    const data = await res.json() as { profile?: PayrollProfileView; extractionTable?: ExtractionRowView[]; decisionResults?: DecisionResultView[]; issues?: ProfileIssueView[]; readiness?: CalculationReadinessView; documentContext?: DocumentContextView | null };
+    const context = data.documentContext && typeof data.documentContext.ref === 'string' && Array.isArray(data.documentContext.knowledge?.facts) ? data.documentContext : null;
     return res.ok && data.profile
-      ? { profile: data.profile, extractionTable: data.extractionTable ?? [], decisionResults: data.decisionResults ?? [], issues: data.issues ?? [], readiness: data.readiness ?? null }
+      ? { profile: data.profile, extractionTable: data.extractionTable ?? [], decisionResults: data.decisionResults ?? [], issues: data.issues ?? [], readiness: data.readiness ?? null, ...(context ? { documentContext: context } : {}) }
       : null;
   } catch {
     return null;

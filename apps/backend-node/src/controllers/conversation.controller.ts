@@ -8,13 +8,21 @@ import type { ScenarioV1 } from '../scenario/scenario-types.js';
 import { CONVERSATION_LOCALES, NEXT_QUESTION_KINDS } from '../conversation/conversation-types.js';
 import { defaultConversationAgent } from '../conversation/conversation-agent.js';
 import { runConversationTurn } from '../conversation/conversation-turn.js';
+import { trustedContextFromProfile, type TrustedContext } from '../conversation/trusted-context.js';
+import type { PayrollProfile } from '../payroll-engine/payroll-profile.js';
+import type { DocumentKnowledge } from '../document-context/knowledge.js';
+import { readSessionHash } from '../document-context/session.js';
+import { getRecord } from '../document-context/store.js';
 
 /**
  * R2 backend boundary: `POST /api/scenario/turn` - one conversation turn.
  *
- * Public request: `{ scenario?, message, locale, conversation? }`. There is NO field through which a caller
- * can supply trusted context or claim a trust mode - the request schema is strict, and the public route
- * always runs with `trusted: null`. (Server-trusted facts exist only as a server-internal, Symbol-branded
+ * Public request: `{ scenario?, message, locale, conversation?, documentContextRef? }`. There is NO field through which
+ * a caller can supply trusted facts or claim a trust mode - the request schema is strict. Without `documentContextRef`
+ * the route runs with `trusted: null`. R3-B.2: `documentContextRef` is an opaque reference to a document context
+ * THIS server built (profile.controller.ts) from batches ITS reader route stored for this browser session; the
+ * server loads it, and only then builds the TrustedContext (trustedContextFromProfile) and the Document Knowledge
+ * the turn answers from. An unknown / expired / other-session reference fails closed: 409, nothing processed. (Server-trusted facts exist only as a server-internal, Symbol-branded
  * object; see conversation/trusted-context.ts.) A Scenario that arrives carrying a verified source
  * (document / cao_rule / official_rule / intelligence_memory) is therefore self-declared and is rejected.
  *
@@ -38,6 +46,7 @@ const turnRequestSchema = z.strictObject({
       deferredFields: z.array(z.string().max(80)).max(40).optional(),
     })
     .optional(),
+  documentContextRef: z.string().max(64).optional(),
 });
 
 const turnRateLimit = ipRateLimit(SCENARIO_TURN_RATE_LIMIT.routeName, SCENARIO_TURN_RATE_LIMIT.limit, SCENARIO_TURN_RATE_LIMIT.windowSeconds, SCENARIO_TURN_RATE_LIMIT.onUnknown);
@@ -48,6 +57,19 @@ router.post('/turn', turnRateLimit, async (req, res) => {
     return res.status(400).json({ error_code: 'invalid_input', details: parsed.error.flatten() });
   }
 
+  let trusted: TrustedContext | null = null;
+  let documentKnowledge: DocumentKnowledge | null = null;
+  if (parsed.data.documentContextRef !== undefined) {
+    const record = await getRecord(parsed.data.documentContextRef, readSessionHash(req), 'context');
+    if (!record) return res.status(409).json({ error_code: 'document_context_invalid' });
+    try {
+      trusted = trustedContextFromProfile(record.profile as PayrollProfile);
+    } catch {
+      return res.status(409).json({ error_code: 'document_context_invalid' });
+    }
+    documentKnowledge = record.knowledge as DocumentKnowledge;
+  }
+
   const fetched = await fetchRates('week');
   if (!fetched) return res.status(503).json({ error_code: 'tax_rates_unavailable' });
 
@@ -55,7 +77,7 @@ router.post('/turn', turnRateLimit, async (req, res) => {
     const { scenario, message, locale, conversation } = parsed.data;
     const result = await runConversationTurn(
       { ...(scenario ? { scenario: scenario as unknown as ScenarioV1 } : {}), message, locale, ...(conversation ? { conversation: conversation as never } : {}) },
-      { agent: defaultConversationAgent(), rates: fetched.rates, trusted: null },
+      { agent: defaultConversationAgent(), rates: fetched.rates, trusted, documentKnowledge },
     );
     return res.json(result);
   } catch (error) {

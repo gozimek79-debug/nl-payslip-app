@@ -1,5 +1,6 @@
 import { contractBatch, found, hourLine, payslipBatch, rawContract, rawPayslip } from './fact-fixtures.js';
 import type { ContractFactsBatch, PayslipFactsBatch } from '../payroll-engine/document-facts.js';
+import { week41Batch } from './r3b2-fixtures.js';
 
 /**
  * Test-only (R3-B): the synthetic documents of the five R3-B acceptance cases, as the fact batches the existing
@@ -34,6 +35,8 @@ export const R3B_DOCUMENT_IDS = [
   'contract_base_1680',
   'annex_1720_from_2026_09_01',
   'contract_base_no_rate',
+  // R3-B.2: the dot-decimal week-41 payslip (header Uurloon 15.55, Loon normaal, separate ADV, net, reimbursement, payout).
+  'payslip_week41_1555',
 ] as const;
 export type R3BDocumentId = (typeof R3B_DOCUMENT_IDS)[number];
 
@@ -70,5 +73,6 @@ export function r3bFactBatches(): Record<R3BDocumentId, Array<PayslipFactsBatch 
       employer_name: EMPLOYER,
       hours_per_week: found(40, '40 uur per week', 1, 'Arbeidsduur'),
     }))],
+    payslip_week41_1555: [week41Batch()],
   };
 }

@@ -61,8 +61,12 @@ test('RT-002: money reaches the Conversation Core only through Scenario Core (R1
   assert.ok(tierAImport, 'the controller reuses fetchRates');
   assert.deepEqual(tierAImport[1]?.split(',').map((s) => s.trim()).filter(Boolean), ['fetchRates']);
   assert.ok(!controller.includes('/api/tier-a') && !/computeTierAResult/.test(controller));
-  // There is no request field for trusted context, and the public route passes none.
-  assert.ok(/trusted:\s*null/.test(controller));
+  // There is no request field for trusted context. R3-B.2: the route's trusted context starts as null and is built ONLY
+  // from a server-held record (getRecord) through trustedContextFromProfile - never from request JSON.
+  assert.ok(/let trusted: TrustedContext \| null = null;/.test(controller));
+  assert.ok(/trusted = trustedContextFromProfile\(record\.profile as PayrollProfile\)/.test(controller));
+  assert.equal((controller.match(/trusted = /g) ?? []).length, 1, 'exactly one assignment of trusted');
+  assert.ok(/const record = await getRecord\(parsed\.data\.documentContextRef, readSessionHash\(req\), 'context'\);/.test(controller));
   assert.ok(!/trusted\w*\s*:\s*z\./i.test(controller), 'no trusted-context field in the request schema');
 });
 

@@ -12,6 +12,14 @@
     "extras.vakantiegeld.percent"
   ],
   "technicalAsOfDate": "2026-10-18",
+  "documentRefs": {
+    "batch": {
+      "payslip_week41_1555": [
+        "R3B2batchRef00000000000000000000"
+      ]
+    },
+    "context": "R3B2contextRef000000000000000000"
+  },
   "batches": {
     "payslip_week33_1680": [
       {
@@ -98,6 +106,7 @@
           ],
           "hirerName": [],
           "hoursPerWeek": [],
+          "hourlyRate": [],
           "bijzonderTariefPercent": [],
           "jaarloonBt": [],
           "etExchangeAmount": [],
@@ -242,6 +251,7 @@
           ],
           "hirerName": [],
           "hoursPerWeek": [],
+          "hourlyRate": [],
           "bijzonderTariefPercent": [],
           "jaarloonBt": [],
           "etExchangeAmount": [],
@@ -386,6 +396,7 @@
           ],
           "hirerName": [],
           "hoursPerWeek": [],
+          "hourlyRate": [],
           "bijzonderTariefPercent": [],
           "jaarloonBt": [],
           "etExchangeAmount": [],
@@ -719,6 +730,224 @@
         "premiums": [],
         "redactedFields": []
       }
+    ],
+    "payslip_week41_1555": [
+      {
+        "kind": "payslip",
+        "pages": [
+          1
+        ],
+        "totalPages": 1,
+        "scalars": {
+          "periodLabel": [
+            {
+              "key": "payslip.periodLabel",
+              "unit": "text",
+              "value": "week 41/2026",
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Periode",
+                "rawValue": "Periode: week 41/2026"
+              }
+            }
+          ],
+          "periodStart": [
+            {
+              "key": "payslip.periodStart",
+              "unit": "date",
+              "value": "2026-10-05",
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Periode",
+                "rawValue": "05-10-2026"
+              }
+            }
+          ],
+          "periodEnd": [
+            {
+              "key": "payslip.periodEnd",
+              "unit": "date",
+              "value": "2026-10-11",
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Periode",
+                "rawValue": "t/m 11-10-2026"
+              }
+            }
+          ],
+          "paymentDate": [
+            {
+              "key": "payslip.paymentDate",
+              "unit": "date",
+              "value": "2026-10-16",
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Betaaldatum",
+                "rawValue": "16-10-2026"
+              }
+            }
+          ],
+          "periodType": [
+            {
+              "key": "payslip.periodType",
+              "unit": "period_type",
+              "value": "week",
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Periode",
+                "rawValue": "Week 41"
+              }
+            }
+          ],
+          "hirerName": [],
+          "hoursPerWeek": [],
+          "hourlyRate": [
+            {
+              "key": "payslip.hourlyRate",
+              "unit": "eur_per_hour",
+              "value": 15.55,
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Uurloon",
+                "rawValue": "Uurloon: 15.55"
+              }
+            }
+          ],
+          "bijzonderTariefPercent": [],
+          "jaarloonBt": [],
+          "etExchangeAmount": [],
+          "minimumWagePrinted": [],
+          "printedTableTax": [],
+          "printedBtTax": [],
+          "printedAlgemeneHeffingskorting": [],
+          "printedArbeidskorting": [],
+          "printedGrossTotal": [],
+          "printedLoonVoorHeffingen": [],
+          "printedTaxableBaseNormal": [],
+          "printedTaxableBaseSpecial": [],
+          "printedNet": [
+            {
+              "key": "payslip.printedNet",
+              "unit": "eur_per_period",
+              "value": 509.92,
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Totaal netto",
+                "rawValue": "Totaal netto 509.92"
+              }
+            }
+          ],
+          "printedPayout": [
+            {
+              "key": "payslip.printedPayout",
+              "unit": "eur_per_period",
+              "value": 584.92,
+              "status": "exact",
+              "reason": null,
+              "evidence": {
+                "page": 1,
+                "line": null,
+                "printedLabel": "Overgemaakt",
+                "rawValue": "Overgemaakt 584.92"
+              }
+            }
+          ]
+        },
+        "employerNames": [
+          {
+            "key": "payslip.employerName",
+            "unit": "text",
+            "value": "Synthetic Uitzend B.V.",
+            "status": "exact",
+            "reason": null,
+            "evidence": {
+              "page": 1,
+              "line": null,
+              "printedLabel": "Werkgever",
+              "rawValue": "Synthetic Uitzend B.V."
+            }
+          }
+        ],
+        "hourLines": [
+          {
+            "kind": "regular",
+            "addsHours": true,
+            "taxTreatment": "table",
+            "employerIndex": 0,
+            "hours": 36,
+            "rate": 15.55,
+            "percent": null,
+            "amount": 559.8,
+            "explicitTier": null,
+            "tierWording": null,
+            "issues": [],
+            "evidence": {
+              "page": 1,
+              "line": null,
+              "printedLabel": "Loon normaal",
+              "rawValue": "W 41 Loon normaal 36.00 x 15.55 559.80"
+            }
+          },
+          {
+            "kind": "adv_compensation",
+            "addsHours": false,
+            "taxTreatment": "table",
+            "employerIndex": 0,
+            "hours": 36,
+            "rate": 15.55,
+            "percent": 1.54,
+            "amount": 8.62,
+            "explicitTier": null,
+            "tierWording": null,
+            "issues": [],
+            "evidence": {
+              "page": 1,
+              "line": null,
+              "printedLabel": "ADV toeslag",
+              "rawValue": "ADV toeslag 1.54 % 36.00 x 15.55 8.62"
+            }
+          }
+        ],
+        "deductionLines": [],
+        "netLines": [
+          {
+            "category": "reimbursement",
+            "amount": 75,
+            "issues": [],
+            "evidence": {
+              "page": 1,
+              "line": null,
+              "printedLabel": "Onb. Reiskosten",
+              "rawValue": "Onb. Reiskosten 75.00"
+            }
+          }
+        ],
+        "etReimbursementLines": [],
+        "payoutAdjustmentLines": [],
+        "reservationLines": [],
+        "redactedFields": []
+      }
     ]
   },
   "profiles": {
@@ -817,6 +1046,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -1707,6 +1937,19 @@
             "status": "absent",
             "reason": null,
             "destination": "employment.hoursPerWeek"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
           },
           {
             "documentIndex": 0,
@@ -2850,7 +3093,8 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 3
-        }
+        },
+        "documentContext": null
       }
     },
     "contract_payslip_conflict": {
@@ -3026,6 +3270,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -4316,6 +4561,19 @@
             "documentIndex": 1,
             "documentLabel": "payslip-2",
             "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 1,
+            "documentLabel": "payslip-2",
+            "role": "payslip",
             "key": "payslip.bijzonderTariefPercent",
             "value": null,
             "rawValue": null,
@@ -5482,7 +5740,8 @@
           "ready": false,
           "blockingCount": 1,
           "optionalCount": 2
-        }
+        },
+        "documentContext": null
       }
     },
     "annex_week_before": {
@@ -5722,6 +5981,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -7249,6 +7509,19 @@
             "documentIndex": 2,
             "documentLabel": "payslip-3",
             "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 2,
+            "documentLabel": "payslip-3",
+            "role": "payslip",
             "key": "payslip.bijzonderTariefPercent",
             "value": null,
             "rawValue": null,
@@ -8346,7 +8619,8 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 2
-        }
+        },
+        "documentContext": null
       }
     },
     "annex_week_from": {
@@ -8586,6 +8860,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -10130,6 +10405,19 @@
             "documentIndex": 2,
             "documentLabel": "payslip-3",
             "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 2,
+            "documentLabel": "payslip-3",
+            "role": "payslip",
             "key": "payslip.bijzonderTariefPercent",
             "value": null,
             "rawValue": null,
@@ -11227,7 +11515,8 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 2
-        }
+        },
+        "documentContext": null
       }
     },
     "partial_read": {
@@ -11325,6 +11614,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -12215,6 +12505,19 @@
             "status": "absent",
             "reason": null,
             "destination": "employment.hoursPerWeek"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
           },
           {
             "documentIndex": 0,
@@ -13360,7 +13663,8 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 3
-        }
+        },
+        "documentContext": null
       }
     },
     "instruction_text": {
@@ -13458,6 +13762,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -14367,6 +14672,19 @@
             "status": "absent",
             "reason": null,
             "destination": "employment.hoursPerWeek"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
           },
           {
             "documentIndex": 0,
@@ -15523,7 +15841,8 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 3
-        }
+        },
+        "documentContext": null
       }
     },
     "contract_no_rate": {
@@ -17483,7 +17802,8 @@
           "ready": false,
           "blockingCount": 2,
           "optionalCount": 2
-        }
+        },
+        "documentContext": null
       }
     },
     "contract_payslip_conflict_payslip_chosen": {
@@ -17659,6 +17979,7 @@
                   ],
                   "hirerName": [],
                   "hoursPerWeek": [],
+                  "hourlyRate": [],
                   "bijzonderTariefPercent": [],
                   "jaarloonBt": [],
                   "etExchangeAmount": [],
@@ -18970,6 +19291,19 @@
             "documentIndex": 1,
             "documentLabel": "payslip-2",
             "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 1,
+            "documentLabel": "payslip-2",
+            "role": "payslip",
             "key": "payslip.bijzonderTariefPercent",
             "value": null,
             "rawValue": null,
@@ -20066,6 +20400,2368 @@
           "ready": true,
           "blockingCount": 0,
           "optionalCount": 2
+        },
+        "documentContext": null
+      }
+    },
+    "payslip_week41_by_ref": {
+      "request": {
+        "asOfDate": "2026-10-18",
+        "documents": [
+          {
+            "index": 0,
+            "documentId": "doc-1",
+            "label": "payslip-1",
+            "role": "payslip",
+            "effectiveDate": null,
+            "batchRefs": [
+              "R3B2batchRef00000000000000000000"
+            ]
+          }
+        ]
+      },
+      "response": {
+        "profile": {
+          "version": 2,
+          "asOfDate": "2026-10-18",
+          "documents": [
+            {
+              "index": 0,
+              "documentId": "doc-1",
+              "label": "payslip-1",
+              "role": "payslip",
+              "effectiveDate": null,
+              "payPeriod": {
+                "label": "week 41/2026",
+                "startDate": "2026-10-05",
+                "endDate": "2026-10-11",
+                "paymentDate": "2026-10-16",
+                "periodType": "week"
+              }
+            }
+          ],
+          "contractContext": {
+            "asOfDate": "2026-10-18",
+            "baseContracts": [],
+            "annexesInForce": [],
+            "annexesNotYetInForce": [],
+            "annexesUndated": [],
+            "annexesDateDisputed": [],
+            "annexDates": []
+          },
+          "employment": {
+            "employerName": {
+              "key": "employerName",
+              "meaning": "employer_or_agency_name_contract",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "payslipEmployerName": {
+              "key": "payslipEmployerName",
+              "meaning": "employer_name_payslip",
+              "unit": "text",
+              "candidates": [
+                {
+                  "value": "Synthetic Uitzend B.V.",
+                  "source": {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "Werkgever",
+                    "rawValue": "Synthetic Uitzend B.V.",
+                    "page": 1,
+                    "line": null
+                  },
+                  "detail": null
+                }
+              ],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": "Synthetic Uitzend B.V.",
+              "state": "document_exact",
+              "sources": [
+                {
+                  "sourceType": "document",
+                  "role": "payslip",
+                  "documentIndex": 0,
+                  "documentId": "doc-1",
+                  "documentLabel": "payslip-1",
+                  "effectiveDate": null,
+                  "payPeriod": {
+                    "label": "week 41/2026",
+                    "startDate": "2026-10-05",
+                    "endDate": "2026-10-11",
+                    "paymentDate": "2026-10-16",
+                    "periodType": "week"
+                  },
+                  "printedLabel": "Werkgever",
+                  "rawValue": "Synthetic Uitzend B.V.",
+                  "page": 1,
+                  "line": null
+                }
+              ],
+              "reason": null
+            },
+            "hirerName": {
+              "key": "hirerName",
+              "meaning": "hirer_name_payslip",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "contractHirerName": {
+              "key": "contractHirerName",
+              "meaning": "hirer_name_contract",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "hourlyRate": {
+              "key": "hourlyRate",
+              "meaning": "gross_base_hourly_wage",
+              "unit": "eur_per_hour",
+              "candidates": [
+                {
+                  "value": 15.55,
+                  "source": {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "Uurloon",
+                    "rawValue": "Uurloon: 15.55",
+                    "page": 1,
+                    "line": null
+                  },
+                  "detail": null
+                },
+                {
+                  "value": 15.55,
+                  "source": {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "Loon normaal",
+                    "rawValue": "W 41 Loon normaal 36.00 x 15.55 559.80",
+                    "page": 1,
+                    "line": null
+                  },
+                  "detail": {
+                    "amount": 559.8,
+                    "base": null,
+                    "hours": 36,
+                    "printedPercent": null
+                  }
+                }
+              ],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": 15.55,
+              "state": "document_exact",
+              "sources": [
+                {
+                  "sourceType": "document",
+                  "role": "payslip",
+                  "documentIndex": 0,
+                  "documentId": "doc-1",
+                  "documentLabel": "payslip-1",
+                  "effectiveDate": null,
+                  "payPeriod": {
+                    "label": "week 41/2026",
+                    "startDate": "2026-10-05",
+                    "endDate": "2026-10-11",
+                    "paymentDate": "2026-10-16",
+                    "periodType": "week"
+                  },
+                  "printedLabel": "Uurloon",
+                  "rawValue": "Uurloon: 15.55",
+                  "page": 1,
+                  "line": null
+                },
+                {
+                  "sourceType": "document",
+                  "role": "payslip",
+                  "documentIndex": 0,
+                  "documentId": "doc-1",
+                  "documentLabel": "payslip-1",
+                  "effectiveDate": null,
+                  "payPeriod": {
+                    "label": "week 41/2026",
+                    "startDate": "2026-10-05",
+                    "endDate": "2026-10-11",
+                    "paymentDate": "2026-10-16",
+                    "periodType": "week"
+                  },
+                  "printedLabel": "Loon normaal",
+                  "rawValue": "W 41 Loon normaal 36.00 x 15.55 559.80",
+                  "page": 1,
+                  "line": null
+                }
+              ],
+              "reason": null
+            },
+            "hoursPerWeek": {
+              "key": "hoursPerWeek",
+              "meaning": "contract_hours_per_week",
+              "unit": "hours_per_week",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_documents"
+              }
+            },
+            "guaranteedHours": {
+              "key": "guaranteedHours",
+              "meaning": "guaranteed_hours_per_guarantee_period",
+              "unit": "hours",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "guaranteedHoursPeriodWeeks": {
+              "key": "guaranteedHoursPeriodWeeks",
+              "meaning": "guarantee_period_length",
+              "unit": "weeks",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "overtimeThresholdHours": {
+              "key": "overtimeThresholdHours",
+              "meaning": "daily_overtime_hours_before_tier_2",
+              "unit": "hours",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "caoName": {
+              "key": "caoName",
+              "meaning": "cao_name",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "phase": {
+              "key": "phase",
+              "meaning": "cao_phase",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "contractType": {
+              "key": "contractType",
+              "meaning": "contract_type",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "functionTitle": {
+              "key": "functionTitle",
+              "meaning": "function_title",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "contractStartDate": {
+              "key": "contractStartDate",
+              "meaning": "contract_start_date",
+              "unit": "date",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "contractEndDate": {
+              "key": "contractEndDate",
+              "meaning": "contract_end_date",
+              "unit": "date",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "monthlySalary": {
+              "key": "monthlySalary",
+              "meaning": "gross_monthly_salary",
+              "unit": "eur_per_month",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            },
+            "pensionFundName": {
+              "key": "pensionFundName",
+              "meaning": "pension_fund_name",
+              "unit": "text",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_contract_document"
+              }
+            }
+          },
+          "payroll": {
+            "periodType": {
+              "key": "periodType",
+              "meaning": "pay_period_type",
+              "unit": "period_type",
+              "candidates": [
+                {
+                  "value": "week",
+                  "source": {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "Periode",
+                    "rawValue": "Week 41",
+                    "page": 1,
+                    "line": null
+                  },
+                  "detail": null
+                }
+              ],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": "week",
+              "state": "document_exact",
+              "sources": [
+                {
+                  "sourceType": "document",
+                  "role": "payslip",
+                  "documentIndex": 0,
+                  "documentId": "doc-1",
+                  "documentLabel": "payslip-1",
+                  "effectiveDate": null,
+                  "payPeriod": {
+                    "label": "week 41/2026",
+                    "startDate": "2026-10-05",
+                    "endDate": "2026-10-11",
+                    "paymentDate": "2026-10-16",
+                    "periodType": "week"
+                  },
+                  "printedLabel": "Periode",
+                  "rawValue": "Week 41",
+                  "page": 1,
+                  "line": null
+                }
+              ],
+              "reason": null
+            },
+            "overtimeTier1Premium": {
+              "key": "overtimeTier1Premium",
+              "meaning": "overtime_tier_1_premium_above_base",
+              "unit": "premium_percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_documents"
+              }
+            },
+            "overtimeTier2Premium": {
+              "key": "overtimeTier2Premium",
+              "meaning": "overtime_tier_2_premium_above_base",
+              "unit": "premium_percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_documents"
+              }
+            },
+            "saturdayPremium": {
+              "key": "saturdayPremium",
+              "meaning": "saturday_premium_above_base",
+              "unit": "premium_percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_weekday_evidence"
+              }
+            },
+            "sundayPremium": {
+              "key": "sundayPremium",
+              "meaning": "sunday_premium_above_base",
+              "unit": "premium_percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_weekday_evidence"
+              }
+            },
+            "publicHolidayPremium": {
+              "key": "publicHolidayPremium",
+              "meaning": "public_holiday_premium_above_base",
+              "unit": "premium_percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_weekday_evidence"
+              }
+            },
+            "loonheffingskorting": {
+              "key": "loonheffingskorting",
+              "meaning": "loonheffingskorting_applied",
+              "unit": "boolean",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "no_evidence_source"
+              }
+            },
+            "pensionEmployeePercent": {
+              "key": "pensionEmployeePercent",
+              "meaning": "pension_employee_contribution",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "pawwEmployeePercent": {
+              "key": "pawwEmployeePercent",
+              "meaning": "paww_employee_contribution",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "sectorPremiumPercent": {
+              "key": "sectorPremiumPercent",
+              "meaning": "sector_premium_ziektewet_azw_employee",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "wgaGatEmployeePercent": {
+              "key": "wgaGatEmployeePercent",
+              "meaning": "wga_gat_employee_contribution",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "wgaEmployeePercent": {
+              "key": "wgaEmployeePercent",
+              "meaning": "wga_employee_contribution_post_tax",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "gediffWgaEmployeePercent": {
+              "key": "gediffWgaEmployeePercent",
+              "meaning": "gediff_wga_employee_contribution_post_tax",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "whkEmployeePercent": {
+              "key": "whkEmployeePercent",
+              "meaning": "whk_employee_contribution_post_tax",
+              "unit": "percent_of_printed_base",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "vakantiegeldAccrualPercent": {
+              "key": "vakantiegeldAccrualPercent",
+              "meaning": "vakantiegeld_accrual_rate",
+              "unit": "percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "bijzonderTariefPrintedPercent": {
+              "key": "bijzonderTariefPrintedPercent",
+              "meaning": "bijzonder_tarief_rate_as_printed",
+              "unit": "percent",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "jaarloonBt": {
+              "key": "jaarloonBt",
+              "meaning": "jaarloon_used_for_bijzonder_tarief",
+              "unit": "eur_per_year",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            },
+            "etExchangeAmount": {
+              "key": "etExchangeAmount",
+              "meaning": "et_taxable_base_reduction_per_period",
+              "unit": "eur_per_period",
+              "candidates": [],
+              "excluded": [],
+              "regime": null,
+              "resolution": null,
+              "value": null,
+              "state": "unknown",
+              "sources": [],
+              "reason": {
+                "code": "not_on_payslips"
+              }
+            }
+          },
+          "recurringItems": {
+            "surcharges": [
+              {
+                "key": "surcharge:adv_compensation:adv toeslag",
+                "meaning": "surcharge_on_hours_already_counted",
+                "unit": "surcharge_percent",
+                "candidates": [
+                  {
+                    "value": 1.54,
+                    "source": {
+                      "sourceType": "document",
+                      "role": "payslip",
+                      "documentIndex": 0,
+                      "documentId": "doc-1",
+                      "documentLabel": "payslip-1",
+                      "effectiveDate": null,
+                      "payPeriod": {
+                        "label": "week 41/2026",
+                        "startDate": "2026-10-05",
+                        "endDate": "2026-10-11",
+                        "paymentDate": "2026-10-16",
+                        "periodType": "week"
+                      },
+                      "printedLabel": "ADV toeslag",
+                      "rawValue": "ADV toeslag 1.54 % 36.00 x 15.55 8.62",
+                      "page": 1,
+                      "line": null
+                    },
+                    "detail": {
+                      "amount": 8.62,
+                      "base": null,
+                      "hours": 36,
+                      "printedPercent": 1.54
+                    }
+                  }
+                ],
+                "excluded": [],
+                "regime": null,
+                "resolution": null,
+                "value": 1.54,
+                "state": "document_exact",
+                "sources": [
+                  {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "ADV toeslag",
+                    "rawValue": "ADV toeslag 1.54 % 36.00 x 15.55 8.62",
+                    "page": 1,
+                    "line": null
+                  }
+                ],
+                "reason": null
+              }
+            ],
+            "otherPreTaxDeductions": [],
+            "otherPostTaxDeductions": [],
+            "netAdditions": [
+              {
+                "key": "net_addition:reimbursement:onb. reiskosten",
+                "meaning": "recurring_net_addition",
+                "unit": "eur_per_period",
+                "candidates": [
+                  {
+                    "value": 75,
+                    "source": {
+                      "sourceType": "document",
+                      "role": "payslip",
+                      "documentIndex": 0,
+                      "documentId": "doc-1",
+                      "documentLabel": "payslip-1",
+                      "effectiveDate": null,
+                      "payPeriod": {
+                        "label": "week 41/2026",
+                        "startDate": "2026-10-05",
+                        "endDate": "2026-10-11",
+                        "paymentDate": "2026-10-16",
+                        "periodType": "week"
+                      },
+                      "printedLabel": "Onb. Reiskosten",
+                      "rawValue": "Onb. Reiskosten 75.00",
+                      "page": 1,
+                      "line": null
+                    },
+                    "detail": {
+                      "amount": 75,
+                      "base": null,
+                      "hours": null,
+                      "printedPercent": null
+                    }
+                  }
+                ],
+                "excluded": [],
+                "regime": null,
+                "resolution": null,
+                "value": 75,
+                "state": "document_exact",
+                "sources": [
+                  {
+                    "sourceType": "document",
+                    "role": "payslip",
+                    "documentIndex": 0,
+                    "documentId": "doc-1",
+                    "documentLabel": "payslip-1",
+                    "effectiveDate": null,
+                    "payPeriod": {
+                      "label": "week 41/2026",
+                      "startDate": "2026-10-05",
+                      "endDate": "2026-10-11",
+                      "paymentDate": "2026-10-16",
+                      "periodType": "week"
+                    },
+                    "printedLabel": "Onb. Reiskosten",
+                    "rawValue": "Onb. Reiskosten 75.00",
+                    "page": 1,
+                    "line": null
+                  }
+                ],
+                "reason": null
+              }
+            ],
+            "netDeductions": []
+          },
+          "observedOvertimePremiums": {
+            "fields": [],
+            "excluded": []
+          },
+          "calibrationOnly": {
+            "payslips": [
+              {
+                "source": {
+                  "sourceType": "document",
+                  "role": "payslip",
+                  "documentIndex": 0,
+                  "documentId": "doc-1",
+                  "documentLabel": "payslip-1",
+                  "effectiveDate": null,
+                  "payPeriod": {
+                    "label": "week 41/2026",
+                    "startDate": "2026-10-05",
+                    "endDate": "2026-10-11",
+                    "paymentDate": "2026-10-16",
+                    "periodType": "week"
+                  },
+                  "printedLabel": null,
+                  "rawValue": null,
+                  "page": null,
+                  "line": null
+                },
+                "printed": {
+                  "table_tax": null,
+                  "bt_tax": null,
+                  "algemene_heffingskorting": null,
+                  "arbeidskorting": null,
+                  "gross_total": null,
+                  "loon_voor_heffingen": null,
+                  "net": 509.92,
+                  "payout": 584.92,
+                  "minimum_wage": null
+                }
+              }
+            ]
+          }
+        },
+        "extractionTable": [
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.periodLabel",
+            "value": "week 41/2026",
+            "rawValue": "Periode: week 41/2026",
+            "page": 1,
+            "printedLabel": "Periode",
+            "status": "exact",
+            "reason": null,
+            "destination": "documents[].payPeriod"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.periodStart",
+            "value": "2026-10-05",
+            "rawValue": "05-10-2026",
+            "page": 1,
+            "printedLabel": "Periode",
+            "status": "exact",
+            "reason": null,
+            "destination": "documents[].payPeriod"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.periodEnd",
+            "value": "2026-10-11",
+            "rawValue": "t/m 11-10-2026",
+            "page": 1,
+            "printedLabel": "Periode",
+            "status": "exact",
+            "reason": null,
+            "destination": "documents[].payPeriod"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.paymentDate",
+            "value": "2026-10-16",
+            "rawValue": "16-10-2026",
+            "page": 1,
+            "printedLabel": "Betaaldatum",
+            "status": "exact",
+            "reason": null,
+            "destination": "documents[].payPeriod"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.periodType",
+            "value": "week",
+            "rawValue": "Week 41",
+            "page": 1,
+            "printedLabel": "Periode",
+            "status": "exact",
+            "reason": null,
+            "destination": "payroll.periodType"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hirerName",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hirerName"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hoursPerWeek",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "employment.hoursPerWeek"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourlyRate",
+            "value": 15.55,
+            "rawValue": "Uurloon: 15.55",
+            "page": 1,
+            "printedLabel": "Uurloon",
+            "status": "exact",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.bijzonderTariefPercent",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "payroll.bijzonderTariefPrintedPercent"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.jaarloonBt",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "payroll.jaarloonBt"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.etExchangeAmount",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "payroll.etExchangeAmount"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.minimumWagePrinted",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedTableTax",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedBtTax",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedAlgemeneHeffingskorting",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedArbeidskorting",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedGrossTotal",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedLoonVoorHeffingen",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedTaxableBaseNormal",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedTaxableBaseSpecial",
+            "value": null,
+            "rawValue": null,
+            "page": null,
+            "printedLabel": null,
+            "status": "absent",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedNet",
+            "value": 509.92,
+            "rawValue": "Totaal netto 509.92",
+            "page": 1,
+            "printedLabel": "Totaal netto",
+            "status": "exact",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.printedPayout",
+            "value": 584.92,
+            "rawValue": "Overgemaakt 584.92",
+            "page": 1,
+            "printedLabel": "Overgemaakt",
+            "status": "exact",
+            "reason": null,
+            "destination": "calibrationOnly"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.employerName",
+            "value": "Synthetic Uitzend B.V.",
+            "rawValue": "Synthetic Uitzend B.V.",
+            "page": 1,
+            "printedLabel": "Werkgever",
+            "status": "exact",
+            "reason": null,
+            "destination": "employment.payslipEmployerName"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourLine.regular.rate",
+            "value": 15.55,
+            "rawValue": "W 41 Loon normaal 36.00 x 15.55 559.80",
+            "page": 1,
+            "printedLabel": "Loon normaal",
+            "status": "exact",
+            "reason": null,
+            "destination": "employment.hourlyRate"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.hourLine.adv_compensation.percent",
+            "value": 1.54,
+            "rawValue": "ADV toeslag 1.54 % 36.00 x 15.55 8.62",
+            "page": 1,
+            "printedLabel": "ADV toeslag",
+            "status": "exact",
+            "reason": null,
+            "destination": "recurringItems.surcharges"
+          },
+          {
+            "documentIndex": 0,
+            "documentLabel": "payslip-1",
+            "role": "payslip",
+            "key": "payslip.netLine.reimbursement.amount",
+            "value": 75,
+            "rawValue": "Onb. Reiskosten 75.00",
+            "page": 1,
+            "printedLabel": "Onb. Reiskosten",
+            "status": "exact",
+            "reason": null,
+            "destination": "recurringItems.netAdditions"
+          }
+        ],
+        "coverage": [
+          {
+            "index": 0,
+            "totalPages": 1,
+            "processedPages": [
+              1
+            ],
+            "notProcessedPages": []
+          }
+        ],
+        "decisionResults": [],
+        "issues": [
+          {
+            "fieldPath": "employment.hoursPerWeek",
+            "key": "hoursPerWeek",
+            "meaning": "contract_hours_per_week",
+            "unit": "hours_per_week",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_documents"
+            },
+            "severity": "optional",
+            "groups": [
+              "core_pay"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0.01,
+              "max": 168,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "4df7d14217feafac",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.guaranteedHours",
+            "key": "guaranteedHours",
+            "meaning": "guaranteed_hours_per_guarantee_period",
+            "unit": "hours",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "optional",
+            "groups": [
+              "core_pay"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0.01,
+              "max": 744,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "952a5591d5124507",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.guaranteedHoursPeriodWeeks",
+            "key": "guaranteedHoursPeriodWeeks",
+            "meaning": "guarantee_period_length",
+            "unit": "weeks",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "optional",
+            "groups": [
+              "core_pay"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 1,
+              "max": 52,
+              "step": 1
+            },
+            "evidenceFingerprint": "70036e1689bf4689",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.employerName",
+            "key": "employerName",
+            "meaning": "employer_or_agency_name_contract",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "f1f8558ae30e41a1",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.hirerName",
+            "key": "hirerName",
+            "meaning": "hirer_name_payslip",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "623a2515ce3a5b91",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.contractHirerName",
+            "key": "contractHirerName",
+            "meaning": "hirer_name_contract",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "bc5f4d4803a38445",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.overtimeThresholdHours",
+            "key": "overtimeThresholdHours",
+            "meaning": "daily_overtime_hours_before_tier_2",
+            "unit": "hours",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [
+              "overtime"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0.01,
+              "max": 744,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "1af3bf3f47ddd748",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.caoName",
+            "key": "caoName",
+            "meaning": "cao_name",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "f937a12b0beab6c8",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.phase",
+            "key": "phase",
+            "meaning": "cao_phase",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "d46ddf56966929e6",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.contractType",
+            "key": "contractType",
+            "meaning": "contract_type",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "712736442dedd538",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.functionTitle",
+            "key": "functionTitle",
+            "meaning": "function_title",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "683e70824b1a61dc",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.contractStartDate",
+            "key": "contractStartDate",
+            "meaning": "contract_start_date",
+            "unit": "date",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "date"
+            },
+            "evidenceFingerprint": "c1e5261dbf6be2f8",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.contractEndDate",
+            "key": "contractEndDate",
+            "meaning": "contract_end_date",
+            "unit": "date",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "date"
+            },
+            "evidenceFingerprint": "de55a4e5c2efb0c3",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.monthlySalary",
+            "key": "monthlySalary",
+            "meaning": "gross_monthly_salary",
+            "unit": "eur_per_month",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100000,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "40da3a2b1e1ce1ee",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "employment.pensionFundName",
+            "key": "pensionFundName",
+            "meaning": "pension_fund_name",
+            "unit": "text",
+            "state": "unknown",
+            "reason": {
+              "code": "no_contract_document"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "text",
+              "min": 1,
+              "max": 200
+            },
+            "evidenceFingerprint": "8552f34bc956bacc",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.overtimeTier1Premium",
+            "key": "overtimeTier1Premium",
+            "meaning": "overtime_tier_1_premium_above_base",
+            "unit": "premium_percent",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_documents"
+            },
+            "severity": "informational",
+            "groups": [
+              "overtime"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 400,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "b6adaaaa1c09aa5c",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.overtimeTier2Premium",
+            "key": "overtimeTier2Premium",
+            "meaning": "overtime_tier_2_premium_above_base",
+            "unit": "premium_percent",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_documents"
+            },
+            "severity": "informational",
+            "groups": [
+              "overtime"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 400,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "311c2bbec1884772",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.saturdayPremium",
+            "key": "saturdayPremium",
+            "meaning": "saturday_premium_above_base",
+            "unit": "premium_percent",
+            "state": "unknown",
+            "reason": {
+              "code": "no_weekday_evidence"
+            },
+            "severity": "informational",
+            "groups": [
+              "saturday"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 400,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "aa40658a463ef69c",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.sundayPremium",
+            "key": "sundayPremium",
+            "meaning": "sunday_premium_above_base",
+            "unit": "premium_percent",
+            "state": "unknown",
+            "reason": {
+              "code": "no_weekday_evidence"
+            },
+            "severity": "informational",
+            "groups": [
+              "sunday"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 400,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "7257a7d26dd2c596",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.publicHolidayPremium",
+            "key": "publicHolidayPremium",
+            "meaning": "public_holiday_premium_above_base",
+            "unit": "premium_percent",
+            "state": "unknown",
+            "reason": {
+              "code": "no_weekday_evidence"
+            },
+            "severity": "informational",
+            "groups": [
+              "public_holiday"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 400,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "6ceeedac9cbf0197",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.loonheffingskorting",
+            "key": "loonheffingskorting",
+            "meaning": "loonheffingskorting_applied",
+            "unit": "boolean",
+            "state": "unknown",
+            "reason": {
+              "code": "no_evidence_source"
+            },
+            "severity": "informational",
+            "groups": [
+              "tax_settings"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "boolean"
+            },
+            "evidenceFingerprint": "f628158a3b66e587",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.pensionEmployeePercent",
+            "key": "pensionEmployeePercent",
+            "meaning": "pension_employee_contribution",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "78e511cc43d229cc",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.pawwEmployeePercent",
+            "key": "pawwEmployeePercent",
+            "meaning": "paww_employee_contribution",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "3b32ba8cde522f19",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.sectorPremiumPercent",
+            "key": "sectorPremiumPercent",
+            "meaning": "sector_premium_ziektewet_azw_employee",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "46ee85bbc4f01b6f",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.wgaGatEmployeePercent",
+            "key": "wgaGatEmployeePercent",
+            "meaning": "wga_gat_employee_contribution",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "b0b11c2ff9daa062",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.wgaEmployeePercent",
+            "key": "wgaEmployeePercent",
+            "meaning": "wga_employee_contribution_post_tax",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "183d112d32d52a21",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.gediffWgaEmployeePercent",
+            "key": "gediffWgaEmployeePercent",
+            "meaning": "gediff_wga_employee_contribution_post_tax",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "5aadf4b492777cb9",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.whkEmployeePercent",
+            "key": "whkEmployeePercent",
+            "meaning": "whk_employee_contribution_post_tax",
+            "unit": "percent_of_printed_base",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "employee_deductions"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "49f77f094d621064",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.vakantiegeldAccrualPercent",
+            "key": "vakantiegeldAccrualPercent",
+            "meaning": "vakantiegeld_accrual_rate",
+            "unit": "percent",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "70b8aad72ccc910d",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.bijzonderTariefPrintedPercent",
+            "key": "bijzonderTariefPrintedPercent",
+            "meaning": "bijzonder_tarief_rate_as_printed",
+            "unit": "percent",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "max": 100,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "8d01776df3dbf982",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.jaarloonBt",
+            "key": "jaarloonBt",
+            "meaning": "jaarloon_used_for_bijzonder_tarief",
+            "unit": "eur_per_year",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "3c37ae821949be92",
+            "previousDecision": null,
+            "impact": null
+          },
+          {
+            "fieldPath": "payroll.etExchangeAmount",
+            "key": "etExchangeAmount",
+            "meaning": "et_taxable_base_reduction_per_period",
+            "unit": "eur_per_period",
+            "state": "unknown",
+            "reason": {
+              "code": "not_on_payslips"
+            },
+            "severity": "informational",
+            "groups": [
+              "net_items"
+            ],
+            "candidates": [],
+            "hints": [],
+            "excluded": [],
+            "actions": [
+              "enter_value",
+              "leave_unresolved"
+            ],
+            "input": {
+              "kind": "number",
+              "min": 0,
+              "step": 0.01
+            },
+            "evidenceFingerprint": "45e9bbb9a32be853",
+            "previousDecision": null,
+            "impact": null
+          }
+        ],
+        "readiness": {
+          "activeGroups": [
+            "core_pay"
+          ],
+          "ready": true,
+          "blockingCount": 0,
+          "optionalCount": 3
+        },
+        "documentContext": {
+          "ref": "R3B2contextRef000000000000000000",
+          "knowledge": {
+            "version": 1,
+            "facts": [
+              {
+                "topic": "hourly_rate",
+                "key": "hourly_rate",
+                "label": "Uurloon",
+                "value": 15.55,
+                "unit": "eur_per_hour",
+                "status": "document_reading",
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "page": 1,
+                "periodLabel": "week 41/2026"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "period",
+                "key": "period_label",
+                "label": "Periode",
+                "value": "week 41/2026",
+                "unit": "text",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "period",
+                "key": "period_start",
+                "label": "Periode",
+                "value": "2026-10-05",
+                "unit": "date",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "period",
+                "key": "period_end",
+                "label": "Periode",
+                "value": "2026-10-11",
+                "unit": "date",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "period",
+                "key": "period_type",
+                "label": "Periode",
+                "value": "week",
+                "unit": "period_type",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "Loon normaal",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "hours",
+                "key": "regular_hours",
+                "value": 36,
+                "unit": "hours"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "Loon normaal",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "wage_line_amount",
+                "value": 559.8,
+                "unit": "eur"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "ADV toeslag",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "surcharge_percent",
+                "value": 1.54,
+                "unit": "percent"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "ADV toeslag",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "wage_line_amount",
+                "value": 8.62,
+                "unit": "eur"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "net",
+                "key": "net",
+                "label": "Totaal netto",
+                "value": 509.92,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "payout",
+                "key": "payout",
+                "label": "Overgemaakt",
+                "value": 584.92,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "reimbursement",
+                "key": "reimbursement",
+                "label": "Onb. Reiskosten",
+                "value": 75,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              }
+            ]
+          }
         }
       }
     }
@@ -20217,7 +22913,9 @@
           },
           "responseHint": {
             "code": "cannot_calculate_without_inputs"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -20355,7 +23053,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -20490,7 +23190,9 @@
             "params": {
               "agentStatus": "not_configured"
             }
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -20625,7 +23327,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -20763,7 +23467,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -20921,7 +23627,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       },
       {
@@ -21067,7 +23775,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -21205,7 +23915,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -21363,7 +24075,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       },
       {
@@ -21509,7 +24223,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -21649,7 +24365,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -21787,7 +24505,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -21927,7 +24647,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -22065,7 +24787,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -22205,7 +24929,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -22356,7 +25082,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -22545,7 +25273,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       },
       {
@@ -22713,7 +25443,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       }
     ],
@@ -22887,7 +25619,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       },
       {
@@ -23084,7 +25818,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -23282,7 +26018,9 @@
           },
           "responseHint": {
             "code": "needs_information"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
         }
       },
       {
@@ -23450,7 +26188,9 @@
           },
           "responseHint": {
             "code": "user_does_not_know"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       }
     ],
@@ -23582,7 +26322,9 @@
           },
           "responseHint": {
             "code": "user_does_not_know"
-          }
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
         }
       },
       {
@@ -23721,7 +26463,1268 @@
           },
           "responseHint": {
             "code": "needs_information"
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
+        }
+      }
+    ],
+    "r3b2_document_questions": [
+      {
+        "idPrefix": "r3b2_document_questions-t1",
+        "request": {
+          "message": "Jaka jest moja stawka?",
+          "locale": "pl",
+          "conversation": {
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions-t1-1",
+          "status": "unchanged",
+          "intent": "document_question",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [
+            {
+              "code": "trusted_value_added",
+              "field": "pay.hourlyRate"
+            }
+          ],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "provide_value",
+            "field": "work.hours",
+            "reasonCode": "missing",
+            "answerMode": "hours_by_category",
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.provide_value",
+              "params": {
+                "field": "work.hours"
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "document_answer"
+          },
+          "documentAnswer": {
+            "available": true,
+            "topics": [
+              "hourly_rate"
+            ],
+            "items": [
+              {
+                "topic": "hourly_rate",
+                "key": "hourly_rate",
+                "label": "Uurloon",
+                "value": 15.55,
+                "unit": "eur_per_hour",
+                "status": "document_reading",
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "page": 1,
+                "periodLabel": "week 41/2026"
+              }
+            ]
+          },
+          "answerSource": "document_facts"
+        }
+      },
+      {
+        "idPrefix": "r3b2_document_questions-t2",
+        "request": {
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "message": "Ile faktycznie przelano?",
+          "locale": "pl",
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions-t2-1",
+          "status": "unchanged",
+          "intent": "document_question",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "provide_value",
+            "field": "work.hours",
+            "reasonCode": "missing",
+            "answerMode": "hours_by_category",
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.provide_value",
+              "params": {
+                "field": "work.hours"
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "document_answer"
+          },
+          "documentAnswer": {
+            "available": true,
+            "topics": [
+              "payout"
+            ],
+            "items": [
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "net",
+                "key": "net",
+                "label": "Totaal netto",
+                "value": 509.92,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "payout",
+                "key": "payout",
+                "label": "Overgemaakt",
+                "value": 584.92,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "reimbursement",
+                "key": "reimbursement",
+                "label": "Onb. Reiskosten",
+                "value": 75,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              }
+            ]
+          },
+          "answerSource": "document_facts"
+        }
+      },
+      {
+        "idPrefix": "r3b2_document_questions-t3",
+        "request": {
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "message": "Dlaczego netto jest niższe?",
+          "locale": "pl",
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions-t3-1",
+          "status": "unchanged",
+          "intent": "document_question",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "provide_value",
+            "field": "work.hours",
+            "reasonCode": "missing",
+            "answerMode": "hours_by_category",
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.provide_value",
+              "params": {
+                "field": "work.hours"
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "document_answer"
+          },
+          "documentAnswer": {
+            "available": true,
+            "topics": [
+              "deductions",
+              "net"
+            ],
+            "items": [
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "Loon normaal",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "wage_line_amount",
+                "value": 559.8,
+                "unit": "eur"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "ADV toeslag",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "surcharge_percent",
+                "value": 1.54,
+                "unit": "percent"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "ADV toeslag",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "gross",
+                "key": "wage_line_amount",
+                "value": 8.62,
+                "unit": "eur"
+              },
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "topic": "net",
+                "key": "net",
+                "label": "Totaal netto",
+                "value": 509.92,
+                "unit": "eur",
+                "status": "document_reading",
+                "page": 1
+              }
+            ]
+          },
+          "answerSource": "document_facts"
+        }
+      },
+      {
+        "idPrefix": "r3b2_document_questions-t4",
+        "request": {
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "message": "Ile dostanę za 40 godzin?",
+          "locale": "pl",
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": {
+          "status": "ok",
+          "output": {
+            "intent": "calculation_request",
+            "patch": {
+              "version": 1,
+              "ops": []
+            },
+            "statedWeeklyHours": 40
           }
+        },
+        "response": {
+          "turnId": "r3b2_document_questions-t4-1",
+          "status": "unchanged",
+          "intent": "calculation_request",
+          "agentStatus": "ok",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "clarify_hours_composition",
+            "field": "work.hours",
+            "reasonCode": "ambiguous_hours",
+            "answerMode": "choice",
+            "options": [
+              "weekday_regular_only",
+              "includes_other_categories"
+            ],
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.clarify_hours_composition",
+              "params": {
+                "field": "work.hours",
+                "statedWeeklyTotal": 40
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "clarify_hours_composition"
+            },
+            "declinedAssumptions": [],
+            "hoursClarification": {
+              "statedWeeklyTotal": 40
+            },
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "cannot_calculate_without_inputs"
+          },
+          "documentAnswer": null,
+          "answerSource": "none"
+        }
+      },
+      {
+        "idPrefix": "r3b2_document_questions-t5",
+        "request": {
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "message": "40 godzin od poniedziałku do piątku",
+          "locale": "pl",
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "clarify_hours_composition"
+            },
+            "declinedAssumptions": [],
+            "hoursClarification": {
+              "statedWeeklyTotal": 40
+            },
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions-t5-1",
+          "status": "updated",
+          "intent": "provide_information",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {
+              "regularWeekdayHours": {
+                "source": "user",
+                "state": "known",
+                "value": 40
+              }
+            }
+          },
+          "patchApplied": [
+            {
+              "op": "write",
+              "field": "work.regularWeekdayHours",
+              "node": {
+                "state": "known",
+                "value": 40,
+                "source": "user"
+              }
+            }
+          ],
+          "patchIssues": [],
+          "patchNotes": [],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {
+                "regularWeekdayHours": {
+                  "source": "user",
+                  "state": "known",
+                  "value": 40
+                }
+              },
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": null,
+          "conversation": {
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "needs_information"
+          },
+          "documentAnswer": null,
+          "answerSource": "user_input"
+        }
+      }
+    ],
+    "r3b2_document_questions_en": [
+      {
+        "idPrefix": "r3b2_document_questions_en-t1",
+        "request": {
+          "message": "What is my hourly rate?",
+          "locale": "en",
+          "conversation": {
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions_en-t1-1",
+          "status": "unchanged",
+          "intent": "document_question",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions_en-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [
+            {
+              "code": "trusted_value_added",
+              "field": "pay.hourlyRate"
+            }
+          ],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions_en-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "provide_value",
+            "field": "work.hours",
+            "reasonCode": "missing",
+            "answerMode": "hours_by_category",
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.provide_value",
+              "params": {
+                "field": "work.hours"
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "document_answer"
+          },
+          "documentAnswer": {
+            "available": true,
+            "topics": [
+              "hourly_rate"
+            ],
+            "items": [
+              {
+                "topic": "hourly_rate",
+                "key": "hourly_rate",
+                "label": "Uurloon",
+                "value": 15.55,
+                "unit": "eur_per_hour",
+                "status": "document_reading",
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "page": 1,
+                "periodLabel": "week 41/2026"
+              }
+            ]
+          },
+          "answerSource": "document_facts"
+        }
+      },
+      {
+        "idPrefix": "r3b2_document_questions_en-t2",
+        "request": {
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions_en-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "message": "How many hours was I paid?",
+          "locale": "en",
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "documentContextRef": "R3B2contextRef000000000000000000"
+        },
+        "agentOutcome": null,
+        "response": {
+          "turnId": "r3b2_document_questions_en-t2-1",
+          "status": "unchanged",
+          "intent": "document_question",
+          "agentStatus": "not_needed",
+          "scenario": {
+            "pay": {
+              "hourlyRate": {
+                "ref": "doc-1",
+                "source": "document",
+                "state": "known",
+                "value": 15.55
+              }
+            },
+            "periodType": "week",
+            "scenarioId": "r3b2_document_questions_en-t1-2",
+            "schemaVersion": 1,
+            "tax": {},
+            "work": {}
+          },
+          "patchApplied": null,
+          "patchIssues": [],
+          "patchNotes": [],
+          "evaluation": {
+            "status": "blocked",
+            "scenario": {
+              "pay": {
+                "hourlyRate": {
+                  "ref": "doc-1",
+                  "source": "document",
+                  "state": "known",
+                  "value": 15.55
+                }
+              },
+              "periodType": "week",
+              "scenarioId": "r3b2_document_questions_en-t1-2",
+              "schemaVersion": 1,
+              "tax": {},
+              "work": {},
+              "status": "blocked"
+            },
+            "requirements": [
+              {
+                "field": "work.hours",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": false
+                }
+              },
+              {
+                "field": "tax.loonheffingskorting",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": false,
+                  "deterministicVariants": true
+                }
+              },
+              {
+                "field": "deductions.mode",
+                "reason": "missing",
+                "resolvableBy": {
+                  "userAnswer": true,
+                  "explicitAssumption": true,
+                  "deterministicVariants": true
+                }
+              }
+            ],
+            "warnings": []
+          },
+          "nextQuestion": {
+            "kind": "provide_value",
+            "field": "work.hours",
+            "reasonCode": "missing",
+            "answerMode": "hours_by_category",
+            "canUseAssumption": false,
+            "fallbackOptions": [
+              "split_hours",
+              "give_range"
+            ],
+            "priority": 200,
+            "prompt": {
+              "key": "question.provide_value",
+              "params": {
+                "field": "work.hours"
+              }
+            }
+          },
+          "conversation": {
+            "pendingQuestion": {
+              "field": "work.hours",
+              "kind": "provide_value"
+            },
+            "declinedAssumptions": [],
+            "deferredFields": [
+              "pay.hourlyRate",
+              "tax.loonheffingskorting",
+              "deductions.mode",
+              "deductions.entered.pension",
+              "deductions.entered.paww",
+              "deductions.entered.sectorPremium",
+              "deductions.entered.postTaxOther",
+              "extras.travelAllowance",
+              "extras.vakantiegeld.mode",
+              "extras.vakantiegeld.percent"
+            ]
+          },
+          "responseHint": {
+            "code": "document_answer"
+          },
+          "documentAnswer": {
+            "available": true,
+            "topics": [
+              "hours"
+            ],
+            "items": [
+              {
+                "documentIndex": 0,
+                "documentId": "doc-1",
+                "role": "payslip",
+                "periodLabel": "week 41/2026",
+                "label": "Loon normaal",
+                "status": "document_reading",
+                "page": 1,
+                "topic": "hours",
+                "key": "regular_hours",
+                "value": 36,
+                "unit": "hours"
+              }
+            ]
+          },
+          "answerSource": "document_facts"
         }
       }
     ]

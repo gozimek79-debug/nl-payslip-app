@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { fixtures, harness, pdf, readOk } from './r3b-test-support.ts';
+import { fixtures, harness, pdf, readByRef, readOk } from './r3b-test-support.ts';
 
 /**
  * R3-B: the REAL screen rendered to markup (esbuild + react-dom/server, as r3a-render.test.ts) after driving the real
@@ -164,4 +164,48 @@ test('R3-B screen: English', async () => {
   for (const label of ['Add a payslip', 'Add a contract', 'Add an annex', 'Continue without documents', 'Test version — use sample documents only, without personal data']) assert.ok(text.includes(label), label);
   store.continueWithoutDocuments();
   assert.ok(textOf(render(store)).includes('What would you like to calculate?'));
+});
+
+/** R3-B.2: figures PRINTED on the user's document may appear only inside the labelled reading blocks. */
+const withoutReadings = (markup: string) => markup.replace(/<div class="r3b-doc-answer"[^>]*>[\s\S]*?<\/div>/g, ' ').replace(/<div class="r3b-printed">[\s\S]*?<\/div>/g, ' ');
+
+test('R3-B.2 screen: document answers are labelled readings, the trusted rate shows its server source - and outside the readings no amount', async () => {
+  const store = createStore(harness({ reads: { 'pasek.pdf': readByRef('payslip_week41_1555') }, turns: fixtures.turns.r3b2_document_questions }).deps, 'pl');
+  store.addFiles([pdf('pasek.pdf')], 'payslip');
+  await store.read();
+  for (const message of ['Jaka jest moja stawka?', 'Ile faktycznie przelano?', 'Dlaczego netto jest niższe?', 'Ile dostanę za 40 godzin?', '40 godzin od poniedziałku do piątku']) await store.send(message);
+  store.setPanel(true);
+  const markup = render(store);
+  const text = textOf(markup);
+  assert.ok(text.includes('Wydrukowane na dokumencie'), 'the summary lists the printed facts');
+  assert.ok(text.includes('Na dokumencie widzę:'));
+  assert.ok(text.includes('Stawka godzinowa: €15,55/h („Uurloon”) — Pasek wypłaty 1, week 41/2026'));
+  assert.ok(text.includes('Przelano na konto: €584,92 („Overgemaakt”) — Pasek wypłaty 1, week 41/2026'));
+  assert.ok(text.includes('To odczyt z dokumentu, nie przeliczenie Loonto — wymaga weryfikacji.'));
+  assert.ok(text.includes('Różnicy między brutto a netto nie wyliczam w tej wersji'));
+  assert.ok(text.includes('Stawkę biorę z Twojego dokumentu: €15,55/h — nie pytam o nią ponownie.'));
+  assert.ok(text.includes('Kwoty wypłaty w tej wersji jeszcze nie wyliczam'));
+  assert.ok(text.includes('Stawka godzinowa brutto: uwzględniam odczyt z Twojego dokumentu'), 'the server-trusted value is announced in words');
+  assert.ok(!text.includes('Część odpowiedzi pomijam'), 'no misleading generic note');
+  assert.ok(!text.includes('Ile wynosi Twoja stawka'), 'the rate is never asked');
+  assert.match(text, /stawka godzinowa brutto €15,55\/h Z dokumentu \(odczyt serwera\) — wymaga weryfikacji/);
+  assert.ok(text.includes('Wynik jeszcze niedostępny'));
+  assert.ok(!markup.includes(fixtures.documentRefs.context), 'the context reference is never rendered');
+  assert.match(markup, /data-answer-source="document_facts"/);
+  assertHonest(withoutReadings(markup));
+});
+
+test('R3-B.2 screen (EN): the same answers in English', async () => {
+  const store = createStore(harness({ reads: { 'pasek.pdf': readByRef('payslip_week41_1555') }, turns: fixtures.turns.r3b2_document_questions_en }).deps, 'en');
+  store.addFiles([pdf('pasek.pdf')], 'payslip');
+  await store.read();
+  await store.send('What is my hourly rate?');
+  await store.send('How many hours was I paid?');
+  const markup = render(store);
+  const text = textOf(markup);
+  assert.ok(text.includes('On the document I can see:'));
+  assert.ok(text.includes('Hourly rate: €15.55/h („Uurloon”) — Payslip 1, week 41/2026'));
+  assert.ok(text.includes('Regular hours paid: 36 h („Loon normaal”)'));
+  assert.ok(text.includes('This is what the document prints, not a Loonto calculation — it needs verification.'));
+  assertHonest(withoutReadings(markup));
 });

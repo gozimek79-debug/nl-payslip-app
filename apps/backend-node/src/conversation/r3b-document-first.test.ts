@@ -13,6 +13,10 @@ import { EMPLOYMENT_FIELD_ENGINE, PAYROLL_FIELD_ENGINE } from '../scenario/scena
 import type { ScenarioV1 } from '../scenario/scenario-types.js';
 import { RATES_2026, known, ok, out, scenario, scriptedAgent } from '../test-support/conversation-fixtures.js';
 import { INSTRUCTION_TEXT, r3bFactBatches, type R3BDocumentId } from '../test-support/r3b-fixtures.js';
+import { mergePayslipBatches, type PayslipFactsBatch } from '../payroll-engine/document-facts.js';
+import { resolvePayrollProfile } from '../payroll-engine/payroll-profile.js';
+import { buildDocumentKnowledge, type DocumentKnowledge } from '../document-context/knowledge.js';
+import { trustedContextFromProfile, type TrustedContext } from './trusted-context.js';
 
 /**
  * R3-B (Document-First Intelligent Conversation) - the server side of the vertical slice, with NO paid call:
@@ -37,6 +41,21 @@ const OUT_OF_GOAL = [
 ];
 /** The interface's technical as-of date for a document set the as-of date cannot change (no annex). */
 const TODAY = '2026-10-18';
+
+/**
+ * R3-B.2: the server-held references of the recorded week-41 flow. The real store issues random references bound to a
+ * session (document-context/store.ts - its HTTP path is covered by controllers/document-context.controller.test.ts);
+ * here they are fixed, and the context behind R3B2_CONTEXT_REF is built exactly as profile.controller.ts builds it:
+ * the documentary profile of the same batches, its TrustedContext and its Document Knowledge.
+ */
+const R3B2_BATCH_REF = `R3B2batchRef${'0'.repeat(20)}`;
+const R3B2_CONTEXT_REF = `R3B2contextRef${'0'.repeat(18)}`;
+
+function week41Context(): { trusted: TrustedContext; knowledge: DocumentKnowledge } {
+  const documents = [{ index: 0, documentId: 'doc-1', label: 'payslip-1', role: 'payslip' as const, effectiveDate: null, facts: mergePayslipBatches(r3bFactBatches().payslip_week41_1555 as PayslipFactsBatch[]) }];
+  const documentary = resolvePayrollProfile({ asOfDate: TODAY, documents });
+  return { trusted: trustedContextFromProfile(documentary), knowledge: buildDocumentKnowledge(documents, documentary) };
+}
 
 let app: (typeof import('../app.js'))['default'];
 let server: ReturnType<typeof app.listen>;
@@ -86,7 +105,7 @@ const PROFILE_CASES: Record<string, () => ReturnType<typeof profileRequest>> = {
   contract_no_rate: () => profileRequest(TODAY, [{ fixture: 'contract_base_no_rate', role: 'contract_base' }]),
 };
 
-interface FlowSpec { id: string; locale: 'pl' | 'en'; docKnown: string[]; steps: Array<{ message: string; agent?: AgentOutcome; extraDeferred?: string[] }> }
+interface FlowSpec { id: string; locale: 'pl' | 'en'; docKnown: string[]; contextRef?: string; steps: Array<{ message: string; agent?: AgentOutcome; extraDeferred?: string[] }> }
 
 const FLOWS: FlowSpec[] = [
   // Case 1: a readable EUR 16.80 - the free-text goal (model path, scripted as the model reads it) and the no-model fallback.
@@ -119,6 +138,19 @@ const FLOWS: FlowSpec[] = [
     { message: 'Nie wiem' }, { message: 'Nie wiem' },
   ] },
   { id: 'g23_repeated_dont_know', locale: 'pl', docKnown: [], steps: [{ message: 'Nie wiem' }, { message: 'Nie wiem' }] },
+  // R3-B.2: a payslip read by reference - the worker's questions are answered from the document, the rate is trusted
+  // (never asked), the calculation request still only gathers inputs.
+  { id: 'r3b2_document_questions', locale: 'pl', docKnown: ['pay.hourlyRate'], contextRef: R3B2_CONTEXT_REF, steps: [
+    { message: 'Jaka jest moja stawka?' },
+    { message: 'Ile faktycznie przelano?' },
+    { message: 'Dlaczego netto jest niższe?' },
+    { message: 'Ile dostanę za 40 godzin?', agent: ok({ intent: 'calculation_request', patch: { version: 1, ops: [] }, statedWeeklyHours: 40 }) },
+    { message: '40 godzin od poniedziałku do piątku' },
+  ] },
+  { id: 'r3b2_document_questions_en', locale: 'en', docKnown: ['pay.hourlyRate'], contextRef: R3B2_CONTEXT_REF, steps: [
+    { message: 'What is my hourly rate?' },
+    { message: 'How many hours was I paid?' },
+  ] },
 ];
 
 /** Deterministic replies the interface offers, per question context (all must be answered without a model). */
@@ -144,25 +176,31 @@ function unionDeferred(server: readonly string[] | undefined, add: readonly stri
   return outList;
 }
 
-interface TurnRecord { idPrefix: string; request: TurnRequest; agentOutcome: AgentOutcome | null; response: ConversationTurnResult }
+type RecordedTurnRequest = TurnRequest & { documentContextRef?: string };
+interface TurnRecord { idPrefix: string; request: RecordedTurnRequest; agentOutcome: AgentOutcome | null; response: ConversationTurnResult }
 
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-async function turnOnce(request: TurnRequest, agentOutcome: AgentOutcome | null, idPrefix: string): Promise<ConversationTurnResult> {
+/** As the turn route does: a request naming the (recorded) context reference runs with that server-held context. */
+async function turnOnce(request: RecordedTurnRequest, agentOutcome: AgentOutcome | null, idPrefix: string): Promise<ConversationTurnResult> {
   let n = 0;
   const agent = agentOutcome ? scriptedAgent([agentOutcome]) : null;
-  return json(await runConversationTurn(json(request), { agent, rates: RATES_2026, trusted: null, newId: () => `${idPrefix}-${++n}` }));
+  const { documentContextRef, ...turnRequest } = json(request);
+  assert.ok(documentContextRef === undefined || documentContextRef === R3B2_CONTEXT_REF, 'only the recorded context exists');
+  const ctx = documentContextRef ? week41Context() : null;
+  return json(await runConversationTurn(turnRequest, { agent, rates: RATES_2026, trusted: ctx?.trusted ?? null, documentKnowledge: ctx?.knowledge ?? null, newId: () => `${idPrefix}-${++n}` }));
 }
 
-async function playFlow(locale: 'pl' | 'en', docKnown: string[], steps: FlowSpec['steps'], id: string): Promise<TurnRecord[]> {
+async function playFlow(locale: 'pl' | 'en', docKnown: string[], steps: FlowSpec['steps'], id: string, contextRef?: string): Promise<TurnRecord[]> {
   const records: TurnRecord[] = [];
   let last: ConversationTurnResult | null = null;
   for (const [i, step] of steps.entries()) {
-    const request: TurnRequest = {
+    const request: RecordedTurnRequest = {
       ...(last ? { scenario: last.scenario } : {}),
       message: step.message,
       locale,
       conversation: { ...(last?.conversation ?? {}), deferredFields: unionDeferred(last?.conversation.deferredFields, [...docKnown, ...OUT_OF_GOAL, ...(step.extraDeferred ?? [])]) } as TurnRequest['conversation'],
+      ...(contextRef ? { documentContextRef: contextRef } : {}),
     };
     const idPrefix = `${id}-t${i + 1}`;
     const response = await turnOnce(request, step.agent ?? null, idPrefix);
@@ -194,7 +232,16 @@ async function buildFixtures() {
   profiles.contract_payslip_conflict_payslip_chosen = { request: chosen, response: await resolve(chosen) };
 
   const turns: Record<string, TurnRecord[]> = {};
-  for (const flow of FLOWS) turns[flow.id] = await playFlow(flow.locale, flow.docKnown, flow.steps, flow.id);
+  // R3-B.2: the week-41 payslip by reference. The response is the real resolve of the same batches plus the document
+  // context the controller issues for an all-by-reference request (here under the recorded reference).
+  const week41Echo = (await resolve(profileRequest(TODAY, [{ fixture: 'payslip_week41_1555', role: 'payslip' }]))) as Record<string, unknown>;
+  assert.equal(week41Echo.documentContext, null, 'echoed batches never produce a document context');
+  profiles.payslip_week41_by_ref = {
+    request: { asOfDate: TODAY, documents: [{ index: 0, documentId: 'doc-1', label: 'payslip-1', role: 'payslip', effectiveDate: null, batchRefs: [R3B2_BATCH_REF] }] },
+    response: { ...week41Echo, documentContext: { ref: R3B2_CONTEXT_REF, knowledge: week41Context().knowledge } },
+  };
+
+  for (const flow of FLOWS) turns[flow.id] = await playFlow(flow.locale, flow.docKnown, flow.steps, flow.id, flow.contextRef);
 
   const probes: Array<{ context: string; locale: string; message: string; question: string | null; agentStatus: string; status: string; written: string[]; next: string | null }> = [];
   for (const probe of PROBES) {
@@ -220,6 +267,7 @@ async function buildFixtures() {
     note: 'GENERATED by apps/backend-node/src/conversation/r3b-document-first.test.ts (R3B_WRITE_FIXTURES=1). Synthetic data only. Do not edit by hand.',
     outOfGoalFields: OUT_OF_GOAL,
     technicalAsOfDate: TODAY,
+    documentRefs: { batch: { payslip_week41_1555: [R3B2_BATCH_REF] }, context: R3B2_CONTEXT_REF },
     batches: r3bFactBatches(),
     profiles,
     turns,
@@ -457,4 +505,24 @@ test('R3-B narrow L1 subset: a night / evening / shift / irregular-hours allowan
   assert.deepEqual(bare.scenario.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'user' });
   const both = await runConversationTurn({ scenario: weekend, message: 'sobota 50%, a nocki 25%', locale: 'pl', conversation: { deferredFields: [] } }, { agent: scriptedAgent([out('provide_information', [{ op: 'set', field: 'pay.saturdayPremiumPercent', value: 50 }])]), rates: RATES_2026, trusted: null });
   assert.deepEqual(both.scenario.pay.saturdayPremiumPercent, { state: 'known', value: 50, source: 'user' });
+});
+
+test('R3-B.2 contract: by reference, the worker\'s questions are answered from the payslip and its rate is trusted - never asked', () => {
+  const byRef = fixtures.profiles.payslip_week41_by_ref as { request: { documents: Array<Record<string, unknown>> }; response: { documentContext: { ref: string; knowledge: DocumentKnowledge } } };
+  assert.ok(byRef.request.documents.every((d) => Array.isArray(d.batchRefs) && d.factBatches === undefined), 'only references are sent - never the batch JSON');
+  assert.equal(byRef.response.documentContext.ref, R3B2_CONTEXT_REF);
+  assert.deepEqual(byRef.response.documentContext.knowledge.facts.filter((f) => f.key === 'hourly_rate').map((f) => f.value), [15.55]);
+  const records = fixtures.turns.r3b2_document_questions as TurnRecord[];
+  assert.ok(records.every((r) => r.request.documentContextRef === R3B2_CONTEXT_REF));
+  assert.deepEqual(records.map((r) => r.response.answerSource), ['document_facts', 'document_facts', 'document_facts', 'none', 'user_input']);
+  assert.deepEqual(records[0]?.response.documentAnswer?.items.map((i) => [i.key, i.value]), [['hourly_rate', 15.55]]);
+  assert.deepEqual(records[1]?.response.documentAnswer?.items.map((i) => [i.key, i.value]), [['net', 509.92], ['payout', 584.92], ['reimbursement', 75]]);
+  assert.ok(!asked(records).includes('pay.hourlyRate'), 'the document rate is never asked');
+  assert.equal(records[3]?.response.nextQuestion?.kind, 'clarify_hours_composition', '"Ile dostanę za 40 godzin?" clarifies the hours - it does not re-ask the rate');
+  const final = records[records.length - 1] as TurnRecord;
+  assert.deepEqual(final.response.scenario.pay.hourlyRate, { state: 'known', value: 15.55, source: 'document', ref: 'doc-1' });
+  assert.deepEqual(final.response.scenario.work.regularWeekdayHours, { state: 'known', value: 40, source: 'user' });
+  assertNoAmount(records);
+  const en = fixtures.turns.r3b2_document_questions_en as TurnRecord[];
+  assert.deepEqual(en.map((r) => r.response.documentAnswer?.items.map((i) => [i.key, i.value])), [[['hourly_rate', 15.55]], [['regular_hours', 36]]]);
 });

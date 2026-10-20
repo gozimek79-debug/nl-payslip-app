@@ -5,7 +5,7 @@ import { browserReaderDeps, readDocumentFacts } from '../document-facts-reader.t
 import { newDecisionId } from '../pro-profile-questions.ts';
 import { ACCEPT_ATTRIBUTE, documentOrdinal, type PeriodChoice } from './r3b-documents.ts';
 import { createR3BStore, isEditable, panelRows, resultReasons, type Block, type R3BDeps, type R3BState, type R3BStore } from './r3b-flow.ts';
-import { choiceLabel, describeTurn, documentName, factValue, readReportLines, sourceDetails, sourceWhere } from './r3b-describe.ts';
+import { choiceLabel, describeTurn, documentAnswerLines, documentName, factValue, printedFactLine, readReportLines, sourceDetails, sourceWhere } from './r3b-describe.ts';
 import { R3B_COPY, fieldLabel, formatDate, formatValue, money, scenarioUnit, type R3BCopy, type R3BLang } from './r3b-copy.ts';
 import { suggestionsFor } from './r3b-turn.ts';
 import type { KnownFact } from './r3b-profile-projection.ts';
@@ -15,7 +15,8 @@ import './r3b.css';
 /**
  * R3-B owner-review screen (`/?r3a=1`): documents first (optional), the existing reader and Payroll Profile, a short
  * evidence-aware summary, then the existing R2 conversation - one question at a time. Conversation first; scenario and
- * result secondary. No pay amount is shown anywhere. Only the language preference is stored (localStorage).
+ * result secondary. Loonto calculates and shows no pay amount; R3-B.2: figures PRINTED on the user's own document appear
+ * only inside labelled document-reading blocks (`r3b-doc-answer`, `r3b-printed`). Only the language preference is stored.
  */
 
 const LANG_KEY = 'loonto-lang';
@@ -175,8 +176,16 @@ function BlockView({ block, state, store, copy, latest }: { block: Block; state:
       return <p className="r3b-question">{copy.percent.question(block.value, fieldLabel(block.field, lang))}</p>;
     case 'turn': {
       const d = describeTurn(block, copy, lang);
+      const answer = block.result.documentAnswer ? documentAnswerLines(block.result.documentAnswer, state.docs, copy, lang) : null;
       return (
         <>
+          {answer && (
+            <div className="r3b-doc-answer" data-answer-source={block.result.answerSource ?? 'none'}>
+              {answer.intro && <p className="r3b-doc-answer-intro">{answer.intro}</p>}
+              {answer.items.length > 0 && <ul>{answer.items.map((line, i) => <li key={i}>{line}</li>)}</ul>}
+              {answer.notes.map((line, i) => <p key={i} className="r3b-doc-answer-note">{line}</p>)}
+            </div>
+          )}
           {d.lines.map((line, i) => <p key={`l${i}`}>{line}</p>)}
           {d.question && <p className="r3b-question">{d.question}</p>}
           {d.closing.map((line, i) => <p key={`c${i}`} className={i === d.closing.length - 1 ? 'r3b-no-result' : undefined}>{line}</p>)}
@@ -189,7 +198,8 @@ function BlockView({ block, state, store, copy, latest }: { block: Block; state:
       return <p>{copy.turn.saved(fieldLabel(block.field, lang), formatValue(scenarioUnit(block.field), block.value, lang))} {copy.panel.editNote}</p>;
     case 'note': {
       const text = block.note === 'unread_first' ? copy.offer.unreadFirst : block.note === 'too_long' ? copy.composer.tooLong : block.note === 'conflict_pick' ? copy.conflict.pick
-        : block.note === 'percent_pick' ? copy.percent.pick : block.note === 'annex_date_missing' ? copy.offer.annexDateMissing : copy.period.otherDay;
+        : block.note === 'percent_pick' ? copy.percent.pick : block.note === 'annex_date_missing' ? copy.offer.annexDateMissing
+          : block.note === 'context_expired' ? copy.offer.contextExpired : copy.period.otherDay;
       return <p className="r3b-warn">{text}</p>;
     }
   }
@@ -321,7 +331,23 @@ function Summary({ block, state, copy }: { block: Extract<Block, { kind: 'summar
           </li>
         ))}
       </ul>
+      <PrintedFacts facts={block.printed ?? []} state={state} copy={copy} />
       <p className="r3a-summary-note">{copy.summary.notLegal}</p>
+    </div>
+  );
+}
+
+/** R3-B.2: what the document prints beyond the rate (period, hours, net, transfer, reimbursements) - readings only. */
+const PRINTED_KEYS = ['period_label', 'regular_hours', 'overtime_hours', 'gross_total', 'net', 'payout', 'reimbursement'];
+
+function PrintedFacts({ facts, state, copy }: { facts: NonNullable<Extract<Block, { kind: 'summary' }>['printed']>; state: R3BState; copy: R3BCopy }) {
+  const shown = facts.filter((f) => PRINTED_KEYS.includes(f.key));
+  if (shown.length === 0) return null;
+  return (
+    <div className="r3b-printed">
+      <p className="r3b-summary-title">{copy.answer.printedTitle}</p>
+      <ul>{shown.map((f, i) => <li key={i}>{printedFactLine(f, state.docs, copy, state.lang)}</li>)}</ul>
+      <p className="r3b-doc-answer-note">{copy.answer.printedNote}</p>
     </div>
   );
 }
@@ -399,7 +425,7 @@ function ScenarioCard({ state, store, copy }: { state: R3BState; store: R3BStore
             const valueText = known ? formatValue(scenarioUnit(row.field), known.value, lang)
               : node?.state === 'range' ? `${formatValue(scenarioUnit(row.field), node.low, lang)}–${formatValue(scenarioUnit(row.field), node.high, lang)}`
                 : row.document && row.document.status !== 'conflict' ? factValue(row.document, copy, lang) : copy.panel.sources.unknown;
-            const source = known ? (known.source === 'loonto_assumption' ? 'loonto_assumption' : row.correction && row.document ? 'correction' : 'user') : row.document ? row.document.status : 'unknown';
+            const source = known ? (known.source === 'loonto_assumption' ? 'loonto_assumption' : known.source === 'document' ? 'document' : row.correction && row.document ? 'correction' : 'user') : row.document ? row.document.status : 'unknown';
             return (
               <li key={row.field} className="r3a-row" data-field={row.field}>
                 <div className="r3a-row-main">
@@ -410,7 +436,7 @@ function ScenarioCard({ state, store, copy }: { state: R3BState; store: R3BStore
                   <span className={`r3a-source r3b-source-${source}`}>{copy.panel.sources[source as keyof R3BCopy['panel']['sources']]}</span>
                   {row.deferred && !known && <span className="r3a-rowstatus r3a-rowstatus-unknown">{copy.panel.deferredTag}</span>}
                 </div>
-                {known && row.document && row.document.status !== 'conflict' && (
+                {known && known.source !== 'document' && row.document && row.document.status !== 'conflict' && (
                   <p className="r3a-previous">{copy.panel.documentLine(factValue(row.document, copy, lang), copy.summary.statuses[row.document.status])}</p>
                 )}
                 {row.document?.status === 'conflict' && (

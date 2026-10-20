@@ -1,4 +1,5 @@
 import type { PublicScenarioEvaluation } from '../scenario/scenario-public.js';
+import type { DocumentTopic, KnowledgeFact } from '../document-context/knowledge.js';
 import type { ScenarioFieldPath, ScenarioUnit, ScenarioV1, ScenarioValueSource, UnsupportedConcept } from '../scenario/scenario-types.js';
 
 /**
@@ -27,6 +28,8 @@ export const TURN_INTENTS = [
   'off_topic',
   'unsupported_concept',
   'unclear',
+  /** R3-B.2: the user asks what their uploaded document says - answered from server-held document facts, no patch. */
+  'document_question',
 ] as const;
 export type TurnIntent = (typeof TURN_INTENTS)[number];
 
@@ -195,6 +198,8 @@ export const RESPONSE_HINT_CODES = [
   'answer_not_applied',
   /** M1: the user does not know their hours; nothing was recorded, the question offers its ways forward. */
   'user_does_not_know',
+  /** R3-B.2: the turn answered a question about the document (see `documentAnswer`). */
+  'document_answer',
 ] as const;
 export type ResponseHintCode = (typeof RESPONSE_HINT_CODES)[number];
 
@@ -234,6 +239,20 @@ export interface ConversationTurnResult {
   nextQuestion: NextQuestionSpec | null;
   conversation: ConversationDigest;
   responseHint: ResponseHint | null;
+  /** R3-B.2: the answer to a question about the document, from SERVER-HELD document facts only (printed readings,
+   * never recalculated); null when the message was not such a question. `available: false` = no document context. */
+  documentAnswer: DocumentAnswer | null;
+  /** R3-B.2: what this turn's answer rests on - the document's printed facts, the user's own statement, the
+   * deterministic engine (an evaluation that computed), or nothing new. */
+  answerSource: AnswerSource;
+}
+
+export type AnswerSource = 'document_facts' | 'user_input' | 'deterministic_calculation' | 'none';
+
+export interface DocumentAnswer {
+  available: boolean;
+  topics: DocumentTopic[];
+  items: KnowledgeFact[];
 }
 
 /** An operation as applied by the server, with the provenance the SERVER assigned. */

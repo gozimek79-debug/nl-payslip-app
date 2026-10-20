@@ -10,6 +10,8 @@ import { checkExtractionConsistency, resolveNetPosition, type ConsistencyIssue }
 import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, remapUnreadableFieldToPeriodPath } from '../payroll-engine/tier-c.js';
 import { fetchRates, resolveReferenceDate } from './tier-c.controller.js';
 import { parsePayslipBatches } from './fact-schemas.js';
+import { ensureSessionHash } from '../document-context/session.js';
+import { putRecord } from '../document-context/store.js';
 
 /**
  * P2 (ZADANIE-P2-LOONTO-PRO.md §P2.3-§P2.9): the PRO document-fact boundary.
@@ -67,14 +69,18 @@ export function validateFactRead(body: unknown): { ok: true; req: FactReadReques
   return { ok: true, req: { pages, totalPages, images, imagePages, textLines } };
 }
 
-function factRoute(read: (req: FactReadRequest) => Promise<unknown>) {
+/** R3-B.2: besides the batch, the route keeps it SERVER-SIDE (short-lived, bound to this browser session) and returns
+ * an opaque `batchRef`. Only such a reference - never echoed batch JSON - lets the Payroll Profile build a trusted
+ * document context for the conversation. `batchRef` is omitted when the store is unavailable. */
+function factRoute(read: (req: FactReadRequest) => Promise<unknown>, documentKind: 'payslip' | 'contract') {
   return async (req: express.Request, res: express.Response) => {
     if (!isGeminiConfigured()) return res.status(503).json({ error_code: 'vision_unavailable' });
     const validated = validateFactRead(req.body);
     if (!validated.ok) return res.status(400).json({ error_code: validated.error });
     try {
       const batch = await read(validated.req);
-      return res.json({ batch });
+      const batchRef = await putRecord(ensureSessionHash(req, res), { kind: 'batch', documentKind, batch });
+      return res.json({ batch, ...(batchRef ? { batchRef } : {}) });
     } catch (error) {
       // Never log the reader's content (personal data) - the error class only.
       console.error('PRO fact read error', error instanceof Error ? error.name : 'unknown');
@@ -83,8 +89,8 @@ function factRoute(read: (req: FactReadRequest) => Promise<unknown>) {
   };
 }
 
-router.post('/payslip-facts', payslipFactsRateLimit, factRoute(extractPayslipFacts));
-router.post('/contract-facts', contractFactsRateLimit, factRoute(extractContractFacts));
+router.post('/payslip-facts', payslipFactsRateLimit, factRoute(extractPayslipFacts, 'payslip'));
+router.post('/contract-facts', contractFactsRateLimit, factRoute(extractContractFacts, 'contract'));
 
 /**
  * The historical replay, now fed by document facts instead of a second reader call. Same steps and

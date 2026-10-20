@@ -96,3 +96,12 @@ test('reader adapter: ProDocuments uses the adapter - no second copy of the read
   assert.match(pro, /kind === 'payslip' \? await replayPayslip\(read\.factBatches\) : \{\}/);
   assert.match(pro, /translateErrorCode\(read\.errorCode\)/);
 });
+
+test('R3-B.2 reader adapter: the server-held batch references are kept - only when EVERY batch has one', async () => {
+  const withRefs = await readDocumentFacts(file(), 'payslip', deps(scanSource(4), (call) => ({ status: 200, json: { batch: { kind: 'payslip', pages: call.body.pages }, batchRef: `ref-${call.body.pages[0]}` } })));
+  assert.deepEqual(withRefs.status === 'done' && withRefs.batchRefs, ['ref-1', 'ref-4']);
+  const partial = await readDocumentFacts(file(), 'payslip', deps(scanSource(4), (call, i) => ({ status: 200, json: { batch: { kind: 'payslip', pages: call.body.pages }, ...(i === 0 ? { batchRef: 'ref-1' } : {}) } })));
+  assert.equal(partial.status === 'done' && partial.batchRefs, undefined, 'a document with an unreferenced batch can only be echoed');
+  const failedBatch = await readDocumentFacts(file(), 'payslip', deps(scanSource(4), (call) => (call.body.pages.includes(4) ? { status: 503, json: { error_code: 'vision_unavailable' } } : { status: 200, json: { batch: { kind: 'payslip', pages: call.body.pages }, batchRef: 'ref-1' } })));
+  assert.deepEqual(failedBatch.status === 'done' && failedBatch.batchRefs, ['ref-1'], 'references of the batches that were read');
+});

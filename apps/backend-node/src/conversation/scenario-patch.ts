@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TURN_INTENTS } from './conversation-types.js';
+import { DOCUMENT_TOPICS } from '../document-context/knowledge.js';
 
 /**
  * ScenarioPatch V1 - the ONLY thing an interpreter (deterministic or LLM) may produce to change a Scenario.
@@ -65,6 +66,8 @@ export const agentOutputSchema = z.strictObject({
   /** F1: a weekly total the user mentioned WITHOUT saying it is Monday-Friday regular hours. Never written to
    * the Scenario - it only parameterises the one hours-composition clarification. */
   statedWeeklyHours: z.number().min(0).max(168).optional(),
+  /** R3-B.2: with intent `document_question` only - WHICH document facts the user asks about (never a value). */
+  documentTopics: z.array(z.enum(DOCUMENT_TOPICS)).max(DOCUMENT_TOPICS.length).optional(),
 });
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
 

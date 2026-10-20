@@ -137,6 +137,9 @@ export interface ReservationLineFact {
 
 export const PAYSLIP_SCALAR_KEYS = [
   'periodLabel', 'periodStart', 'periodEnd', 'paymentDate', 'periodType', 'hirerName', 'hoursPerWeek',
+  // R3-B.2: the gross base hourly rate printed in the payslip header ("Uurloon: 15,55") - evidence for the
+  // profile's hourly rate next to the regular wage line, never a line of its own.
+  'hourlyRate',
   'bijzonderTariefPercent', 'jaarloonBt', 'etExchangeAmount',
   // Calibration-only printed figures (P6) - extracted, never forward inputs.
   'minimumWagePrinted', 'printedTableTax', 'printedBtTax', 'printedAlgemeneHeffingskorting', 'printedArbeidskorting',
@@ -147,7 +150,7 @@ export type PayslipScalarKey = (typeof PAYSLIP_SCALAR_KEYS)[number];
 
 export const PAYSLIP_SCALAR_UNITS: Record<PayslipScalarKey, FactUnit> = {
   periodLabel: 'text', periodStart: 'date', periodEnd: 'date', paymentDate: 'date', periodType: 'period_type',
-  hirerName: 'text', hoursPerWeek: 'hours_per_week', bijzonderTariefPercent: 'percent', jaarloonBt: 'eur_per_year',
+  hirerName: 'text', hoursPerWeek: 'hours_per_week', hourlyRate: 'eur_per_hour', bijzonderTariefPercent: 'percent', jaarloonBt: 'eur_per_year',
   etExchangeAmount: 'eur_per_period', minimumWagePrinted: 'eur_per_hour', printedTableTax: 'eur_per_period',
   printedBtTax: 'eur_per_period', printedAlgemeneHeffingskorting: 'eur_per_period', printedArbeidskorting: 'eur_per_period',
   printedGrossTotal: 'eur_per_period', printedLoonVoorHeffingen: 'eur_per_period', printedTaxableBaseNormal: 'eur_per_period',

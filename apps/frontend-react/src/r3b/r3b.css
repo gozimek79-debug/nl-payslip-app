@@ -82,6 +82,15 @@
 .r3b-source-document_reading,.r3b-source-documents_agree,.r3b-source-loonto_assumption{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning)}
 .r3b-source-conflict{background:var(--status-error-bg);border-color:var(--status-error-border);color:var(--status-error)}
 .r3b-source-unknown{background:#eef1ee;border-color:#d6ddd8;color:var(--text-secondary)}
+.r3b-source-document{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning)}
+
+/* ===== R3-B.2: printed document readings (answers and the summary list) ===== */
+.r3b-doc-answer,.r3b-printed{margin:2px 0 8px;padding:8px 10px;border-radius:10px;background:var(--status-warning-bg);border:1px solid var(--status-warning-border)}
+.r3b-printed{margin-top:10px}
+.r3b-doc-answer-intro{font-weight:700;margin:0 0 4px !important}
+.r3b-doc-answer ul,.r3b-printed ul{margin:0;padding-left:18px !important;list-style:disc !important;display:block !important}
+.r3b-doc-answer li,.r3b-printed li{display:list-item !important;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;margin:2px 0}
+.r3b-doc-answer-note{margin:6px 0 0 !important;font-size:13px !important;color:var(--text-secondary)}
 
 @media (min-width:560px){
   .r3b-offer-actions{grid-template-columns:repeat(4,minmax(0,1fr))}

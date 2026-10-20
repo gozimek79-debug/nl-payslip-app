@@ -30,6 +30,8 @@ export interface R3BDocument {
   /** The reader route's error code, or `file_unreadable` when the file could not be opened at all. */
   errorCode?: string;
   factBatches?: unknown[];
+  /** R3-B.2: the reader's server-held references to `factBatches` (null once the server no longer has them). */
+  batchRefs?: string[] | null;
   coverage?: DocumentCoverage;
 }
 
@@ -56,15 +58,24 @@ export const toRead = (list: readonly R3BDocument[]): R3BDocument[] => list.filt
 /** An annex without its effective date cannot be placed in the contract timeline - the existing PRO rule. */
 export const annexDatesComplete = (list: readonly R3BDocument[]): boolean => list.length === 0 || isReadyToSubmit([...list]);
 
-/** What the profile receives: the read documents only, with technical labels (`payslip-1`), no file name. */
-export function profileDocuments(list: readonly R3BDocument[]): ProfileRequestDocument[] {
+/**
+ * What the profile receives: the read documents only, with technical labels (`payslip-1`), no file name. R3-B.2: a
+ * document the server still holds is sent by REFERENCE (`batchRefs`) - that is what lets the server build a trusted
+ * document context for the conversation; otherwise (or with `byReference: false`) its batches are echoed as before.
+ */
+export function profileDocuments(list: readonly R3BDocument[], options: { byReference?: boolean } = {}): ProfileRequestDocument[] {
+  const byReference = options.byReference ?? true;
   return list
     .filter((d) => d.status === 'read' && d.factBatches)
     .map((d, index) => ({
       index, documentId: d.id, label: `${d.documentType}-${index + 1}`, role: d.documentType,
-      effectiveDate: d.documentType === 'contract_annex' ? d.effectiveDate : null, factBatches: d.factBatches as unknown[],
+      effectiveDate: d.documentType === 'contract_annex' ? d.effectiveDate : null,
+      ...(byReference && d.batchRefs && d.batchRefs.length > 0 ? { batchRefs: d.batchRefs } : { factBatches: d.factBatches as unknown[] }),
     }));
 }
+
+/** Whether any read document would be sent by reference. */
+export const sendsReferences = (list: readonly R3BDocument[]): boolean => profileDocuments(list).some((d) => d.batchRefs !== undefined);
 
 /**
  * Whether the calculation week must be asked before resolving (Contract v1.1 §4.2). Only a dated annex makes the

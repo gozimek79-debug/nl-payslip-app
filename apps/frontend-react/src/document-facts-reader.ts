@@ -29,7 +29,9 @@ export interface DocumentCoverage {
 }
 
 export type DocumentReadOutcome =
-  | { status: 'done'; factBatches: unknown[]; coverage: DocumentCoverage }
+  /** R3-B.2: `batchRefs` - the reader route's server-held, session-bound references, one per batch; present only when
+   * EVERY batch came with one (otherwise the document can only be echoed, which never becomes trusted context). */
+  | { status: 'done'; factBatches: unknown[]; batchRefs?: string[]; coverage: DocumentCoverage }
   /** No batch was read. `errorCode` is the reader route's own last `error_code` (undefined: network / parse failure). */
   | { status: 'error'; errorCode: string | undefined };
 
@@ -49,6 +51,7 @@ export async function readDocumentFacts(file: File, kind: FactReaderKind, deps: 
   const plan = planDocumentBatches(source);
   const hasTextLayer = plan.mode === 'text';
   const factBatches: unknown[] = [];
+  const batchRefs: string[] = [];
   const failedPages: number[] = [];
   let lastError: string | undefined;
   for (const batch of plan.batches) {
@@ -61,9 +64,10 @@ export async function readDocumentFacts(file: File, kind: FactReaderKind, deps: 
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pages: batch.pages, totalPages: source.pageCount, images, imagePages: batch.imagePages, textLines }),
       });
-      const data = await res.json() as { batch?: unknown; error_code?: string };
+      const data = await res.json() as { batch?: unknown; batchRef?: unknown; error_code?: string };
       if (!res.ok || !data.batch) { failedPages.push(...batch.pages); lastError = data.error_code; continue; }
       factBatches.push(data.batch);
+      if (typeof data.batchRef === 'string') batchRefs.push(data.batchRef);
     } catch {
       failedPages.push(...batch.pages);
     }
@@ -73,6 +77,7 @@ export async function readDocumentFacts(file: File, kind: FactReaderKind, deps: 
   return {
     status: 'done',
     factBatches,
+    ...(batchRefs.length === factBatches.length ? { batchRefs } : {}),
     coverage: { totalPages: source.pageCount, notProcessedPages, reason: failedPages.length > 0 ? 'batch_failed' : plan.notProcessedReason },
   };
 }

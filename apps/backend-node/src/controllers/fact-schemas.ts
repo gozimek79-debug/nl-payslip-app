@@ -80,7 +80,8 @@ const MAX_LINES = 200;
 const MAX_OCCURRENCES = 50;
 
 function scalarsSchema<K extends string>(keys: readonly K[]) {
-  return z.object(Object.fromEntries(keys.map((k) => [k, z.array(fact).max(MAX_OCCURRENCES)])) as Record<K, z.ZodArray<typeof fact>>);
+  // R3-B.2: a scalar key missing from an older batch (e.g. `hourlyRate`) is an absent fact - an empty list.
+  return z.object(Object.fromEntries(keys.map((k) => [k, z.array(fact).max(MAX_OCCURRENCES).default([])])) as unknown as Record<K, z.ZodDefault<z.ZodArray<typeof fact>>>);
 }
 
 const batchPages = z.array(page).min(1).max(60);

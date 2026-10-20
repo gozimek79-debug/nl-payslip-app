@@ -200,7 +200,9 @@ test('P3.1 S4: the response carries issues and readiness; with no requirements t
   const res = await post({ asOfDate: '2026-06-01', documents: conflictDocuments() });
   assert.equal(res.status, 200);
   const body = (await res.json()) as ResolveJson;
-  assert.deepEqual(Object.keys(body).sort(), ['coverage', 'decisionResults', 'extractionTable', 'issues', 'profile', 'readiness'], 'existing members kept, issues + readiness added');
+  // R3-B.2: `documentContext` is always present - null here, because echoed fact batches never become a document context.
+  assert.deepEqual(Object.keys(body).sort(), ['coverage', 'decisionResults', 'documentContext', 'extractionTable', 'issues', 'profile', 'readiness'], 'existing members kept, issues + readiness added');
+  assert.equal((body as { documentContext?: unknown }).documentContext, null);
   assert.deepEqual(body.decisionResults, []);
   assert.deepEqual([body.readiness.activeGroups, body.readiness.ready, body.readiness.blockingCount], [['core_pay'], false, 1]);
   const rate = body.issues.find((i) => i.fieldPath === 'employment.hourlyRate');

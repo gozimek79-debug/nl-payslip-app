@@ -31,7 +31,7 @@ export interface ExtractionTableRow {
 const PAYSLIP_DESTINATIONS: Record<PayslipScalarKey, string> = {
   periodLabel: 'documents[].payPeriod', periodStart: 'documents[].payPeriod', periodEnd: 'documents[].payPeriod',
   paymentDate: 'documents[].payPeriod', periodType: 'payroll.periodType', hirerName: 'employment.hirerName',
-  hoursPerWeek: 'employment.hoursPerWeek', bijzonderTariefPercent: 'payroll.bijzonderTariefPrintedPercent',
+  hoursPerWeek: 'employment.hoursPerWeek', hourlyRate: 'employment.hourlyRate', bijzonderTariefPercent: 'payroll.bijzonderTariefPrintedPercent',
   jaarloonBt: 'payroll.jaarloonBt', etExchangeAmount: 'payroll.etExchangeAmount',
   minimumWagePrinted: 'calibrationOnly', printedTableTax: 'calibrationOnly', printedBtTax: 'calibrationOnly',
   printedAlgemeneHeffingskorting: 'calibrationOnly', printedArbeidskorting: 'calibrationOnly', printedGrossTotal: 'calibrationOnly',

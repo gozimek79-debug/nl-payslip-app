@@ -676,10 +676,19 @@ function payslipScalarEvidence(slips: PayslipDoc[], key: PayslipScalarKey, amoun
   return { candidates, excluded };
 }
 
+/**
+ * The base hourly rate a payslip proves: its regular wage lines and (R3-B.2) the gross base rate printed in its header
+ * (`uurloon`). Both are candidates from the SAME document, so an equal value stays ONE document source (resolveField
+ * counts distinct documents - never a false corroboration) and a different value in one payslip is a visible conflict.
+ * Surcharge, ADV, overtime and other lines never establish the base rate.
+ */
 function regularRateEvidence(slips: PayslipDoc[]): { candidates: ProfileCandidate[]; excluded: ExcludedEvidence[] } {
   const candidates: ProfileCandidate[] = [];
   const excluded: ExcludedEvidence[] = [];
   for (const slip of slips) {
+    const header = factEvidence(slip.facts.scalars.hourlyRate ?? [], (f) => payslipSource(slip, f.evidence));
+    candidates.push(...header.candidates);
+    excluded.push(...header.excluded);
     for (const line of slip.facts.hourLines) {
       if (line.kind !== 'regular') continue;
       const source = payslipSource(slip, line.evidence);

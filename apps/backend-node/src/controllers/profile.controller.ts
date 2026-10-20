@@ -9,6 +9,9 @@ import { evaluateReadiness, normalizeActiveGroups, REQUIREMENT_GROUP_IDS, type R
 import { mergePayslipBatches, mergeContractBatches, type DocumentFacts } from '../payroll-engine/document-facts.js';
 import { buildExtractionTable } from '../payroll-engine/fact-table.js';
 import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
+import { readSessionHash } from '../document-context/session.js';
+import { DOCUMENT_REF, getRecord, putRecord } from '../document-context/store.js';
+import { buildDocumentKnowledge } from '../document-context/knowledge.js';
 
 /**
  * P1 (§P1.2/§P1.5): the Payroll Profile's HTTP boundary - request-scoped, no storage, no AI call.
@@ -37,6 +40,13 @@ import { parsePayslipBatches, parseContractBatches } from './fact-schemas.js';
  * group), candidates, hints, actions, a typed input and the documentary evidence fingerprint - and
  * `readiness` (profile-readiness.ts). Pure and stateless; no replay or per-payslip confirmation state
  * enters it (unknown request keys, including the legacy ones, are stripped).
+ *
+ * R3-B.2: a document may instead name `batchRefs` - references to batches THIS server's reader route stored for this
+ * browser session (document-context/store.ts). When EVERY document comes by reference, the response also carries a
+ * `documentContext` { ref, knowledge }: the resolved profile and its Document Knowledge kept server-side, the only
+ * way a conversation turn gets trusted document facts. Echoed `factBatches` keep working exactly as before and
+ * never produce a document context (client JSON is never trusted as a document). An unknown, expired or
+ * other-session reference is refused with 409 `document_reference_invalid`.
  */
 const router = express.Router();
 
@@ -48,8 +58,9 @@ const documentSchema = z.object({
   label: z.string().min(1).max(300),
   role: z.enum(['contract_base', 'contract_annex', 'payslip']),
   effectiveDate: z.string().max(40).nullable(),
-  factBatches: z.unknown(),
-});
+  factBatches: z.unknown().optional(),
+  batchRefs: z.array(z.string().regex(DOCUMENT_REF)).min(1).max(20).optional(),
+}).refine((d) => (d.factBatches !== undefined) !== (d.batchRefs !== undefined), { message: 'exactly one of factBatches / batchRefs' });
 
 /** ISO calendar date or date-time; echoed only. */
 const ISO_DATE_OR_DATETIME = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
@@ -77,23 +88,32 @@ const resolveProfileSchema = z.object({
   requirements: z.object({ groups: z.array(z.enum(REQUIREMENT_GROUP_IDS)).max(REQUIREMENT_GROUP_IDS.length * 4) }).optional(),
 });
 
-router.post('/resolve', (req, res) => {
+router.post('/resolve', async (req, res) => {
   const parsed = resolveProfileSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error_code: 'invalid_input', details: parsed.error.flatten() });
   if (duplicateDocumentIds(parsed.data.documents).length > 0) return res.status(400).json({ error_code: 'invalid_input' });
 
   const seen = new Set<number>();
   const documents: ProfileDocumentInput[] = [];
+  const sessionHash = readSessionHash(req);
+  const byReference = parsed.data.documents.length > 0 && parsed.data.documents.every((d) => d.batchRefs !== undefined);
   for (const d of parsed.data.documents) {
     if (seen.has(d.index)) return res.status(400).json({ error_code: 'invalid_input' });
     seen.add(d.index);
+    let rawBatches: unknown = d.factBatches;
+    if (d.batchRefs) {
+      const expected = d.role === 'payslip' ? 'payslip' : 'contract';
+      const stored = await Promise.all(d.batchRefs.map((ref) => getRecord(ref, sessionHash, 'batch')));
+      if (stored.some((r) => r === null || r.documentKind !== expected)) return res.status(409).json({ error_code: 'document_reference_invalid' });
+      rawBatches = stored.map((r) => r?.batch);
+    }
     let facts: DocumentFacts;
     if (d.role === 'payslip') {
-      const batches = parsePayslipBatches(d.factBatches);
+      const batches = parsePayslipBatches(rawBatches);
       if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
       facts = mergePayslipBatches(batches);
     } else {
-      const batches = parseContractBatches(d.factBatches);
+      const batches = parseContractBatches(rawBatches);
       if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
       facts = mergeContractBatches(batches);
     }
@@ -107,7 +127,14 @@ router.post('/resolve', (req, res) => {
   const { issues, readiness } = evaluateReadiness(profile, { groups, decisions, decisionResults });
   const extractionTable = buildExtractionTable(documents.map((d) => ({ documentIndex: d.index, documentLabel: d.label, role: d.role, facts: d.facts })));
   const coverage = documents.map((d) => ({ index: d.index, ...d.facts.coverage }));
-  return res.json({ profile, extractionTable, coverage, decisionResults, issues, readiness });
+  let documentContext: { ref: string; knowledge: ReturnType<typeof buildDocumentKnowledge> } | null = null;
+  // The context holds the DOCUMENTARY profile: user decisions never become document trust.
+  if (byReference && sessionHash) {
+    const knowledge = buildDocumentKnowledge(documents, documentary);
+    const ref = await putRecord(sessionHash, { kind: 'context', profile: documentary, knowledge });
+    if (ref) documentContext = { ref, knowledge };
+  }
+  return res.json({ profile, extractionTable, coverage, decisionResults, issues, readiness, documentContext });
 });
 
 export default router;

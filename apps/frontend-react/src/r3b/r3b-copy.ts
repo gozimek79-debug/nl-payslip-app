@@ -114,7 +114,7 @@ export interface R3BCopy {
     title: string; addPayslip: string; addContract: string; addAnnex: string; continueWithout: string; addMore: string;
     listLabel: string; remove: (name: string) => string; annexDate: string; annexDateMissing: string; size: (bytes: number) => string;
     status: Record<R3BDocStatus, string>; rejected: Record<FileRejection, (name: string) => string>; types: string;
-    consentTitle: string; consent: string; read: (n: number) => string; reading: string; unreadFirst: string; nothingToRead: string;
+    consentTitle: string; consent: string; read: (n: number) => string; reading: string; unreadFirst: string; nothingToRead: string; contextExpired: string;
   };
   roles: Record<'payslip' | 'contract_base' | 'contract_annex' | 'user' | 'rules', string>;
   readReport: {
@@ -135,6 +135,12 @@ export interface R3BCopy {
     saved: (label: string, value: string) => string; assumed: (label: string, value: string) => string; unknown: (label: string) => string; deferred: (label: string) => string;
     notes: Record<string, (label: string) => string>; hints: Record<string, string>; notApplied: Record<string, string>;
     failed: Record<TurnFailure, string>; done: string; open: (items: string) => string; noResult: string; unsupported: string; computedHidden: string;
+    calculationGated: string; rateFromDocument: (value: string) => string;
+  };
+  /** R3-B.2: an answer from the document's printed facts. */
+  answer: {
+    intro: string; keys: Record<string, string>; conflict: string; note: string; whyNet: string; noContext: string; notFound: string; backTo: string;
+    printedTitle: string; printedNote: string;
   };
   questions: {
     clarify: (total: number | null) => string; split: (total: number | null) => string; opening: (contractHours: number | null) => string;
@@ -144,7 +150,7 @@ export interface R3BCopy {
   };
   composer: { legend: string; localLegend: string; inputLabel: string; placeholder: string; note: string; send: string; tooLong: string; busy: string };
   panel: {
-    toggle: string; scenarioTitle: string; scenarioTag: string; empty: string; sources: Record<'user' | 'loonto_assumption' | 'correction' | FactStatus, string>;
+    toggle: string; scenarioTitle: string; scenarioTag: string; empty: string; sources: Record<'user' | 'loonto_assumption' | 'correction' | 'document' | FactStatus, string>;
     documentLine: (value: string, status: string) => string; correctionNote: (date: string) => string; edit: string; correct: string; save: string; cancel: string;
     editLabel: (label: string) => string; editNote: string; editErrors: Record<'not_a_number' | 'out_of_range', string>; deferredTag: string;
     resultTitle: string; resultStatus: string; resultLead: string; reasons: { documentProvisional: string; missing: (items: string) => string; conflict: string; outOfGoal: string; gate: string };
@@ -185,6 +191,7 @@ const PL: R3BCopy = {
     reading: 'Czytam dokumenty…',
     unreadFirst: 'Masz wybrane dokumenty, które nie zostały jeszcze odczytane. Odczytaj je albo usuń — albo wybierz „Kontynuuj bez dokumentów”.',
     nothingToRead: 'Nie ma nic do odczytania.',
+    contextExpired: 'Odczyt dokumentów przechowywany na serwerze wygasł (po 2 godzinach). Rozmowę prowadzę dalej bez niego — aby znów odpowiadać z dokumentu, odczytaj go ponownie przyciskiem powyżej.',
   },
   roles: { payslip: 'pasek wypłaty', contract_base: 'umowa', contract_annex: 'aneks', user: 'Twoja decyzja', rules: 'przepis' },
   readReport: {
@@ -262,6 +269,9 @@ const PL: R3BCopy = {
       unit_mismatch_withheld: () => 'Nie zapisuję wartości w innej jednostce niż pytanie.',
       hours_withheld: () => 'Nie przypisuję godzin do rodzaju, którego nie podano.',
       weekday_hours_withheld: () => 'Nie zakładam, że to godziny od poniedziałku do piątku.',
+      trusted_value_added: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: uwzględniam odczyt z Twojego dokumentu — nie pytam o to, co dokument już podaje.`,
+      trusted_value_upgraded: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: Twoja wartość zgadza się z dokumentem.`,
+      trusted_value_conflicts_with_user: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: Twoja wartość różni się od dokumentu — zostawiam obie, niczego nie nadpisuję.`,
       other: () => 'Część odpowiedzi pomijam, bo nie wynika jednoznacznie z wiadomości.',
     },
     hints: {
@@ -287,12 +297,32 @@ const PL: R3BCopy = {
       unavailable: 'Rozmowa jest chwilowo niedostępna — spróbuj później.',
       invalid: 'Tej wiadomości nie da się wysłać (np. jest za długa).',
       server: 'Coś poszło nie tak po stronie serwera — niczego nie zapisano.',
+      document_context_invalid: 'Odczyt dokumentu na serwerze wygasł — niczego nie zapisano. Odczytaj dokument ponownie.',
     },
     done: 'Na razie nie mam więcej pytań o ten tydzień.',
     open: (items) => `Otwarte: ${items}.`,
     noResult: 'Wynik jeszcze niedostępny — szczegóły w panelu „Scenariusz”.',
     unsupported: 'Tego wariantu ta wersja jeszcze nie liczy.',
     computedHidden: 'Mam komplet danych do wariantu, ale w tej wersji nie pokazuję kwoty.',
+    calculationGated: 'Kwoty wypłaty w tej wersji jeszcze nie wyliczam — zbieram dane do wariantu, a wynik pokażę dopiero po weryfikacji obliczeń.',
+    rateFromDocument: (value) => `Stawkę biorę z Twojego dokumentu: ${value} — nie pytam o nią ponownie.`,
+  },
+  answer: {
+    intro: 'Na dokumencie widzę:',
+    keys: {
+      hourly_rate: 'Stawka godzinowa', regular_hours: 'Zapłacone godziny zwykłe', overtime_hours: 'Nadgodziny', contract_hours_per_week: 'Godziny w umowie',
+      period_label: 'Okres', period_start: 'Początek okresu', period_end: 'Koniec okresu', period_type: 'Wypłata', wage_line_amount: 'Pozycja brutto',
+      surcharge_percent: 'Dodatek (procent)', gross_total: 'Brutto razem', net: 'Netto', payout: 'Przelano na konto', reimbursement: 'Zwrot kosztów',
+      net_deduction: 'Potrącenie z netto', deduction: 'Potrącenie', tax: 'Podatek', tax_special: 'Podatek (stawka szczególna)',
+    },
+    conflict: 'dokumenty podają różne wartości',
+    note: 'To odczyt z dokumentu, nie przeliczenie Loonto — wymaga weryfikacji.',
+    whyNet: 'Różnicy między brutto a netto nie wyliczam w tej wersji — pokazuję tylko to, co jest wydrukowane. Brak pozycji w odczycie nie oznacza zera.',
+    noContext: 'W tej rozmowie nie mam odczytanego dokumentu, więc nie odpowiem z dokumentu. Dodaj i odczytaj dokument albo napisz wartość w wiadomości.',
+    notFound: 'W odczycie dokumentu nie ma tej informacji — niczego nie zgaduję.',
+    backTo: 'Wracając do wariantu:',
+    printedTitle: 'Wydrukowane na dokumencie',
+    printedNote: 'Odczyt, nie przeliczenie — wymaga weryfikacji.',
   },
   questions: {
     clarify: (total) => (total !== null ? `Czy te ${String(total).replace('.', ',')} ${plHours(total)} to zwykłe godziny od poniedziałku do piątku? Jeśli są wśród nich sobota, niedziela albo nadgodziny — odpowiedz „Nie”.` : 'Czy to zwykłe godziny od poniedziałku do piątku?'),
@@ -310,7 +340,7 @@ const PL: R3BCopy = {
   },
   composer: {
     legend: 'Przykładowe odpowiedzi', localLegend: 'Wybierz', inputLabel: 'Twoja wiadomość', placeholder: 'Napisz własnymi słowami…',
-    note: 'Krótkie odpowiedzi rozumiem bez modelu AI; dłuższe wiadomości może zinterpretować model językowy (bez dostępu do treści dokumentów).',
+    note: 'Krótkie odpowiedzi i pytania o dokument rozumiem bez modelu AI; dłuższe wiadomości może zinterpretować model językowy — widzi wtedy tylko liczby odczytane z dokumentu (np. stawkę, godziny), bez nazw, nazwisk i treści dokumentu.',
     send: 'Wyślij', tooLong: 'Wiadomość jest za długa (maks. 1000 znaków).', busy: 'Chwila…',
   },
   panel: {
@@ -319,6 +349,7 @@ const PL: R3BCopy = {
     sources: {
       user: 'Twoja informacja', loonto_assumption: 'Założenie Loonto', correction: 'Twoja korekta', document_reading: 'Dokument — odczyt, wymaga weryfikacji',
       documents_agree: 'Dokumenty (zgodne) — wymaga weryfikacji', user_confirmed: 'Twój wybór spośród dokumentów', user_corrected: 'Twoja korekta w profilu', conflict: 'Rozbieżność', unknown: 'Nieustalone',
+      document: 'Z dokumentu (odczyt serwera) — wymaga weryfikacji',
     },
     documentLine: (value, status) => `Dokument: ${value} — ${status}`,
     correctionNote: (date) => `Twoja korekta z ${date}. Odczyt dokumentu pozostaje bez zmian.`,
@@ -340,7 +371,8 @@ const PL: R3BCopy = {
     explain: [
       'Dokumenty czyta istniejący czytnik Loonto (Google Gemini), a dane zestawia istniejący profil płacowy — z okresem, stroną i źródłem każdej wartości.',
       'Rozmowę prowadzi istniejący moduł rozmowy Loonto: kolejne pytanie wybiera kod, nie model AI, i nie pyta o to, co już widać w dokumentach.',
-      'Odczyt z dokumentu nie trafia do obliczeń jako fakt potwierdzony — dlatego kwota nie jest pokazywana.',
+      'Na pytania o dokument (stawka, godziny, netto, przelew) odpowiadam z wydrukowanych wartości, które serwer odczytał i przechowuje dla tej sesji przeglądarki najwyżej 2 godziny.',
+      'Odczyt z dokumentu nie jest zweryfikowanym faktem płacowym — dlatego, nawet gdy rozmowa z niego korzysta, kwota nie jest pokazywana.',
     ],
     analyzerTitle: 'Analizator', analyzerButton: 'Analizator w przygotowaniu',
     analyzerNote: 'Dokładne sprawdzenie rozbieżności i podstaw (umowa, CAO) — w kolejnym etapie. Teraz nic nie jest analizowane.',
@@ -381,6 +413,7 @@ const EN: R3BCopy = {
     reading: 'Reading the documents…',
     unreadFirst: 'You have selected documents that have not been read yet. Read or remove them — or choose “Continue without documents”.',
     nothingToRead: 'There is nothing to read.',
+    contextExpired: 'The document reading kept on the server has expired (after 2 hours). I continue without it — to answer from the document again, read it again with the button above.',
   },
   roles: { payslip: 'payslip', contract_base: 'contract', contract_annex: 'annex', user: 'your decision', rules: 'rule' },
   readReport: {
@@ -458,6 +491,9 @@ const EN: R3BCopy = {
       unit_mismatch_withheld: () => 'I do not save a value in another unit than the question.',
       hours_withheld: () => 'I do not assign hours to a kind you did not name.',
       weekday_hours_withheld: () => 'I do not assume these are Monday-to-Friday hours.',
+      trusted_value_added: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: I use the reading of your document — I do not ask for what the document already shows.`,
+      trusted_value_upgraded: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: your value matches the document.`,
+      trusted_value_conflicts_with_user: (label) => `${label[0]?.toUpperCase()}${label.slice(1)}: your value differs from the document — I keep both and overwrite nothing.`,
       other: () => 'I leave part of the answer out because the message does not state it clearly.',
     },
     hints: {
@@ -483,12 +519,32 @@ const EN: R3BCopy = {
       unavailable: 'The conversation is temporarily unavailable — try again later.',
       invalid: 'This message cannot be sent (e.g. it is too long).',
       server: 'Something went wrong on the server — nothing was saved.',
+      document_context_invalid: 'The document reading on the server has expired — nothing was saved. Read the document again.',
     },
     done: 'I have no more questions about this week for now.',
     open: (items) => `Open: ${items}.`,
     noResult: 'Result not available yet — details in the “Scenario” panel.',
     unsupported: 'This version does not calculate this variant yet.',
     computedHidden: 'I have all data for the variant, but this version does not show an amount.',
+    calculationGated: 'This version does not calculate the pay amount yet — I collect the data for the variant, and the result will appear only after the calculation is verified.',
+    rateFromDocument: (value) => `I take the rate from your document: ${value} — I will not ask for it again.`,
+  },
+  answer: {
+    intro: 'On the document I can see:',
+    keys: {
+      hourly_rate: 'Hourly rate', regular_hours: 'Regular hours paid', overtime_hours: 'Overtime hours', contract_hours_per_week: 'Contract hours',
+      period_label: 'Period', period_start: 'Period start', period_end: 'Period end', period_type: 'Pay', wage_line_amount: 'Gross line',
+      surcharge_percent: 'Surcharge (percent)', gross_total: 'Gross total', net: 'Net', payout: 'Transferred to the account', reimbursement: 'Reimbursement',
+      net_deduction: 'Deduction from net', deduction: 'Deduction', tax: 'Tax', tax_special: 'Tax (special rate)',
+    },
+    conflict: 'the documents print different values',
+    note: 'This is what the document prints, not a Loonto calculation — it needs verification.',
+    whyNet: 'This version does not calculate the difference between gross and net — I only show what is printed. A line missing from the reading does not mean zero.',
+    noContext: 'There is no read document in this conversation, so I cannot answer from a document. Add and read a document, or write the value in a message.',
+    notFound: 'The document reading does not contain this — I am not guessing.',
+    backTo: 'Back to the variant:',
+    printedTitle: 'Printed on the document',
+    printedNote: 'A reading, not a calculation — needs verification.',
   },
   questions: {
     clarify: (total) => (total !== null ? `Are these ${total} hours regular Monday-to-Friday hours? If they include Saturday, Sunday or overtime, answer “No”.` : 'Are these regular Monday-to-Friday hours?'),
@@ -506,7 +562,7 @@ const EN: R3BCopy = {
   },
   composer: {
     legend: 'Example answers', localLegend: 'Choose', inputLabel: 'Your message', placeholder: 'Write in your own words…',
-    note: 'Short answers are understood without an AI model; longer messages may be interpreted by a language model (without access to document content).',
+    note: 'Short answers and questions about the document are understood without an AI model; longer messages may be interpreted by a language model — it then sees only numbers read from the document (e.g. rate, hours), no names and no document text.',
     send: 'Send', tooLong: 'The message is too long (max. 1000 characters).', busy: 'One moment…',
   },
   panel: {
@@ -515,6 +571,7 @@ const EN: R3BCopy = {
     sources: {
       user: 'Your information', loonto_assumption: 'Loonto assumption', correction: 'Your correction', document_reading: 'Document — read, needs verification',
       documents_agree: 'Documents (agree) — needs verification', user_confirmed: 'Your choice among the documents', user_corrected: 'Your correction in the profile', conflict: 'Conflict', unknown: 'Unknown',
+      document: 'From the document (server reading) — needs verification',
     },
     documentLine: (value, status) => `Document: ${value} — ${status}`,
     correctionNote: (date) => `Your correction of ${date}. The document reading stays unchanged.`,
@@ -536,7 +593,8 @@ const EN: R3BCopy = {
     explain: [
       'Documents are read by the existing Loonto reader (Google Gemini) and combined by the existing payroll profile — with the period, page and source of every value.',
       'The conversation is the existing Loonto conversation module: code, not the AI model, picks the next question, and it does not ask for what the documents already show.',
-      'A document reading does not enter the calculation as a confirmed fact — which is why no amount is shown.',
+      'Questions about the document (rate, hours, net, transfer) are answered from the printed values the server read and keeps for this browser session for at most 2 hours.',
+      'A document reading is not a verified payroll fact — so even when the conversation uses it, no amount is shown.',
     ],
     analyzerTitle: 'Analyzer', analyzerButton: 'Analyzer in preparation',
     analyzerNote: 'A closer check of conflicts and their basis (contract, CAO) — in a later stage. Nothing is analysed now.',

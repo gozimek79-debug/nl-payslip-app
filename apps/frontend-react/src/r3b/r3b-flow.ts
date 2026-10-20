@@ -1,11 +1,11 @@
 import type { ProDocumentType } from '../pro-documents-policy.ts';
-import type { ProfileDecisionView, ResolvedProfileView } from '../pro-profile-prefill.ts';
+import type { DocumentContextView, PrintedFactView, ProfileDecisionView, ResolvedProfileView } from '../pro-profile-prefill.ts';
 import { buildPendingDecisions, chooseCandidate, mergeDecisionSet, resolveWithDecisions } from '../pro-profile-questions.ts';
 import type { DocumentReadOutcome, FactReaderKind } from '../document-facts-reader.ts';
-import { addFile, annexDatesComplete, asOfForChoice, asOfNeed, checkFile, profileDocuments, readerKind, removeFile, setAnnexDate, toRead, type FileRejection, type PeriodChoice, type R3BDocument } from './r3b-documents.ts';
+import { addFile, annexDatesComplete, asOfForChoice, asOfNeed, checkFile, profileDocuments, readerKind, removeFile, sendsReferences, setAnnexDate, toRead, type FileRejection, type PeriodChoice, type R3BDocument } from './r3b-documents.ts';
 import { factFor, projectProfile, type DocumentKnowledge, type FactSource, type KnownFact } from './r3b-profile-projection.ts';
 import {
-  OUT_OF_GOAL_FIELDS, ambiguousTotalPercent, buildTurnRequest, nextDeferred, nodeAt, percentMeaningMessage, postTurn, serverDeferrals, unionDeferred, withUserValue,
+  OUT_OF_GOAL_FIELDS, ambiguousTotalPercent, buildTurnRequest, nextDeferred, nodeAt, percentMeaningMessage, postTurn, serverDeferrals, unionDeferred, withUserValue, withoutDocumentValues,
   type NextQuestionView, type PublicEvaluationView, type R3BLocale, type ScenarioNodeView, type ScenarioView, type TurnDigestView, type TurnFailure, type TurnResultView,
 } from './r3b-turn.ts';
 
@@ -17,8 +17,10 @@ import {
  *   -> existing Payroll Profile -> short summary -> "Co chcesz policzyć?" -> [one grounded rate-conflict question]
  *   -> R2 turns, one question at a time, with document-known / "nie wiem" / out-of-goal questions deferred.
  *
- * Every document value stays OUT of the R2 Scenario: it is shown with its source and only defers its question. The
- * Scenario holds user values (and accepted Loonto assumptions) only - written by R2, or by an explicit user edit.
+ * The interface never writes a document value into the R2 Scenario: it is shown with its source and only defers its
+ * question. R3-B.2: when the documents were read by reference, the server keeps a document context for this browser
+ * session and the turn names it (`documentContextRef`); the SERVER then writes the values it trusts (`source: document`)
+ * and answers questions about the document from its printed facts. The interface writes user values only.
  */
 
 export type Phase = 'documents' | 'reading' | 'period' | 'goal' | 'conflict' | 'percent' | 'conversation';
@@ -58,7 +60,7 @@ export type Block =
   | { kind: 'read_report'; items: ReadReportItem[]; anyRead: boolean }
   | { kind: 'period_question'; boundaries: string[] }
   | { kind: 'period_chosen'; asOf: string | null }
-  | { kind: 'summary'; knowledge: DocumentKnowledge | null; failed: boolean }
+  | { kind: 'summary'; knowledge: DocumentKnowledge | null; failed: boolean; printed?: PrintedFactView[] }
   | { kind: 'goal_question'; withDocuments: boolean }
   | { kind: 'conflict_question'; fact: KnownFact }
   | { kind: 'conflict_result'; outcome: 'left_open' | 'chosen' | 'failed'; value?: number }
@@ -66,7 +68,7 @@ export type Block =
   | { kind: 'turn'; result: TurnResultView; deferredNow: string[]; context: TurnContext }
   | { kind: 'turn_failed'; reason: TurnFailure }
   | { kind: 'edit_saved'; field: string; value: number }
-  | { kind: 'note'; note: 'unread_first' | 'too_long' | 'conflict_pick' | 'percent_pick' | 'period_pick' | 'annex_date_missing' };
+  | { kind: 'note'; note: 'unread_first' | 'too_long' | 'conflict_pick' | 'percent_pick' | 'period_pick' | 'annex_date_missing' | 'context_expired' };
 
 export interface ThreadMessage {
   id: number;
@@ -96,6 +98,8 @@ export interface R3BState {
   started: boolean;
   asOf: string | null;
   knowledge: DocumentKnowledge | null;
+  /** R3-B.2: the server-held document context of the read documents (its reference and printed facts), if issued. */
+  documentContext: DocumentContextView | null;
   resolved: ResolvedProfileView | null;
   decisions: ProfileDecisionView[];
   scenario: ScenarioView | null;
@@ -127,7 +131,7 @@ export interface R3BDeps {
 export function initialState(lang: R3BLocale = 'pl'): R3BState {
   return {
     lang, phase: 'documents', busy: false, docs: [], fileErrors: [], messages: [{ id: 1, from: 'loonto', block: { kind: 'welcome' } }], nextMessageId: 2, nextDocId: 1,
-    started: false, asOf: null, knowledge: null, resolved: null, decisions: [], scenario: null, digest: null, userDeferred: [], deferredExtra: [],
+    started: false, asOf: null, knowledge: null, documentContext: null, resolved: null, decisions: [], scenario: null, digest: null, userDeferred: [], deferredExtra: [],
     nextQuestion: null, evaluation: null, pendingGoal: null, pendingPercent: null, corrections: [], panelOpen: false,
   };
 }
@@ -183,7 +187,8 @@ export type ResultReason = { key: 'documentProvisional' } | { key: 'conflict' } 
 export function resultReasons(state: R3BState): ResultReason[] {
   const rows = panelRows(state);
   const out: ResultReason[] = [];
-  if (rows.some((r) => r.document && (r.document.status === 'document_reading' || r.document.status === 'documents_agree' || r.document.status === 'user_confirmed') && !r.node)) out.push({ key: 'documentProvisional' });
+  const documentNode = (r: PanelRow) => r.node?.source === 'document' || (r.node?.candidates ?? []).some((c) => c.source === 'document');
+  if (rows.some((r) => (r.document && (r.document.status === 'document_reading' || r.document.status === 'documents_agree' || r.document.status === 'user_confirmed') && !r.node) || documentNode(r))) out.push({ key: 'documentProvisional' });
   if (rows.some((r) => r.document?.status === 'conflict' && !r.node)) out.push({ key: 'conflict' });
   const missing = rows.filter((r) => (r.missing || r.deferred) && !r.document?.defersQuestion && !(r.node && r.node.state === 'known')).map((r) => r.field);
   if (missing.length > 0) out.push({ key: 'missing', fields: missing });
@@ -233,16 +238,26 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
     patch({ phase: 'goal', busy: false });
   }
 
+  /** The profile by reference first; when the server no longer holds the batches (expired), the documents are echoed -
+   * the profile still resolves, but without a document context (nothing client-held is ever trusted). */
+  async function resolveDocuments(asOf: string, decisions: ProfileDecisionView[]) {
+    const outcome = await resolveWithDecisions(asOf, profileDocuments(state.docs), decisions, deps.fetchImpl);
+    if (outcome || !sendsReferences(state.docs)) return outcome;
+    patch({ docs: state.docs.map((d) => ({ ...d, batchRefs: null })), documentContext: null });
+    return resolveWithDecisions(asOf, profileDocuments(state.docs, { byReference: false }), decisions, deps.fetchImpl);
+  }
+
   async function resolveAndSummarize(asOf: string) {
     patch({ busy: true });
-    const outcome = await resolveWithDecisions(asOf, profileDocuments(state.docs), state.decisions, deps.fetchImpl);
+    const outcome = await resolveDocuments(asOf, state.decisions);
     if (!outcome) {
-      patch({ knowledge: null, resolved: null, asOf: null });
+      patch({ knowledge: null, documentContext: null, resolved: null, asOf: null });
       say('loonto', { kind: 'summary', knowledge: null, failed: true });
     } else {
       const knowledge = projectProfile(outcome.resolved);
-      patch({ knowledge, resolved: outcome.resolved, decisions: outcome.decisions, asOf });
-      say('loonto', { kind: 'summary', knowledge, failed: false });
+      const documentContext = outcome.resolved.documentContext ?? null;
+      patch({ knowledge, documentContext, resolved: outcome.resolved, decisions: outcome.decisions, asOf });
+      say('loonto', { kind: 'summary', knowledge, failed: false, printed: documentContext?.knowledge.facts ?? [] });
     }
     afterSummary();
   }
@@ -250,10 +265,22 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
   async function turn(message: string) {
     const clientAdds = [...(state.knowledge?.deferrableFields ?? []), ...OUT_OF_GOAL_FIELDS, ...state.deferredExtra];
     const deferredFields = nextDeferred(state.digest?.deferredFields ?? [], state.userDeferred, clientAdds);
-    const body = buildTurnRequest({ scenario: state.scenario, message, locale: state.lang, digest: state.digest, deferredFields });
+    const documentContextRef = state.documentContext?.ref ?? null;
+    const body = buildTurnRequest({ scenario: state.scenario, message, locale: state.lang, digest: state.digest, deferredFields, documentContextRef });
     const ctx = context();
     patch({ busy: true, phase: 'conversation' });
     const res = await postTurn(body, deps.fetchImpl, deps.turnTimeoutMs);
+    if (!res.ok && res.reason === 'document_context_invalid' && documentContextRef) {
+      // The server no longer holds this session's document context (it expires): its values leave the Scenario, the
+      // documents wait for a new explicit read, and the same message is sent once more - without the reference.
+      patch({
+        documentContext: null, scenario: withoutDocumentValues(state.scenario),
+        docs: state.docs.map((d) => (d.status === 'read' && d.file ? { ...d, status: 'selected' as const, batchRefs: null } : d)),
+      });
+      say('loonto', { kind: 'note', note: 'context_expired' });
+      await turn(message);
+      return;
+    }
     if (!res.ok) {
       say('loonto', { kind: 'turn_failed', reason: res.reason });
       patch({ busy: false, phase: state.started ? 'conversation' : 'goal' });
@@ -319,7 +346,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
       if (!wasRead) return;
       const remaining = profileDocuments(state.docs);
       if (remaining.length === 0) {
-        patch({ knowledge: null, resolved: null, decisions: [], asOf: null });
+        patch({ knowledge: null, documentContext: null, resolved: null, decisions: [], asOf: null });
         say('loonto', { kind: 'summary', knowledge: null, failed: false });
         return;
       }
@@ -344,11 +371,11 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
           outcome = { status: 'error', errorCode: 'file_unreadable' };
         }
         if (outcome.status === 'done') {
-          updateDoc(doc.id, { status: 'read', factBatches: outcome.factBatches, coverage: outcome.coverage, errorCode: undefined });
+          updateDoc(doc.id, { status: 'read', factBatches: outcome.factBatches, batchRefs: outcome.batchRefs ?? null, coverage: outcome.coverage, errorCode: undefined });
           const missing = outcome.coverage.notProcessedPages;
           items.push({ docId: doc.id, outcome: missing.length > 0 ? 'partial' : 'read', notProcessedPages: missing, totalPages: outcome.coverage.totalPages, tooLong: outcome.coverage.reason === 'document_too_long' });
         } else {
-          updateDoc(doc.id, { status: 'failed', errorCode: outcome.errorCode ?? 'unknown', factBatches: undefined, coverage: undefined });
+          updateDoc(doc.id, { status: 'failed', errorCode: outcome.errorCode ?? 'unknown', factBatches: undefined, batchRefs: null, coverage: undefined });
           items.push({ docId: doc.id, outcome: 'failed', notProcessedPages: [], totalPages: 0, tooLong: false, errorCode: outcome.errorCode ?? 'unknown' });
         }
       }
@@ -379,7 +406,7 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
       if (choice !== 'unknown' && asOfForChoice(choice) === null) return;
       say('user', { kind: 'user_choice', choice: { kind: 'period', choice } });
       if (choice === 'unknown') {
-        patch({ knowledge: null, resolved: null, asOf: null });
+        patch({ knowledge: null, documentContext: null, resolved: null, asOf: null });
         say('loonto', { kind: 'period_chosen', asOf: null });
         afterSummary();
         return;
@@ -407,13 +434,13 @@ export function createR3BStore(deps: R3BDeps, lang: R3BLocale = 'pl') {
       patch({ busy: true });
       // The user's choice is ONE existing Payroll Profile decision (confirm_candidate) - never a document value.
       const added = buildPendingDecisions([issue], chooseCandidate({}, issue.fieldPath, choice), deps.newDecisionId, deps.now());
-      const outcome = await resolveWithDecisions(state.asOf ?? deps.today(), profileDocuments(state.docs), mergeDecisionSet(state.decisions, added), deps.fetchImpl);
+      const outcome = await resolveDocuments(state.asOf ?? deps.today(), mergeDecisionSet(state.decisions, added));
       if (!outcome) {
         say('loonto', { kind: 'conflict_result', outcome: 'failed' });
         patch({ busy: false });
         return;
       }
-      patch({ knowledge: projectProfile(outcome.resolved), resolved: outcome.resolved, decisions: outcome.decisions, busy: false });
+      patch({ knowledge: projectProfile(outcome.resolved), documentContext: outcome.resolved.documentContext ?? null, resolved: outcome.resolved, decisions: outcome.decisions, busy: false });
       say('loonto', { kind: 'conflict_result', outcome: 'chosen', value: candidate.value });
       await continueGoal();
     },

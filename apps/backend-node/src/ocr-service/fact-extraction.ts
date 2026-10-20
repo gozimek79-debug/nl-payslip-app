@@ -81,8 +81,14 @@ FIELDS:
 - employer_names: one entry per employer named as employer on the payslip. hirer_name: the hirer/opdrachtgever/inlener
   only when printed as distinct from the employer.
 - hours_per_week: only a printed contract hours-per-week figure (e.g. "Uren per week: 40"). Never derived.
-- hour_lines: every printed wage/hours line. kind: "regular" (normal hours), "overtime" (overwerk/overuren),
-  "irregular_surcharge" (onregelmatigheids-/ploegentoeslag on hours already counted), "adv_compensation", "other".
+- hourly_rate: the gross BASE hourly wage printed as its own field, usually in the header or summary block
+  ("Uurloon", "Uurloon bruto", "Basisuurloon", "Uurtarief"), e.g. "Uurloon: 15,55" or "Uurloon 15.55". Copy it even
+  when a regular wage line also prints a rate. Never take it from an ADV, surcharge, overtime or holiday line, never
+  compute it from an amount, and report "absent" when no such field is printed.
+- hour_lines: every printed wage/hours line. kind: "regular" (normal hours: "Loon normaal", "Uren normaal", "Gewerkte
+  uren", "Normale uren"), "overtime" (overwerk/overuren),
+  "irregular_surcharge" (onregelmatigheids-/ploegentoeslag on hours already counted), "adv_compensation" (ADV / ADV
+  toeslag / arbeidsduurverkorting - a surcharge, never the base rate), "other".
   adds_hours: "yes" when the line pays genuinely additional hours, "no" when it is a surcharge on hours already
   counted on another line, "unclear" when the document does not show which. hours / rate / percent / amount exactly as
   printed (percent = the printed percentage, e.g. 150 for "150%"). explicit_tier: 1 or 2 ONLY when the printed line
@@ -152,6 +158,7 @@ export const PAYSLIP_FACTS_SCHEMA: SchemaNode = obj({
   employer_names: arr(textScalar),
   hirer_name: textScalar,
   hours_per_week: numberScalar,
+  hourly_rate: numberScalar,
   hour_lines: arr(obj({
     ...lineCommon, kind: str(), adds_hours: str(), tax_treatment: str(), employer_index: num(true),
     hours: num(true), rate: num(true), percent: num(true), amount: num(true), explicit_tier: num(true), tier_wording: str(true),
@@ -246,7 +253,7 @@ export function numbersInRaw(raw: string): number[] {
   const tokens = raw.replace(/[^\d.,\-−€\s]/g, ' ').split(/\s+/).map((t) => t.replace(/^€+|€+$/g, '').replace(/[.,]+$/, '')).filter((t) => /\d/.test(t));
   const out: number[] = [];
   for (const t of tokens) {
-    const v = parsePrintedNumber(t);
+    const v = parsePrintedNumber(t) ?? dotDecimal(t);
     if (v !== null) out.push(Math.abs(v));
   }
   for (let i = 0; i < tokens.length - 1; i += 1) {
@@ -258,6 +265,15 @@ export function numbersInRaw(raw: string): number[] {
     }
   }
   return out;
+}
+
+/** R3-B.2: a token written with a DOT decimal and one or two decimals ("15.55", "36.00", "1.54") is that decimal number.
+ * Unambiguous next to the Dutch notation the shared parser reads: a Dutch thousands group always has three digits
+ * ("2.000" stays two thousand / unreadable), and a comma anywhere keeps the Dutch reading. Only the raw-evidence check
+ * uses it - the value must still be printed literally in the fragment; nothing is inferred. */
+export function dotDecimal(token: string): number | null {
+  const t = token.replace(/^[-−]/, '');
+  return /^\d{1,6}\.\d{1,2}$/.test(t) ? Number(t) : null;
 }
 
 /** P2.11: the reader's normalised number must be printed in the raw fragment it cited. One narrow,
@@ -286,6 +302,7 @@ const positive = (max: number, reason: FactReasonCode): ScalarCheck => (v) => (v
 /** Domain-safe plausibility checks only - physical/legal/unit bounds, never a reconciliation. */
 const NUMERIC_CHECKS: Partial<Record<string, ScalarCheck>> = {
   'payslip.hoursPerWeek': positive(168, 'exceeds_physical_hours_per_week'),
+  'payslip.hourlyRate': positive(200, 'exceeds_plausible_hourly_rate'),
   'contract.hoursPerWeek': positive(168, 'exceeds_physical_hours_per_week'),
   'contract.hourlyRate': positive(200, 'exceeds_plausible_hourly_rate'),
   'contract.monthlySalary': positive(100_000, 'out_of_range'),
@@ -463,6 +480,7 @@ function mapReservationLine(r: Raw, i: number, ctx: MapContext): ReservationLine
 }
 
 const PAYSLIP_RAW_KEYS: Record<PayslipScalarKey, string> = {
+  hourlyRate: 'hourly_rate',
   periodLabel: 'period_label', periodStart: 'period_start', periodEnd: 'period_end', paymentDate: 'payment_date',
   periodType: 'period_type', hirerName: 'hirer_name', hoursPerWeek: 'hours_per_week', bijzonderTariefPercent: 'bijzonder_tarief_percent',
   jaarloonBt: 'jaarloon_bt', etExchangeAmount: 'et_exchange_amount', minimumWagePrinted: 'minimum_wage_printed',

@@ -6,7 +6,14 @@
  * the locale and the request-carried digest. Document facts are never sent - not as Scenario values, not as a
  * `source: document`, not as text. The one R3-B addition is `conversation.deferredFields` (selection only): the
  * questions a provisional document reading, the user's "nie wiem" or the weekly base-pay goal make unnecessary now.
+ *
+ * R3-B.2: with a server-held document context the request also names its opaque `documentContextRef`. The server then
+ * itself writes the document values it trusts into the Scenario (`source: document`) and answers questions about the
+ * document; the interface only sends that Scenario back as received. Without the reference such a value would be
+ * self-declared and rejected - so when the server no longer has the context, `withoutDocumentValues` removes them.
  */
+
+import type { PrintedFactView } from '../pro-profile-prefill.ts';
 
 export type R3BLocale = 'pl' | 'en';
 
@@ -64,6 +71,13 @@ export interface PublicEvaluationView {
   issues?: Array<{ path: string; code: string }>;
   unsupported?: Array<{ kind: string; concept?: string; capability?: string }>;
 }
+/** R3-B.2: the server's answer to a question about the document - printed readings only (never recalculated). */
+export interface DocumentAnswerView {
+  available: boolean;
+  topics: string[];
+  items: PrintedFactView[];
+}
+
 export interface TurnResultView {
   turnId: string;
   status: 'updated' | 'unchanged' | 'rejected';
@@ -77,6 +91,9 @@ export interface TurnResultView {
   nextQuestion: NextQuestionView | null;
   conversation: TurnDigestView;
   responseHint: { code: string; params?: Record<string, string | number> } | null;
+  /** R3-B.2 (absent from older servers): the answer to a question about the document, and what the turn rests on. */
+  documentAnswer?: DocumentAnswerView | null;
+  answerSource?: 'document_facts' | 'user_input' | 'deterministic_calculation' | 'none';
 }
 
 export interface TurnRequestBody {
@@ -84,6 +101,8 @@ export interface TurnRequestBody {
   message: string;
   locale: R3BLocale;
   conversation: TurnDigestView & { deferredFields: string[] };
+  /** R3-B.2: the opaque reference of the server-held document context (never document content). */
+  documentContextRef?: string;
 }
 
 /** Append what is missing, keeping the order already established (the server's list first). */
@@ -107,16 +126,48 @@ export function serverDeferrals(sent: readonly string[], received: readonly stri
   return (received ?? []).filter((f) => !sent.includes(f));
 }
 
-export function buildTurnRequest(input: { scenario: ScenarioView | null; message: string; locale: R3BLocale; digest: TurnDigestView | null; deferredFields: string[] }): TurnRequestBody {
+export function buildTurnRequest(input: { scenario: ScenarioView | null; message: string; locale: R3BLocale; digest: TurnDigestView | null; deferredFields: string[]; documentContextRef?: string | null }): TurnRequestBody {
   return {
     ...(input.scenario ? { scenario: input.scenario } : {}),
     message: input.message,
     locale: input.locale,
     conversation: { ...(input.digest ?? {}), deferredFields: input.deferredFields },
+    ...(input.documentContextRef ? { documentContextRef: input.documentContextRef } : {}),
   };
 }
 
-export type TurnFailure = 'network' | 'timeout' | 'rate_limited' | 'unavailable' | 'invalid' | 'server';
+const VERIFIED_SOURCES = new Set(['document', 'cao_rule', 'official_rule', 'intelligence_memory']);
+
+/** R3-B.2: the Scenario without the values the server wrote from a document context it no longer has (a known value is
+ * dropped, a conflict keeps its other candidates) - the user's own values and Loonto assumptions stay untouched. */
+export function withoutDocumentValues(scenario: ScenarioView | null): ScenarioView | null {
+  if (!scenario) return null;
+  const strip = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const node = value as Record<string, unknown>;
+    if (typeof node.state === 'string') {
+      if (VERIFIED_SOURCES.has(String(node.source))) return undefined;
+      if (node.state === 'conflict' && Array.isArray(node.candidates)) {
+        const rest = node.candidates.filter((c) => !(c && typeof c === 'object' && VERIFIED_SOURCES.has(String((c as { source?: unknown }).source))));
+        if (rest.length === node.candidates.length) return node;
+        if (rest.length === 0) return undefined;
+        return rest.length === 1 ? { state: 'known', ...(rest[0] as object) } : { ...node, candidates: rest };
+      }
+      return node;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node)) {
+      const kept = strip(v);
+      if (kept !== undefined) out[k] = kept;
+    }
+    return out;
+  };
+  // Top-level metadata (ids, period type) and the requested-concepts list carry no value node and pass through.
+  return strip(scenario) as ScenarioView;
+}
+
+/** `document_context_invalid` (409): the server no longer has this session's document context (expired / unknown). */
+export type TurnFailure = 'network' | 'timeout' | 'rate_limited' | 'unavailable' | 'invalid' | 'server' | 'document_context_invalid';
 
 export async function postTurn(body: TurnRequestBody, fetchImpl: typeof fetch, timeoutMs = 25_000): Promise<{ ok: true; result: TurnResultView } | { ok: false; reason: TurnFailure }> {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -126,6 +177,7 @@ export async function postTurn(body: TurnRequestBody, fetchImpl: typeof fetch, t
     if (res.status === 429) return { ok: false, reason: 'rate_limited' };
     if (res.status === 503) return { ok: false, reason: 'unavailable' };
     if (res.status === 400) return { ok: false, reason: 'invalid' };
+    if (res.status === 409) return { ok: false, reason: 'document_context_invalid' };
     if (!res.ok) return { ok: false, reason: 'server' };
     const result = (await res.json()) as TurnResultView;
     if (!result || typeof result !== 'object' || typeof result.status !== 'string' || !result.scenario) return { ok: false, reason: 'server' };

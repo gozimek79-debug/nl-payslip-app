@@ -20,7 +20,7 @@ export function ambiguous(raw: string | null, page: number | null = 1, label: st
 }
 
 const PAYSLIP_SCALARS = [
-  'period_label', 'period_start', 'period_end', 'payment_date', 'period_type', 'hirer_name', 'hours_per_week',
+  'period_label', 'period_start', 'period_end', 'payment_date', 'period_type', 'hirer_name', 'hours_per_week', 'hourly_rate',
   'bijzonder_tarief_percent', 'jaarloon_bt', 'et_exchange_amount', 'minimum_wage_printed', 'printed_table_tax',
   'printed_bt_tax', 'printed_algemene_heffingskorting', 'printed_arbeidskorting', 'printed_gross_total',
   'printed_loon_voor_heffingen', 'printed_taxable_base_normal', 'printed_taxable_base_special', 'printed_net', 'printed_payout',

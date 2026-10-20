@@ -6,9 +6,13 @@ import { SCENARIO_FIELDS, SCENARIO_FIELD_PATHS, SCENARIO_SCHEMA_VERSION, type Sc
 import { canonicalize, getAt, isRecord } from '../scenario/scenario-util.js';
 import { findForgedAssumptions } from './assumption-catalog.js';
 import type { AgentInput, ConversationAgent } from './conversation-agent.js';
+import { agentDocumentDigest, answerFacts, type DocumentKnowledge, type DocumentTopic } from '../document-context/knowledge.js';
+import { documentQuestionTopics } from '../document-context/document-questions.js';
 import type {
   AgentStatus,
   AnswerNotAppliedReason,
+  AnswerSource,
+  DocumentAnswer,
   ConversationDigest,
   ConversationLocale,
   ConversationTurnResult,
@@ -40,6 +44,10 @@ import { findUnbackedVerifiedValues, isTrustedContext, mergeTrustedContext, type
  *     -> ScenarioPatch (schema-validated) -> authority / provenance guard (incl. the F4 offer binding)
  *     -> atomic application -> R1 Scenario Core: evaluateScenario (Tier A runs only inside it)
  *     -> public projection -> deterministic next-question selector
+ *   R3-B.2: a question about the document ("Jaka jest moja stawka?") is answered from the server-held Document
+ *   Knowledge of this turn's document context - never from client JSON, never by the model's own words - and the
+ *   pending question stays open. The model may see a sanitized digest of those facts to understand the user, but
+ *   the support guard still writes only values the user stated.
  *
  * No Tier A call, no HTTP call to the Tier A route, no persistence, no session state: the Scenario and a tiny
  * digest are request-carried. The model output never reaches the client.
@@ -58,6 +66,8 @@ export interface TurnDependencies {
   rates: PayslipComputationRates;
   /** SERVER-INTERNAL trusted facts. Never built from request JSON; the public route passes none. */
   trusted?: TrustedContext | null;
+  /** R3-B.2: SERVER-HELD facts of the documents this turn's trusted context was resolved from (never request JSON). */
+  documentKnowledge?: DocumentKnowledge | null;
   newId?: () => string;
 }
 
@@ -128,7 +138,22 @@ function repeatsAfterDontKnow(intent: TurnIntent, current: NextQuestionSpec | nu
   return next.kind === current.kind || next.kind === 'provide_value';
 }
 
-const NO_MUTATION_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>(['off_topic', 'decline_assumption', 'clarification_request']);
+const NO_MUTATION_INTENTS: ReadonlySet<TurnIntent> = new Set<TurnIntent>(['off_topic', 'decline_assumption', 'clarification_request', 'document_question']);
+
+/**
+ * R3-B.2: an unsupported concept (e.g. a night allowance) makes the evaluation `unsupported` - nothing can be calculated
+ * - but it must not end the conversation: the other, calculable requirements are still asked. Selection only; the
+ * public evaluation stays `unsupported` and no result appears.
+ */
+function selectionEvaluation(scenario: ScenarioV1, evaluation: ScenarioEvaluationResult, rates: PayslipComputationRates): ScenarioEvaluationResult {
+  if (evaluation.status !== 'unsupported' || !scenario.requestedConcepts?.length) return evaluation;
+  const { requestedConcepts: _unsupported, ...calculable } = scenario;
+  return evaluateScenario(calculable, rates);
+}
+
+function documentAnswerFor(knowledge: DocumentKnowledge | null, topics: DocumentTopic[]): DocumentAnswer {
+  return { available: knowledge !== null, topics, items: answerFacts(knowledge, topics) };
+}
 
 function responseHintFor(args: {
   status: TurnStatus;
@@ -140,6 +165,7 @@ function responseHintFor(args: {
 }): ResponseHint {
   const { status, intent, agentStatus, evaluation } = args;
   if (status === 'rejected') return { code: 'patch_rejected' };
+  if (intent === 'document_question') return { code: 'document_answer' };
   if (args.notApplied) return { code: 'answer_not_applied', params: { reason: args.notApplied } };
   if (args.usedModelOrFallback && agentStatus !== 'ok' && agentStatus !== 'not_needed') return { code: 'agent_unavailable', params: { agentStatus } };
   if (intent === 'off_topic') return { code: 'off_topic' };
@@ -171,6 +197,8 @@ function rejectedTurn(turnId: string, scenario: ScenarioV1, issues: PatchIssue[]
     nextQuestion: null,
     conversation: { declinedAssumptions: declined, ...(deferred ? { deferredFields: deferred } : {}) },
     responseHint: { code },
+    documentAnswer: null,
+    answerSource: 'none',
   };
 }
 
@@ -212,7 +240,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
 
   // 3. What the server would ask now - computed deterministically, never taken from the client.
   const before = evaluateScenario(scenario, deps.rates);
-  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: before, declinedAssumptions: declinedIn, hoursClarification: clarificationIn, deferredFields: deferredIn });
+  const current: NextQuestionSpec | null = selectNextQuestion({ scenario, evaluation: selectionEvaluation(scenario, before, deps.rates), declinedAssumptions: declinedIn, hoursClarification: clarificationIn, deferredFields: deferredIn });
 
   // 4. Interpretation: deterministic first; otherwise at most ONE model call; otherwise no change.
   let intent: TurnIntent = 'unclear';
@@ -223,8 +251,15 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
   let notApplied: AnswerNotAppliedReason | null = null;
   const declined = [...declinedIn];
 
-  const deterministic = interpretDeterministically(request.message, current);
-  if (deterministic) {
+  const knowledge = deps.documentKnowledge ?? null;
+  let documentAnswer: DocumentAnswer | null = null;
+  // R3-B.2: a plain question about the document is answered from its facts - no patch, no model call.
+  const documentTopics = documentQuestionTopics(request.message);
+  const deterministic = documentTopics.length > 0 ? null : interpretDeterministically(request.message, current);
+  if (documentTopics.length > 0) {
+    intent = 'document_question';
+    documentAnswer = documentAnswerFor(knowledge, documentTopics);
+  } else if (deterministic) {
     intent = deterministic.intent;
     patch = deterministic.patch;
     if (deterministic.declined && !declined.includes(deterministic.declined)) declined.push(deterministic.declined);
@@ -240,6 +275,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
       requestedConcepts: (scenario.requestedConcepts ?? []).map((c) => c.concept),
       currentQuestion: current ? { field: current.field, kind: current.kind, ...(current.suggestedAssumption ? { suggestedAssumption: current.suggestedAssumption } : {}) } : null,
       missing: missingDigest(before),
+      ...(knowledge ? { documentFacts: agentDocumentDigest(knowledge) } : {}),
     });
     agentStatus = outcome.status;
     if (outcome.status === 'ok') {
@@ -263,6 +299,7 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
           const weekdayOnlyFalse = composition.otherCategories || (!fresh && clarificationIn?.weekdayOnly === false);
           clarificationOut = { ...(typeof total === 'number' ? { statedWeeklyTotal: total } : {}), ...(weekdayOnlyFalse ? { weekdayOnly: false as const } : {}) };
         }
+        if (intent === 'document_question') documentAnswer = documentAnswerFor(knowledge, outcome.output.documentTopics?.length ? outcome.output.documentTopics : ['summary']);
         if (intent === 'decline_assumption' && current?.kind === 'offer_assumption' && current.field !== 'work.hours' && !declined.includes(current.field)) declined.push(current.field);
       }
     }
@@ -294,11 +331,12 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
   // 6. R1 is the arithmetic and readiness authority; the client only ever sees its public projection.
   const evaluation = status === 'updated' ? evaluateScenario(scenario, deps.rates) : before;
   const deferred = [...deferredIn];
-  let nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
+  const selectable = selectionEvaluation(scenario, evaluation, deps.rates);
+  let nextQuestion = selectNextQuestion({ scenario, evaluation: selectable, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
   // R3-B: "nie wiem" must not loop - the field stays unknown (never zero) and is put aside; the next one is asked.
   if (deferralMode && current && repeatsAfterDontKnow(intent, current, nextQuestion) && !deferred.includes(current.field)) {
     deferred.push(current.field);
-    nextQuestion = selectNextQuestion({ scenario, evaluation, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
+    nextQuestion = selectNextQuestion({ scenario, evaluation: selectable, declinedAssumptions: declined, hoursClarification: clarificationOut, deferredFields: deferred });
   }
   // The clarification is only carried while the opening hours question is still the one being asked.
   const carryClarification = nextQuestion?.field === 'work.hours' && clarificationOut ? clarificationOut : null;
@@ -321,5 +359,13 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
       ...(deferralMode ? { deferredFields: deferred } : {}),
     },
     responseHint: responseHintFor({ status, intent, agentStatus, usedModelOrFallback, evaluation, notApplied }),
+    documentAnswer,
+    answerSource: answerSourceOf(documentAnswer, evaluation, status),
   };
+}
+
+function answerSourceOf(documentAnswer: DocumentAnswer | null, evaluation: ScenarioEvaluationResult, status: TurnStatus): AnswerSource {
+  if (documentAnswer) return 'document_facts';
+  if (evaluation.status === 'computed') return 'deterministic_calculation';
+  return status === 'updated' ? 'user_input' : 'none';
 }

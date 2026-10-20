@@ -1,6 +1,7 @@
 import { documentOrdinal, type R3BDocument } from './r3b-documents.ts';
 import type { FactSource, KnownFact } from './r3b-profile-projection.ts';
-import { PREMIUM_FIELDS, type NextQuestionView, type TurnResultView } from './r3b-turn.ts';
+import { PREMIUM_FIELDS, nodeAt, type DocumentAnswerView, type NextQuestionView, type TurnResultView } from './r3b-turn.ts';
+import type { PrintedFactView } from '../pro-profile-prefill.ts';
 import type { Block, ChoiceRef, ReadReportItem, TurnContext } from './r3b-flow.ts';
 import { fieldLabel, formatDate, formatValue, money, scenarioUnit, type R3BCopy, type R3BLang } from './r3b-copy.ts';
 
@@ -101,7 +102,25 @@ export function questionText(q: NextQuestionView, ctx: TurnContext, copy: R3BCop
   return copy.questions.generic(label);
 }
 
-const HIDDEN_HINTS = new Set(['needs_information', 'cannot_calculate_without_inputs', 'result_ready']);
+/** R3-B.2: one printed fact in words - "Stawka godzinowa: €15,55/h („Uurloon”) — Pasek wypłaty 1, week 41/2026". */
+export function printedFactLine(fact: PrintedFactView, docs: readonly R3BDocument[], copy: R3BCopy, lang: R3BLang): string {
+  const value = fact.unit === 'percent' && typeof fact.value === 'number' ? `${formatValue('percent', fact.value, lang)}%`
+    : fact.unit === 'date' ? formatDate(String(fact.value), lang) : formatValue(fact.unit, fact.value, lang);
+  const printed = fact.label ? ` („${fact.label}”)` : '';
+  const where = [documentName(docs, fact.documentId, fact.role, copy), fact.key === 'period_label' ? null : fact.periodLabel].filter(Boolean).join(', ');
+  return `${copy.answer.keys[fact.key] ?? fact.key}: ${value}${printed} — ${where}${fact.status === 'conflict' ? ` (${copy.answer.conflict})` : ''}`;
+}
+
+/** R3-B.2: the answer to a question about the document, from its printed facts only. */
+export function documentAnswerLines(answer: DocumentAnswerView, docs: readonly R3BDocument[], copy: R3BCopy, lang: R3BLang): { intro: string | null; items: string[]; notes: string[] } {
+  if (!answer.available) return { intro: null, items: [], notes: [copy.answer.noContext] };
+  if (answer.items.length === 0) return { intro: null, items: [], notes: [copy.answer.notFound] };
+  const notes = [copy.answer.note];
+  if (answer.topics.includes('deductions')) notes.push(copy.answer.whyNet);
+  return { intro: copy.answer.intro, items: answer.items.map((f) => printedFactLine(f, docs, copy, lang)), notes };
+}
+
+const HIDDEN_HINTS = new Set(['needs_information', 'cannot_calculate_without_inputs', 'result_ready', 'document_answer']);
 
 /** What one R2 turn did, what it asks next, and - when nothing is left to ask - what stays open. */
 export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BCopy, lang: R3BLang): { lines: string[]; question: string | null; closing: string[] } {
@@ -128,7 +147,13 @@ export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BC
     else if (!HIDDEN_HINTS.has(hint.code) && copy.turn.hints[hint.code]) lines.push(copy.turn.hints[hint.code] as string);
   }
   for (const f of block.deferredNow) lines.push(copy.turn.deferred(fieldLabel(f, lang)));
-  const question = r.nextQuestion ? questionText(r.nextQuestion, block.context, copy, lang) : null;
+  if (r.intent === 'calculation_request' && r.status !== 'rejected') {
+    const rate = nodeAt(r.scenario, 'pay.hourlyRate');
+    if (rate?.state === 'known' && rate.source === 'document' && typeof rate.value === 'number') lines.push(copy.turn.rateFromDocument(formatValue('eur_per_hour', rate.value, lang)));
+    lines.push(copy.turn.calculationGated);
+  }
+  const asked = r.nextQuestion ? questionText(r.nextQuestion, block.context, copy, lang) : null;
+  const question = asked && r.documentAnswer ? `${copy.answer.backTo} ${asked}` : asked;
   const closing: string[] = [];
   if (!r.nextQuestion && r.status !== 'rejected') {
     const status = r.evaluation?.status;
@@ -147,7 +172,8 @@ export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BC
 function openAfterTurn(r: TurnResultView, ctx: TurnContext, copy: R3BCopy, lang: R3BLang): string[] {
   const fields = new Set<string>();
   for (const req of r.evaluation?.requirements ?? []) if (IN_GOAL.test(req.field) || req.field === 'work.hours') fields.add(req.field);
-  for (const f of r.conversation?.deferredFields ?? []) if (IN_GOAL.test(f) || f === 'work.hours') fields.add(f);
+  // A deferred field the server has since filled (e.g. the rate from a trusted document context) is not open.
+  for (const f of r.conversation?.deferredFields ?? []) if ((IN_GOAL.test(f) || f === 'work.hours') && nodeAt(r.scenario, f)?.state !== 'known') fields.add(f);
   return [...fields].map((f) => {
     const label = fieldLabel(f, lang);
     if (ctx.conflictFields.includes(f)) return `${label} (${copy.summary.statuses.conflict})`;

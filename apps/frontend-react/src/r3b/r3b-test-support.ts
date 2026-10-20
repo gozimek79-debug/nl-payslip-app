@@ -18,6 +18,8 @@ export interface Recorded { request: unknown; response: unknown }
 export interface Fixtures {
   outOfGoalFields: string[];
   technicalAsOfDate: string;
+  /** R3-B.2: the recorded server-held references (synthetic, fixed) of the by-reference flow. */
+  documentRefs: { batch: Record<string, string[]>; context: string };
   batches: Record<string, unknown[]>;
   profiles: Record<string, Recorded>;
   turns: Record<string, Recorded[]>;
@@ -32,6 +34,13 @@ export function readOk(fixtureId: string, coverage: { totalPages: number; notPro
   const batches = fixtures.batches[fixtureId];
   assert.ok(batches, `fixture ${fixtureId}`);
   return { status: 'done', factBatches: structuredClone(batches), coverage };
+}
+
+/** R3-B.2: a read whose batches the server keeps - the reader route returned a reference for each of them. */
+export function readByRef(fixtureId: string): DocumentReadOutcome {
+  const batchRefs = fixtures.documentRefs.batch[fixtureId];
+  assert.ok(batchRefs, `references for ${fixtureId}`);
+  return { ...readOk(fixtureId), batchRefs: [...batchRefs] };
 }
 
 export const pdf = (name: string, size = 4096, type = 'application/pdf') => new File([new Uint8Array(size)], name, { type });

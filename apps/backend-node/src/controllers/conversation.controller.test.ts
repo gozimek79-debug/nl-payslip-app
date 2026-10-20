@@ -67,7 +67,8 @@ after(async () => {
 const turn = (body: unknown) => fetch(`${baseUrl}/api/scenario/turn`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 type TurnBody = Record<string, unknown> & { status: string; scenario: { pay: Record<string, unknown> }; evaluation: { status: string } | null; nextQuestion: { kind: string; field: string } | null; patchIssues: Array<{ code: string }>; responseHint: { code: string } | null; conversation: Record<string, unknown> };
 
-const PUBLIC_KEYS = ['agentStatus', 'conversation', 'evaluation', 'intent', 'nextQuestion', 'patchApplied', 'patchIssues', 'patchNotes', 'responseHint', 'scenario', 'status', 'turnId'];
+// R3-B.2 adds `answerSource` and `documentAnswer` (server-held document facts only; null without a document question).
+const PUBLIC_KEYS = ['agentStatus', 'answerSource', 'conversation', 'documentAnswer', 'evaluation', 'intent', 'nextQuestion', 'patchApplied', 'patchIssues', 'patchNotes', 'responseHint', 'scenario', 'status', 'turnId'];
 const FORBIDDEN_KEYS = ['engineInput', 'engineResult', 'engineInputDigest', 'week_grids', 'hour_lines', 'outcome', 'period', 'runs', 'reasoning', 'systemPrompt', 'prompt_text', 'trusted', 'trustedContext', 'facts', 'raw', 'model', 'provider', 'userMessage'];
 
 function assertSanitized(body: unknown) {

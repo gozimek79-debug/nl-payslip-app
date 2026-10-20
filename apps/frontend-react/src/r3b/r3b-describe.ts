@@ -138,7 +138,9 @@ export function describeTurn(block: Extract<Block, { kind: 'turn' }>, copy: R3BC
     } else if (op.node.state === 'range') lines.push(copy.turn.saved(label, `${formatValue(scenarioUnit(op.field), op.node.low, lang)}–${formatValue(scenarioUnit(op.field), op.node.high, lang)}`));
   }
   for (const note of r.patchNotes ?? []) {
-    const render = copy.turn.notes[note.code] ?? copy.turn.notes.other;
+    // P0: a document value that is a conflict was not "taken" - both readings stay open.
+    const conflict = note.code === 'trusted_value_added' && note.field && nodeAt(r.scenario, note.field)?.state === 'conflict';
+    const render = (conflict ? copy.turn.notes.trusted_conflict_added : undefined) ?? copy.turn.notes[note.code] ?? copy.turn.notes.other;
     lines.push((render as (label: string) => string)(fieldLabel(note.field ?? pendingField ?? '', lang)));
   }
   const hint = r.responseHint;

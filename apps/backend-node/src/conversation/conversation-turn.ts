@@ -291,7 +291,10 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
         notes.push(...guarded.notes);
         const modelStated = outcome.output.statedWeeklyHours;
         const composition = hoursCompositionEvidence(request.message, modelStated);
-        if (outcome.output.hint === 'ambiguous_hours' || modelStated !== undefined || guarded.hoursValueWithheld || composition.statedTotal !== null) {
+        // P0 (live, 2026-10-20): hours named for an unsupported component or in a question about the document ("te 4
+        // godziny w nocy") are not the week's hours - no weekly-total clarification is derived from them.
+        const aboutWeekHours = intent !== 'unsupported_concept' && intent !== 'document_question';
+        if (aboutWeekHours && (outcome.output.hint === 'ambiguous_hours' || modelStated !== undefined || guarded.hoursValueWithheld || composition.statedTotal !== null)) {
           // ONE composition clarification. A new number comes only from the present message; without one, the
           // number the question already showed is kept (display only - it is never written).
           const fresh = composition.statedTotal !== null;
@@ -300,6 +303,9 @@ export async function runConversationTurn(request: TurnRequest, deps: TurnDepend
           clarificationOut = { ...(typeof total === 'number' ? { statedWeeklyTotal: total } : {}), ...(weekdayOnlyFalse ? { weekdayOnly: false as const } : {}) };
         }
         if (intent === 'document_question') documentAnswer = documentAnswerFor(knowledge, outcome.output.documentTopics?.length ? outcome.output.documentTopics : ['summary']);
+        // P0: a QUESTION that names a component Loonto cannot calculate still gets what the document prints for the pay
+        // lines (readings only) - the component stays recorded as unsupported, nothing is calculated or written.
+        if (intent === 'unsupported_concept' && knowledge && request.message.trim().endsWith('?')) documentAnswer = documentAnswerFor(knowledge, ['gross']);
         if (intent === 'decline_assumption' && current?.kind === 'offer_assumption' && current.field !== 'work.hours' && !declined.includes(current.field)) declined.push(current.field);
       }
     }

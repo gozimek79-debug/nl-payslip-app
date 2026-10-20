@@ -59,7 +59,9 @@ function payslipFacts(doc: ProfileDocumentInput, facts: PayslipDocumentFacts): K
   const base = { documentIndex: doc.index, documentId: doc.documentId ?? null, role: 'payslip' as const, periodLabel: periodLabel ? String(periodLabel.value).slice(0, 40) : null };
   const scalar = (topic: FactTopic, key: string, occurrences: PayrollFact[] | undefined) => {
     const found = exactValue(occurrences);
-    if (found) out.push({ ...base, topic, key, label: label(found.fact.evidence.printedLabel), value: found.value, unit: unitOf(found.fact.unit), status: 'document_reading', page: found.fact.evidence.page });
+    // A deduction printed with its minus sign ("Loonheffing -54,00") is that amount: shown as 54,00, like the lines.
+    const value = topic === 'deductions' && typeof found?.value === 'number' ? Math.abs(found.value) : found?.value;
+    if (found && value !== undefined) out.push({ ...base, topic, key, label: label(found.fact.evidence.printedLabel), value, unit: unitOf(found.fact.unit), status: 'document_reading', page: found.fact.evidence.page });
   };
   scalar('period', 'period_label', facts.scalars.periodLabel);
   scalar('period', 'period_start', facts.scalars.periodStart);

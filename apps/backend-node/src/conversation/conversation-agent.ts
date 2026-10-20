@@ -128,6 +128,11 @@ Hard rules:
 - A message unrelated to pay -> intent "off_topic" with no ops.
 - A question about what the user's uploaded document says (its rate, hours, gross, net, payout, deductions, reimbursements,
   period, or "what is on it") -> intent "document_question", NO ops, and documentTopics naming what is asked.
+- This includes a question about what the document shows for ONE pay component - also a component Loonto cannot
+  calculate yet (a night, shift or other surcharge, ADV, a reimbursement): "how much did they add for the night hours?"
+  is "document_question" with documentTopics ["gross"] (or the matching topic), NOT "unsupported_concept".
+  "unsupported_concept" is for the user saying they RECEIVE such a component in the week to calculate. Hours the
+  user names for such a component are not weekly hours: never put them in "statedWeeklyHours".
 - documentFacts (when present) are values READ from the user's own document by a separate reader - printed, unverified.
   Use them only to understand what the user refers to. NEVER copy a documentFacts value into a patch: a patch holds only
   values the user stated in THIS message. Never calculate with them.

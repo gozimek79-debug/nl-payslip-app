@@ -74,3 +74,22 @@ test('P0: each failure is named for what it is - never "the document cannot be r
     for (const [code] of cases) assert.ok(R3B_COPY[lang].readReport.errors[code], `${lang} copy for ${code}`);
   }
 });
+
+test('P0 live finding C: a document rate that is a CONFLICT is announced as "both kept, none chosen" - never as taken from the document', async () => {
+  const { describeTurn } = await import('./r3b-describe.ts');
+  const turn = (hourlyRate: unknown) => ({
+    kind: 'turn' as const, deferredNow: [],
+    context: { docsRead: true, rateFoundInDocs: true, premiumsInDocs: [], contractHours: null, documentFields: [], conflictFields: [] },
+    result: {
+      turnId: 't', status: 'unchanged', intent: 'document_question', agentStatus: 'not_needed', patchApplied: null, patchIssues: [],
+      patchNotes: [{ code: 'trusted_value_added', field: 'pay.hourlyRate' }], evaluation: { status: 'blocked' }, nextQuestion: null, conversation: {}, responseHint: null,
+      scenario: { schemaVersion: 1, scenarioId: 's', periodType: 'week', work: {}, tax: {}, pay: { hourlyRate } },
+    },
+  }) as never;
+  const conflict = describeTurn(turn({ state: 'conflict', candidates: [{ value: 18.2, source: 'document' }, { value: 18.75, source: 'document' }] }), PL, 'pl');
+  assert.ok(conflict.lines.includes('Stawka godzinowa brutto: dokument podaje dwie różne wartości — zostawiam obie, nie wybieram żadnej.'));
+  assert.ok(!conflict.lines.some((l) => l.includes('uwzględniam odczyt')));
+  const known = describeTurn(turn({ state: 'known', value: 17.3, source: 'document' }), PL, 'pl');
+  assert.ok(known.lines.some((l) => l.includes('uwzględniam odczyt z Twojego dokumentu')));
+  assert.ok(R3B_COPY.en.turn.notes.trusted_conflict_added);
+});

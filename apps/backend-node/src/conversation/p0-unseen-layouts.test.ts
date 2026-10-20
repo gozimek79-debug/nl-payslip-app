@@ -5,7 +5,7 @@ import { resolvePayrollProfile, type ProfileDocumentInput } from '../payroll-eng
 import { buildDocumentKnowledge, type DocumentKnowledge } from '../document-context/knowledge.js';
 import { trustedContextFromProfile } from './trusted-context.js';
 import { runConversationTurn } from './conversation-turn.js';
-import { RATES_2026, scriptedAgent } from '../test-support/conversation-fixtures.js';
+import { RATES_2026, ok, scriptedAgent } from '../test-support/conversation-fixtures.js';
 import { absent, found, hourLine, payslipBatch, rawPayslip } from '../test-support/fact-fixtures.js';
 
 /**
@@ -162,4 +162,54 @@ test('P0 staging D (mock reading of an image-only scan): dot decimals, header + 
   const hours = await ask('Ile godzin mi zapłacono?', ctx);
   assert.deepEqual(hours.documentAnswer?.items.map((i) => [i.key, i.value]), [['regular_hours', 24]], 'the 4 night-premium hours are not paid hours');
   assert.equal(hours.scenario.pay.saturdayPremiumPercent, undefined);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Live finding (2026-10-20, file D on Production): "a za te 4 godziny w nocy ile mi doliczyli?" - the model answered
+// unsupported_concept(night_premium) + statedWeeklyHours 4. Loonto then asked whether "these 4 hours" were the WEEK's
+// weekday hours and did not show what the document prints for the night premium. Replayed here with that exact output.
+// ---------------------------------------------------------------------------------------------
+
+const NIGHT_QUESTION = 'a za te 4 godziny w nocy ile mi doliczyli?';
+
+test('P0 live finding D: a question about an unsupported component shows what the document prints - and its hours are not the week\'s hours', async () => {
+  const ctx = context(doc(rawD));
+  const live = scriptedAgent([ok({ intent: 'unsupported_concept', patch: { version: 1, ops: [{ op: 'request_concept', concept: 'night_premium' }] }, statedWeeklyHours: 4 })]);
+  const r = await runConversationTurn({ message: NIGHT_QUESTION, locale: 'pl', conversation: { deferredFields: [] } }, { agent: live, rates: RATES_2026, trusted: ctx.trusted, documentKnowledge: ctx.knowledge });
+  assert.deepEqual(r.scenario.requestedConcepts, [{ concept: 'night_premium', source: 'user' }], 'still recorded as not calculable');
+  assert.equal(r.conversation.hoursClarification, undefined, 'no "are these 4 hours your weekday hours?" question');
+  assert.notEqual(r.nextQuestion?.kind, 'clarify_hours_composition');
+  assert.deepEqual(r.documentAnswer?.items.filter((i) => i.label === 'Nachttoeslag').map((i) => [i.key, i.value]), [['surcharge_percent', 25], ['wage_line_amount', 15.8]], 'the printed night premium is shown');
+  assert.equal(r.answerSource, 'document_facts');
+  assert.equal(r.scenario.pay.saturdayPremiumPercent, undefined, 'never a Saturday premium');
+  assert.notEqual(r.evaluation?.status, 'computed');
+});
+
+test('P0 live finding D: the model classifying it correctly (document_question, gross) gets the same grounded answer, also without an hours question', async () => {
+  const ctx = context(doc(rawD));
+  const asked = scriptedAgent([ok({ intent: 'document_question', patch: { version: 1, ops: [] }, documentTopics: ['gross'], statedWeeklyHours: 4 })]);
+  const r = await runConversationTurn({ message: NIGHT_QUESTION, locale: 'pl', conversation: { deferredFields: [] } }, { agent: asked, rates: RATES_2026, trusted: ctx.trusted, documentKnowledge: ctx.knowledge });
+  assert.equal(r.conversation.hoursClarification, undefined);
+  assert.ok(r.documentAnswer?.items.some((i) => i.label === 'Nachttoeslag' && i.value === 15.8));
+  assert.equal(r.scenario.requestedConcepts, undefined, 'a question is not a claim to receive the component');
+});
+
+test('P0: a statement (not a question) about an unsupported component is recorded as before - no document answer is forced', async () => {
+  const ctx = context(doc(rawD));
+  const agent = scriptedAgent([ok({ intent: 'unsupported_concept', patch: { version: 1, ops: [{ op: 'request_concept', concept: 'night_premium' }] } })]);
+  const r = await runConversationTurn({ message: 'Dostaję też dodatek nocny', locale: 'pl', conversation: { deferredFields: [] } }, { agent, rates: RATES_2026, trusted: ctx.trusted, documentKnowledge: ctx.knowledge });
+  assert.equal(r.documentAnswer, null);
+  assert.deepEqual(r.scenario.requestedConcepts, [{ concept: 'night_premium', source: 'user' }]);
+});
+
+test('P0: the model is told that a question about a printed component is a document question, and its hours are not weekly hours', async () => {
+  const { AGENT_SYSTEM_PROMPT } = await import('./conversation-agent.js');
+  assert.match(AGENT_SYSTEM_PROMPT, /also a component Loonto cannot\s+calculate yet/);
+  assert.match(AGENT_SYSTEM_PROMPT, /is "document_question" with documentTopics \["gross"\]/);
+  assert.match(AGENT_SYSTEM_PROMPT, /never put them in "statedWeeklyHours"/);
+});
+
+test('P0: a deduction printed with its minus sign ("Loonheffing -54.00") is shown as the amount 54', () => {
+  const ctx = context(doc({ ...rawD, printed_table_tax: found(-54, 'Loonheffing -54.00', 1, 'Loonheffing') }));
+  assert.deepEqual(facts(ctx.knowledge, 'tax'), [54]);
 });

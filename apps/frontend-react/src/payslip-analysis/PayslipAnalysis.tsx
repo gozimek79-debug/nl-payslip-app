@@ -236,6 +236,8 @@ function Checks({ state, store, copy, lang }: { state: PayslipAnalysisState; sto
 
       <h3>{copy.comparisonTitle}</h3>
       <p className="payslip-muted">{copy.comparisonIntro}</p>
+      {/* The reused notes point at the list: the database note says "below", the static-fallback note says "above". */}
+      {comparison.kind === 'substantiated' && replay.taxRatesSource !== 'static' && <p className="payslip-muted">{t.discrepanciesRatesSourceNote}</p>}
       {comparison.kind === 'unavailable' && <p>{copy.comparisonUnavailable(comparison.reason)}</p>}
       {comparison.kind === 'limited' && (
         <>
@@ -260,7 +262,7 @@ function Checks({ state, store, copy, lang }: { state: PayslipAnalysisState; sto
           ))}
         </ul>
       ))}
-      {comparison.kind === 'substantiated' && <p className="payslip-muted">{replay.taxRatesSource === 'static' ? t.discrepanciesRatesSourceStaticNote : t.discrepanciesRatesSourceNote}</p>}
+      {comparison.kind === 'substantiated' && replay.taxRatesSource === 'static' && <p className="payslip-muted">{t.discrepanciesRatesSourceStaticNote}</p>}
 
       {groups.uncertain.length > 0 && (
         <>

@@ -97,6 +97,7 @@ test('FIN-02 render: a known mismatch - what was compared, the difference, possi
   assert.match(markup, /<li data-code="table_tax_mismatch" data-status="finding">/);
   assert.match(t, /Loonto: €39\.99 · on the payslip: €30\.00 · difference: €9\.99/);
   assert.ok(t.includes('a different tax table or tax-credit setting'));
+  assert.ok(t.indexOf('The comparisons below') < t.indexOf('Loonto: €39.99'), 'the rates note that says "below" sits above the list');
   assert.ok(t.includes('not proof of an error or of a legal breach'));
 });
 

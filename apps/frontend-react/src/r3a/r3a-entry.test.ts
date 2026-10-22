@@ -21,9 +21,9 @@ test('R3-A entry: only exactly r3a=1 opens the demo', () => {
 
 test('R3-A entry: the existing app remains the default entry point and is not modified', () => {
   const main = read('../main.tsx');
-  // R3-B.1 (CEO: one canonical app): R3-B is now the default at `/` and the previous app is the `?legacy=1` fallback
-  // (r3b/r3b-entry.ts); this scripted R3-A demo stays reachable, unchanged, at `/?r3a=demo`.
-  assert.match(main, /entry === 'legacy' \? <App \/> : entry === 'r3a_demo' \? <Suspense fallback=\{null\}><R3AConversationDemo \/><\/Suspense> : <Suspense fallback=\{null\}><R3BDocumentConversation \/><\/Suspense>/, 'the previous App still renders, at ?legacy=1');
+  // AI-001: the module shell (App) is the default at `/` again, the previous app is the `?legacy=1` fallback and R3-B
+  // `?r3b=1` (r3b/r3b-entry.ts); this scripted R3-A demo stays reachable, unchanged, at `/?r3a=demo`.
+  assert.match(main, /entry === 'shell' \? <App \/> : entry === 'legacy' \? <App proMode="documents" \/> : entry === 'r3a_demo' \? <Suspense fallback=\{null\}><R3AConversationDemo \/><\/Suspense> : <Suspense fallback=\{null\}><R3BDocumentConversation \/><\/Suspense>/, 'the App renders at `/` and, as before, at ?legacy=1');
   assert.match(main, /lazy\(\(\) => import\('\.\/r3a\/R3AConversationDemo\.tsx'\)/, 'the demo is loaded on demand only');
   assert.match(main, /import '\.\/styles\.css';/);
   const app = read('../App.tsx');

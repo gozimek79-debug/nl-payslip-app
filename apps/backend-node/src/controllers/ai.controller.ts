@@ -13,7 +13,9 @@ const router = express.Router();
  * this field was always about.
  */
 router.get('/status', (_req, res) => {
-  res.json({ available: isGroqConfigured(), visionAvailable: readingProviderStatus().status === 'ready' });
+  // AI-001: `advisorAvailable` - whether THIS host can run the AI Advisor (a configured model); the interface says so
+  // up front instead of letting a user type into an advisor that cannot answer.
+  res.json({ available: isGroqConfigured(), visionAvailable: readingProviderStatus().status === 'ready', advisorAvailable: isGroqConfigured() });
 });
 
 export default router;

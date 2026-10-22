@@ -92,7 +92,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[t
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)){
   .site-header{backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%)}
 }
-.brand{display:flex;align-items:center;gap:10px;font:800 20px 'Manrope';letter-spacing:-1px}
+.brand{display:flex;align-items:center;gap:10px;font:800 20px 'Manrope';letter-spacing:-1px;min-height:44px}
 .brand-mark{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;color:#fff;background:var(--loonto-primary)}
 nav{display:flex;align-items:center;gap:14px;font-size:13px;font-weight:600}
 nav a{padding:8px 10px;color:var(--text-secondary)}
@@ -359,7 +359,7 @@ button.danger:disabled{opacity:.6;cursor:not-allowed}
 
 .auth-notice{max-width:1180px;margin:0 auto;padding:12px 28px}
 .lang-switch{display:flex;border:1px solid rgba(20,37,31,.16);border-radius:12px;overflow:hidden}
-.lang-switch button{border:0;border-radius:0;background:rgba(255,255,255,.7);padding:9px 12px;font-size:12px;font-weight:700;color:var(--text-secondary);cursor:pointer;min-height:40px}
+.lang-switch button{border:0;border-radius:0;background:rgba(255,255,255,.7);padding:9px 12px;font-size:12px;font-weight:700;color:var(--text-secondary);cursor:pointer;min-height:44px;min-width:44px}
 .lang-switch button.active{background:var(--loonto-primary);color:#fff}
 
 .header-facts{display:flex;flex-wrap:wrap;gap:10px 22px;margin:22px 0;padding:16px 20px;border-radius:16px;font-size:13px;color:var(--text-secondary);background:rgba(255,255,255,.6);border:1px solid var(--surface-glass-border)}

@@ -47,9 +47,9 @@ export const APP_MODULES: readonly AppModule[] = [
     limits: 'In preparation - not available yet. Questions about one uploaded payslip can already be asked here in Calculator PRO.',
   },
   {
-    id: 'glossary', group: 'glossary', status: 'coming_soon', target: 'glossary', priceTier: 'not_decided', usesAi: false, requiresLogin: false,
-    purpose: 'Glossary (planned): plain explanations of Dutch payroll, tax and employment terms.',
-    limits: 'In preparation - not available yet. The advisor may explain a term itself, clearly as a general explanation, not as a verified glossary entry.',
+    id: 'glossary', group: 'glossary', status: 'available', target: 'glossary', priceTier: 'free', usesAi: false, requiresLogin: false,
+    purpose: 'Searchable PL/EN glossary of 25 Dutch employment and payroll terms, with Dutch, Polish and English names and general explanations.',
+    limits: 'General educational explanations only, not legal advice or verified individual CAO entitlements.',
   },
   {
     id: 'account', group: 'account', status: 'available', target: 'account', priceTier: 'free', usesAi: false, requiresLogin: true,

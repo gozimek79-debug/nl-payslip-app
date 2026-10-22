@@ -152,5 +152,6 @@ test('FIN-02 shell: the Payslips card is a live module and the route renders the
   assert.doesNotMatch(app, /tier-card-disabled/, 'no module is marked "coming soon" any more');
   assert.match(app, /data-module="analysis_payslip"/);
   assert.match(app, /initialDocumentContextRef=\{advisorDocumentRef\}/, 'the hand-off passes the server reference only');
+  assert.match(app, /data-module="calculator_pro" onClick=\{\(\) => \{ setAdvisorDocumentRef\(null\);/, 'opening PRO from its own card never re-attaches an earlier payslip');
   assert.ok(renderApp().length > 0);
 });

@@ -101,7 +101,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
   /** Module targets the advisor may offer (server capability map) -> the shell's own sections. */
   function navigateTo(target: NavigationOffer['target']) {
     if (target === 'calculator_free') { setMode('kalkulator'); setKalkulatorTier('szybki'); }
-    else if (target === 'calculator_pro') { setMode('kalkulator'); setKalkulatorTier('pro'); }
+    else if (target === 'calculator_pro') { setAdvisorDocumentRef(null); setMode('kalkulator'); setKalkulatorTier('pro'); }
     else if (target === 'analysis_contract') { setMode('analiza'); setAnalizaModule('umowa'); }
     else if (target === 'analysis_payslip') { setMode('analiza'); setAnalizaModule('paski'); }
     else if (target === 'glossary') setMode('slownik');
@@ -146,7 +146,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
                 and the 'z_umowy' route below still exist; the contract upload/extraction/pre-fill
                 logic is what "returns as part of PRO" per spec §4, not rebuilt from scratch. */}
             {proMode === 'advisor' ? (
-              <button type="button" className="tier-card" data-module="calculator_pro" onClick={() => setKalkulatorTier('pro')}>
+              <button type="button" className="tier-card" data-module="calculator_pro" onClick={() => { setAdvisorDocumentRef(null); setKalkulatorTier('pro'); }}>
                 <Bot size={22}/><h3>{t.kalkulatorHome.advisorName}</h3><p className="tier-need">{t.kalkulatorHome.advisorNeed}</p><small className="form-note">{t.kalkulatorHome.advisorLimit}</small>
                 <span className="tier-badge tier-badge-interim">{t.kalkulatorHome.advisorBadge}</span>
               </button>
@@ -216,7 +216,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
           <Glossary lang={lang}/>
         </section>
       )}
-      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setMode('kalkulator'); setKalkulatorTier('pro'); }} onDeleteData={deleteMyData}/>}
+      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setAdvisorDocumentRef(null); setMode('kalkulator'); setKalkulatorTier('pro'); }} onDeleteData={deleteMyData}/>}
     </main>
   </div>;
 }

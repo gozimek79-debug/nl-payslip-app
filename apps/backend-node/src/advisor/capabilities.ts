@@ -42,9 +42,9 @@ export const APP_MODULES: readonly AppModule[] = [
     limits: 'Shows what the contract says; it is not legal advice and does not judge whether terms are lawful.',
   },
   {
-    id: 'payslip_analysis', group: 'document_analysis', status: 'coming_soon', target: 'analysis_payslip', priceTier: 'not_decided', usesAi: true, requiresLogin: false,
-    purpose: 'Payslip analysis (planned): verifying a payslip, comparing periods, explaining differences.',
-    limits: 'In preparation - not available yet. Questions about one uploaded payslip can already be asked here in Calculator PRO.',
+    id: 'payslip_analysis', group: 'document_analysis', status: 'available', target: 'analysis_payslip', priceTier: 'not_decided', usesAi: true, requiresLogin: false,
+    purpose: 'Payslip analysis: upload ONE payslip; Loonto reads it (Gemini reader, explicit consent) and shows what is printed - period, rate, hours, pay lines, deductions, reimbursements, printed gross / net / payout kept apart - plus where the payslip\'s own figures do not add up, and, only when every input is readable, how its tax / net / payout compare with Loonto\'s calculation.',
+    limits: 'One payslip at a time - no comparison of periods yet. It checks arithmetic and reading, not legal entitlements, the CAO, premium rates or the correctness of the employer\'s pay; a difference is a reason to check, never proof of an error. The user can then ask this advisor about the same payslip.',
   },
   {
     id: 'glossary', group: 'glossary', status: 'available', target: 'glossary', priceTier: 'free', usesAi: false, requiresLogin: false,

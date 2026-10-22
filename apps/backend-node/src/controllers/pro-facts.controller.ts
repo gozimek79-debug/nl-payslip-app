@@ -10,8 +10,8 @@ import { checkExtractionConsistency, resolveNetPosition, type ConsistencyIssue }
 import { mapExtractionToPeriod, resolveEtExchangeAmountFromExtraction, remapUnreadableFieldToPeriodPath } from '../payroll-engine/tier-c.js';
 import { fetchRates, resolveReferenceDate } from './tier-c.controller.js';
 import { parsePayslipBatches } from './fact-schemas.js';
-import { ensureSessionHash } from '../document-context/session.js';
-import { putRecord } from '../document-context/store.js';
+import { ensureSessionHash, readSessionHash } from '../document-context/session.js';
+import { DOCUMENT_REF, getRecord, putRecord } from '../document-context/store.js';
 
 /**
  * P2 (ZADANIE-P2-LOONTO-PRO.md §P2.3-§P2.9): the PRO document-fact boundary.
@@ -19,7 +19,8 @@ import { putRecord } from '../document-context/store.js';
  *   POST /api/pro/payslip-facts   one Gemini read of one page batch of a payslip  -> { batch }
  *   POST /api/pro/contract-facts  one Gemini read of one page batch of a contract/annex -> { batch }
  *   POST /api/pro/payslip-replay  NO AI - the historical replay/audit of an already-read payslip,
- *                                 from its fact batches (internal diagnostic only)
+ *                                 from its fact batches (PRO diagnostic) or, FIN-02, from the session's
+ *                                 server-held batches by reference (Payslip Analysis)
  *
  * Fact extraction never depends on replay: a fact route returns every fact it could read whatever
  * the payslip's period type or audit status. The replay keeps its own hard requirement (a confirmed
@@ -123,17 +124,36 @@ router.post('/contract-facts', contractFactsRateLimit, factRoute(extractContract
  * /api/tier-c/recompute keep working), but it can only ever answer for the diagnostic: a period type
  * the facts do not establish makes the replay `unavailable` - the facts themselves were already
  * returned by the fact route and already feed the profile.
+ *
+ * FIN-02 (Payslip Analysis): the batches may instead be named by `batchRefs` - references to batches THIS server's
+ * reader route stored for this browser session (exactly as /api/profile/resolve takes them). Then the replay runs on
+ * server-held facts only (`source: 'server_reference'`), never on client JSON. An unknown, expired, other-session or
+ * contract reference is refused with 409 `document_reference_invalid`. Echoed `batches` keep working as before.
  */
+const replayRefsSchema = z.array(z.string().regex(DOCUMENT_REF)).min(1).max(20);
+
 router.post('/payslip-replay', async (req, res) => {
-  const batches = parsePayslipBatches(req.body?.batches);
+  const hasRefs = req.body?.batchRefs !== undefined;
+  if (hasRefs === (req.body?.batches !== undefined)) return res.status(400).json({ error_code: 'invalid_input' });
+  let rawBatches: unknown = req.body?.batches;
+  if (hasRefs) {
+    const refs = replayRefsSchema.safeParse(req.body.batchRefs);
+    if (!refs.success) return res.status(400).json({ error_code: 'invalid_input' });
+    const sessionHash = readSessionHash(req);
+    const stored = await Promise.all(refs.data.map((ref) => getRecord(ref, sessionHash, 'batch')));
+    if (stored.some((r) => r === null || r.documentKind !== 'payslip')) return res.status(409).json({ error_code: 'document_reference_invalid' });
+    rawBatches = stored.map((r) => r?.batch);
+  }
+  const batches = parsePayslipBatches(rawBatches);
   if (!batches) return res.status(400).json({ error_code: 'invalid_input' });
+  const source = hasRefs ? 'server_reference' as const : 'client_echo' as const;
   try {
     const facts = mergePayslipBatches(batches);
     const extraction = payslipFactsToTierCExtraction(facts);
     const applicableMinimumWage = await getMinimumWageAt(resolveReferenceDate(extraction.period_end_date));
     const period = mapExtractionToPeriod(extraction, applicableMinimumWage);
     if (extraction.period_type === null) {
-      return res.json({ status: 'unavailable', reason: 'period_type_unknown', period });
+      return res.json({ status: 'unavailable', reason: 'period_type_unknown', period, source });
     }
     const fetched = await fetchRates(extraction.period_type);
     if (!fetched) return res.status(503).json({ error_code: 'tax_rates_unavailable' });
@@ -163,6 +183,7 @@ router.post('/payslip-replay', async (req, res) => {
       },
       taxRatesSource: fetched.source,
       coverage: facts.coverage,
+      source,
     });
   } catch (error) {
     console.error('PRO payslip replay error', error instanceof Error ? error.name : 'unknown');

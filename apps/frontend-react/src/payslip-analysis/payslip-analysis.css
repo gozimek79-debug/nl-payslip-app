@@ -1,0 +1,69 @@
+/* FIN-02 Payslip Analysis - scoped to `.payslip-*`; reuses the design tokens of styles.css. Mobile first (320px+),
+   44px touch targets, long labels wrap instead of overflowing. */
+
+.payslip-analysis{max-width:760px;overflow-wrap:anywhere}
+.payslip-analysis :is(button,summary,a):focus-visible{outline:none;box-shadow:var(--focus-ring);border-radius:12px}
+.payslip-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+.payslip-note{display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border-radius:14px;background:var(--status-info-bg);border:1px solid var(--status-info-border);color:var(--text-secondary);font-size:14px;line-height:1.45}
+.payslip-note svg{flex:none;margin-top:2px;color:var(--status-info)}
+
+.payslip-upload,.payslip-card{padding:14px;border-radius:18px;background:rgba(255,255,255,.9);border:1px solid rgba(22,37,31,.08);box-shadow:0 10px 28px rgba(20,70,50,.06);margin-bottom:14px}
+.payslip-card h2{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-size:19px}
+.payslip-card h3{margin:16px 0 6px;font-size:16px}
+.payslip-card p{margin:0 0 8px;line-height:1.5}
+
+.payslip-select,.payslip-read,.payslip-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;width:100%;padding:10px 14px;border-radius:14px;border:0;background:var(--loonto-primary);color:#fff;font-size:16px;font-weight:700;line-height:1.25;cursor:pointer;text-align:center}
+.payslip-select{background:#fff;border:1.5px solid var(--loonto-primary);color:var(--loonto-primary-hover)}
+.payslip-secondary{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:8px 14px;border-radius:12px;border:1px solid rgba(22,37,31,.18);background:#fff;color:var(--text-primary);font-weight:700;cursor:pointer}
+.payslip-link{min-height:44px;padding:0;border:0;background:none;color:var(--loonto-primary-hover);font-weight:700;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.payslip-icon-button{flex:none;width:44px;height:44px;border-radius:12px;border:1px solid rgba(22,37,31,.16);background:#fff;color:var(--text-secondary);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+:is(.payslip-select,.payslip-read,.payslip-primary,.payslip-secondary,.payslip-icon-button):disabled{opacity:.55;cursor:not-allowed}
+
+.payslip-file{display:flex;align-items:center;gap:10px;padding:8px 8px 8px 12px;border-radius:12px;border:1px solid rgba(22,37,31,.1);background:#fff}
+.payslip-file-name{flex:1;min-width:0;font-weight:700}
+.payslip-types{margin:8px 2px 0;font-size:13px;color:var(--text-muted)}
+.payslip-consent{margin-top:12px;padding:10px 12px;border-radius:12px;background:var(--status-info-bg);border:1px solid var(--status-info-border)}
+.payslip-consent h2{display:flex;align-items:center;gap:6px;margin:0 0 4px;font-size:15px;color:var(--status-info)}
+.payslip-consent p{margin:0 0 10px;font-size:14px;line-height:1.5;color:var(--text-secondary)}
+.payslip-progress{margin:10px 0 0;font-style:italic;color:var(--text-muted)}
+.payslip-alert{margin:10px 0 0;padding:10px 12px;border-radius:12px;background:var(--status-error-bg);border:1px solid var(--status-error-border);color:var(--status-error);font-weight:600;line-height:1.45}
+.payslip-alert p{display:flex;gap:6px;align-items:flex-start;margin:0 0 8px}
+.payslip-alert svg{flex:none;margin-top:3px}
+
+.payslip-muted{color:var(--text-muted);font-size:14px}
+.payslip-warning{color:var(--status-warning);font-weight:600}
+.payslip-ok{display:flex;gap:6px;align-items:flex-start;color:var(--status-success);font-weight:600}
+.payslip-ok svg{flex:none;margin-top:3px}
+
+.payslip-amounts{display:grid;grid-template-columns:1fr;gap:8px;margin:12px 0}
+.payslip-amount{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:12px;background:var(--status-warning-bg);border:1px solid var(--status-warning-border)}
+.payslip-amount.is-unknown{background:#eef1ee;border-color:#d6ddd8}
+.payslip-amount-label{font-size:13px;font-weight:700;color:var(--text-secondary)}
+.payslip-amount-value{font-size:20px;font-variant-numeric:tabular-nums}
+.payslip-amount.is-unknown .payslip-amount-value{font-size:14px;font-style:italic;color:var(--text-muted)}
+.payslip-amount-printed{font-size:13px;color:var(--text-muted)}
+
+.payslip-items summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-size:17px;font-weight:700}
+.payslip-item-group ul,.payslip-issues,.payslip-discrepancies,.payslip-limits ul{margin:0;padding-left:18px}
+.payslip-item-group li{display:flex;flex-wrap:wrap;gap:2px 10px;margin:4px 0}
+.payslip-item-label{flex:1 1 160px;min-width:0}
+.payslip-item-value{font-weight:700;font-variant-numeric:tabular-nums}
+.payslip-item-page{font-size:13px;color:var(--text-muted)}
+.payslip-issues li,.payslip-discrepancies li{margin:6px 0;line-height:1.45}
+.payslip-discrepancies{list-style:none;padding-left:0}
+.payslip-discrepancies li{padding:10px 12px;border-radius:12px;background:var(--status-warning-bg);border:1px solid var(--status-warning-border)}
+.payslip-discrepancy-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+.payslip-status{display:inline-flex;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid transparent}
+.payslip-status-confirm{background:#fff;border-color:var(--status-warning-border);color:var(--status-warning)}
+.payslip-status-finding{background:var(--status-error-bg);border-color:var(--status-error-border);color:var(--status-error)}
+.payslip-proof{margin-top:12px !important;font-weight:700}
+
+.payslip-actions{display:flex;flex-direction:column;gap:12px;align-items:stretch}
+.payslip-advisor p{margin:6px 2px 0}
+
+@media (min-width:600px){
+  .payslip-amounts{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .payslip-select,.payslip-read,.payslip-primary{width:auto}
+  .payslip-actions{flex-direction:row;flex-wrap:wrap;align-items:flex-start}
+}

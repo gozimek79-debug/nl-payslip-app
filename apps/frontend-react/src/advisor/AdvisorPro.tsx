@@ -34,10 +34,12 @@ export interface AdvisorProProps {
   store?: AdvisorStore;
   onNavigate: (target: NavigationOffer['target']) => void;
   onOpenDocumentsPro: () => void;
+  /** FIN-02: a document context Payslip Analysis built for this session - the advisor starts with it. */
+  initialDocumentContextRef?: string | null;
 }
 
-export function AdvisorPro({ lang, store: injected, onNavigate, onOpenDocumentsPro }: AdvisorProProps) {
-  const store = useMemo(() => injected ?? createAdvisorStore(browserAdvisorDeps(), lang), [injected]);
+export function AdvisorPro({ lang, store: injected, onNavigate, onOpenDocumentsPro, initialDocumentContextRef }: AdvisorProProps) {
+  const store = useMemo(() => injected ?? createAdvisorStore(browserAdvisorDeps(), lang, { documentContextRef: initialDocumentContextRef ?? null }), [injected]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
   // The shell owns the language; the store follows it (it sends the locale with each question).
   const c = ADVISOR_COPY[lang];

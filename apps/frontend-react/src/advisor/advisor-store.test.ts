@@ -214,3 +214,14 @@ test('AI-001 containment: the ONLY advisor message the interface creates is the 
   // The old scripted dialogue engines are not part of the advisor.
   for (const file of sources) for (const banned of ['r3b-turn', 'r3b-flow', 'next-question', 'R3A_COPY', 'r3a-demo', 'scenario/turn']) assert.ok(!read(file).includes(banned), `${file}: ${banned}`);
 });
+
+test('FIN-02 hand-off: a payslip read in Payslip Analysis reaches the advisor by its server reference only, said in the thread', async () => {
+  const { createAdvisorStore } = await import('./advisor-store.ts');
+  const { recordedBackend } = await import('./advisor-test-support.ts');
+  const backend = recordedBackend([okTurn('MODEL-ANSWER')]);
+  const store = createAdvisorStore({ fetchImpl: backend.fetchImpl, readFacts: async () => ({ status: 'error', errorCode: 'unused' }), today: () => '2026-10-22' }, 'pl', { documentContextRef: 'ctx-from-analysis' });
+  assert.deepEqual(notices(store.getState()), ['info:document_from_analysis']);
+  await store.send('Za te 584 to co?');
+  assert.deepEqual(backend.turnCalls()[0]?.body, { message: 'Za te 584 to co?', locale: 'pl', documentContextRef: 'ctx-from-analysis' });
+  assert.match(ADVISOR_COPY.pl.info.document_from_analysis, /bez ponownego wysyłania pliku/);
+});

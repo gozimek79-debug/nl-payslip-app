@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test": "node --test src/render-step-policy.test.ts src/pro-documents-policy.test.ts src/pro-parameter-sourcing.test.ts src/tier-c-shared.test.ts src/translations.test.ts src/pro-profile-prefill.test.ts src/document-batches.test.ts src/pro-profile-questions.test.ts src/profile-questions.render.test.ts src/r0-diagnostics.test.ts src/r3a/r3a-demo.test.ts src/r3a/r3a-render.test.ts src/r3a/r3a-entry.test.ts src/document-facts-reader.test.ts src/r3b/r3b-turn.test.ts src/r3b/r3b-flow.test.ts src/r3b/r3b-render.test.ts src/r3b/r3b-entry.test.ts src/r3b/r3b2-document-answers.test.ts src/r3b/p0-reader-errors.test.ts src/advisor/advisor-store.test.ts src/advisor/advisor-render.test.ts src/glossary.test.ts"
+    "test": "node --test src/render-step-policy.test.ts src/pro-documents-policy.test.ts src/pro-parameter-sourcing.test.ts src/tier-c-shared.test.ts src/translations.test.ts src/pro-profile-prefill.test.ts src/document-batches.test.ts src/pro-profile-questions.test.ts src/profile-questions.render.test.ts src/r0-diagnostics.test.ts src/r3a/r3a-demo.test.ts src/r3a/r3a-render.test.ts src/r3a/r3a-entry.test.ts src/document-facts-reader.test.ts src/r3b/r3b-turn.test.ts src/r3b/r3b-flow.test.ts src/r3b/r3b-render.test.ts src/r3b/r3b-entry.test.ts src/r3b/r3b2-document-answers.test.ts src/r3b/p0-reader-errors.test.ts src/advisor/advisor-store.test.ts src/advisor/advisor-render.test.ts src/glossary.test.ts src/payslip-analysis/payslip-analysis.test.ts src/payslip-analysis/payslip-render.test.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.0",

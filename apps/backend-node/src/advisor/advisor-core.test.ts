@@ -87,12 +87,15 @@ test('AI-001 grounding: an amount nobody provided is ungrounded; amounts from to
 // Tools
 // ---------------------------------------------------------------------------------------------
 
-test('AI-001 capabilities: all five customer modules (+ account) with honest status - payslip analysis is coming soon; glossary is available', () => {
+test('AI-001 capabilities: all five customer modules (+ account) with honest status - payslip analysis (FIN-02) and glossary are available', () => {
   const ids = APP_MODULES.map((m) => [m.id, m.status]);
-  assert.deepEqual(ids, [['free_calculator', 'available'], ['pro_advisor', 'alpha'], ['contract_analysis', 'available'], ['payslip_analysis', 'coming_soon'], ['glossary', 'available'], ['account', 'available']]);
+  assert.deepEqual(ids, [['free_calculator', 'available'], ['pro_advisor', 'alpha'], ['contract_analysis', 'available'], ['payslip_analysis', 'available'], ['glossary', 'available'], ['account', 'available']]);
   const forModel = capabilitiesForModel();
   assert.equal(forModel.advisor_features.gross_or_net_pay_calculation, 'not_available_yet');
   assert.ok(APP_MODULES.find((m) => m.id === 'free_calculator')?.usesAi === false, 'the free calculator does not depend on AI');
+  const payslips = APP_MODULES.find((m) => m.id === 'payslip_analysis');
+  assert.match(payslips?.limits ?? '', /One payslip at a time - no comparison of periods yet/, 'the advisor does not promise a period comparison');
+  assert.match(payslips?.limits ?? '', /never proof of an error/);
 });
 
 test('AI-001 get_document_facts: only through the server-held context; typed components, no printed text, no employer, no ids', () => {
@@ -156,7 +159,7 @@ test('AI-001C calculate_base_wage_orientation: rate from the trusted scenario, h
 test('AI-001 offer_navigation / invalid arguments: closed targets, honest status; malformed JSON is refused, not run', () => {
   const ctx = toolContext();
   const offered = executeTool('offer_navigation', JSON.stringify({ targets: ['analysis_contract', 'analysis_payslip'] }), ctx).result as { offered: unknown[] };
-  assert.deepEqual(offered.offered, [{ target: 'analysis_contract', status: 'available' }, { target: 'analysis_payslip', status: 'coming_soon' }]);
+  assert.deepEqual(offered.offered, [{ target: 'analysis_contract', status: 'available' }, { target: 'analysis_payslip', status: 'available' }]);
   assert.equal(executeTool('offer_navigation', JSON.stringify({ targets: ['admin_panel'] }), ctx).status, 'invalid_arguments');
   assert.equal(executeTool('get_document_facts', '{not json', ctx).status, 'invalid_arguments');
   assert.equal(executeTool('drop_tables', '{}', ctx).status, 'invalid_arguments');

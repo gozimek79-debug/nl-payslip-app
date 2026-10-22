@@ -72,10 +72,10 @@ test('AI-001 shell: `?legacy=1` keeps the previous application exactly (PRO = do
   assert.ok(!t.includes('doradca AI'));
 });
 
-test('AI-001 shell: payslip analysis and the dictionary stay "in preparation"; contract analysis stays live', () => {
+test('Loonto shell: payslip analysis is in preparation, glossary is live, contract analysis stays live', () => {
   const app = readFileSync(path.join(here, '..', 'App.tsx'), 'utf-8');
   assert.match(app, /analizaModule === 'paski' && \([\s\S]*?t\.comingSoon\.title/, 'payslips -> the in-preparation notice');
-  assert.match(app, /mode === 'slownik' && \([\s\S]*?t\.comingSoon\.title/, 'dictionary -> the in-preparation notice');
+  assert.match(app, /mode === 'slownik' && \([\s\S]*?<Glossary lang=\{lang\}\/>/, 'glossary renders real component');
   assert.match(app, /analizaModule === 'umowa' && \([\s\S]*?<ContractAnalysis lang=\{lang\}\/>/);
   assert.match(app, /kalkulatorTier === 'szybki' && \([\s\S]*?<TierACalculator lang=\{lang\}/, 'the free calculator is the unchanged Tier A component');
   assert.match(app, /proMode === 'advisor'\s*\? <AdvisorPro /);

@@ -87,9 +87,9 @@ test('AI-001 grounding: an amount nobody provided is ungrounded; amounts from to
 // Tools
 // ---------------------------------------------------------------------------------------------
 
-test('AI-001 capabilities: all five customer modules (+ account) with honest status - payslip analysis and glossary are coming soon', () => {
+test('AI-001 capabilities: all five customer modules (+ account) with honest status - payslip analysis is coming soon; glossary is available', () => {
   const ids = APP_MODULES.map((m) => [m.id, m.status]);
-  assert.deepEqual(ids, [['free_calculator', 'available'], ['pro_advisor', 'alpha'], ['contract_analysis', 'available'], ['payslip_analysis', 'coming_soon'], ['glossary', 'coming_soon'], ['account', 'available']]);
+  assert.deepEqual(ids, [['free_calculator', 'available'], ['pro_advisor', 'alpha'], ['contract_analysis', 'available'], ['payslip_analysis', 'coming_soon'], ['glossary', 'available'], ['account', 'available']]);
   const forModel = capabilitiesForModel();
   assert.equal(forModel.advisor_features.gross_or_net_pay_calculation, 'not_available_yet');
   assert.ok(APP_MODULES.find((m) => m.id === 'free_calculator')?.usesAi === false, 'the free calculator does not depend on AI');

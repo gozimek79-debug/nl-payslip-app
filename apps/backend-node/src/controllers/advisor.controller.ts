@@ -15,7 +15,7 @@ import { canonicalize, getAt, isRecord, withValueAt } from '../scenario/scenario
 import { advisorBudget, MAX_ADVISOR_MESSAGE_STORED, MAX_USER_MESSAGE } from '../advisor/advisor-config.js';
 import { defaultAdvisorModel } from '../advisor/advisor-model.js';
 import { runAdvisorTurn, type HistoryMessage } from '../advisor/advisor-turn.js';
-import { moneyAmountsIn } from '../advisor/grounding.js';
+import type { ClaimSource } from '../advisor/claim-check.js';
 import type { ToolContext } from '../advisor/advisor-tools.js';
 
 /**
@@ -43,19 +43,20 @@ const turnSchema = z.strictObject({
 });
 
 interface StoredConversation {
-  version: 1;
+  /** 2 (AI-001 P0-2): earlier amounts are kept WITH their kind; a version-1 record is treated as expired (409). */
+  version: 2;
   messages: HistoryMessage[];
   /** User values only - document values are merged fresh from the trusted context each turn. */
   userScenario: ScenarioV1;
   documentContextRef: string | null;
-  groundedAmounts: number[];
+  groundedClaims: ClaimSource[];
 }
 
 const MAX_STORED_MESSAGES = 40;
-const MAX_GROUNDED_AMOUNTS = 60;
+const MAX_GROUNDED_CLAIMS = 60;
 
 function isStoredConversation(value: unknown): value is StoredConversation {
-  return isRecord(value) && value.version === 1 && Array.isArray(value.messages) && isRecord(value.userScenario) && Array.isArray(value.groundedAmounts);
+  return isRecord(value) && value.version === 2 && Array.isArray(value.messages) && isRecord(value.userScenario) && Array.isArray(value.groundedClaims);
 }
 
 /** Drops every value with a verified source (document, rules): only the server's trusted context may supply those. */
@@ -86,7 +87,7 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
   if (!model) return res.status(503).json({ error_code: 'advisor_unavailable', reason: 'not_configured' });
 
   const sessionHash = ensureSessionHash(req, res);
-  let conversation: StoredConversation = { version: 1, messages: [], userScenario: emptyScenario(randomUUID()), documentContextRef: null, groundedAmounts: [] };
+  let conversation: StoredConversation = { version: 2, messages: [], userScenario: emptyScenario(randomUUID()), documentContextRef: null, groundedClaims: [] };
   if (conversationRef !== undefined) {
     const record = await getRecord(conversationRef, sessionHash, 'advisor');
     if (!record || !isStoredConversation(record.conversation)) return res.status(409).json({ error_code: 'conversation_invalid' });
@@ -119,27 +120,28 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
   const budget = advisorBudget();
   const history = conversation.messages.slice(-budget.historyMessages);
   const ctx: ToolContext = {
-    userMessages: [...conversation.messages.filter((m) => m.role === 'user').map((m) => m.text), message],
+    dialogue: [...conversation.messages.map((m) => ({ role: m.role, text: m.text })), { role: 'user' as const, text: message }],
     currentMessage: message, knowledge, documentStatus, scenario, rates: fetched?.rates ?? null, orientation: null, navigation: [],
   };
 
   const started = Date.now();
-  const outcome = await runAdvisorTurn({ locale, message, history, earlierGroundedAmounts: conversation.groundedAmounts, today: new Date().toISOString().slice(0, 10) }, ctx, model, budget);
+  const outcome = await runAdvisorTurn({ locale, message, history, earlierClaims: conversation.groundedClaims, today: new Date().toISOString().slice(0, 10) }, ctx, model, budget);
   const latencyMs = Date.now() - started;
   console.info('advisor turn', JSON.stringify({
     outcome: outcome.status, reason: 'reason' in outcome ? outcome.reason : null, modelCalls: outcome.modelCalls, tools: outcome.toolCalls.map((t) => `${t.name}:${t.status}`),
-    latencyMs, documentStatus, ...(outcome.status === 'ok' ? { promptTokens: outcome.usage.promptTokens, completionTokens: outcome.usage.completionTokens, groundingRewrite: outcome.groundingRewrite } : {}),
+    latencyMs, documentStatus, ...(outcome.status === 'unavailable' ? {} : { checks: outcome.checks }),
+    ...(outcome.status === 'ok' ? { promptTokens: outcome.usage.promptTokens, completionTokens: outcome.usage.completionTokens, groundingRewrite: outcome.groundingRewrite } : {}),
   }));
 
   if (outcome.status === 'unavailable') return res.status(503).json({ error_code: 'advisor_unavailable', reason: outcome.reason });
   if (outcome.status === 'withheld') return res.status(502).json({ error_code: 'answer_withheld', reason: outcome.reason });
 
   const next: StoredConversation = {
-    version: 1,
+    version: 2,
     messages: [...conversation.messages, { role: 'user' as const, text: message }, { role: 'assistant' as const, text: outcome.text.slice(0, MAX_ADVISOR_MESSAGE_STORED) }].slice(-MAX_STORED_MESSAGES),
     userScenario: withoutVerifiedValues(ctx.scenario),
     documentContextRef: contextRef ?? null,
-    groundedAmounts: [...conversation.groundedAmounts, ...moneyAmountsIn(outcome.text)].slice(-MAX_GROUNDED_AMOUNTS),
+    groundedClaims: [...conversation.groundedClaims, ...outcome.claims].slice(-MAX_GROUNDED_CLAIMS),
   };
   const newRef = await putRecord(sessionHash, { kind: 'advisor', conversation: next });
 

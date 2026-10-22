@@ -10,7 +10,9 @@ import type { PayslipComputationRates } from '../payroll-engine/payslip-model.js
 import { capabilitiesForModel, moduleByTarget, NAVIGATION_TARGETS, type ModuleStatus, type NavigationTarget } from './capabilities.js';
 import { baseWageOrientation, MAX_HOURS_PER_DAY, type OrientationResult } from './base-wage-orientation.js';
 import { orientationToolEnabled } from './advisor-config.js';
-import { numbersInText } from './grounding.js';
+import { numbersInValue } from './grounding.js';
+import { statedInDialogue, type DialogueTurn } from './hours-statements.js';
+import type { ClaimSource } from './claim-check.js';
 import type { ToolSpec } from './advisor-model.js';
 
 /**
@@ -18,12 +20,12 @@ import type { ToolSpec } from './advisor-model.js';
  * (zod, closed enums, bounds), every result is built by the server from server-held state. A tool never takes a value
  * from the model on trust: document facts come only from the session's server-held context, scenario edits go through
  * the R2 support guard + patch authority + R1 validator, and the orientation tool takes its hourly rate from the
- * trusted scenario and its hours only if the user actually typed them.
+ * trusted scenario and its hours and days only as the user stated them (P0-1: hours-statements.ts).
  */
 
 export interface ToolContext {
-  /** Every user message of this conversation, the current one last (provenance of typed numbers). */
-  userMessages: string[];
+  /** The conversation so far, the current user message last (provenance of stated hours and days, confirmations). */
+  dialogue: DialogueTurn[];
   currentMessage: string;
   knowledge: DocumentKnowledge | null;
   documentStatus: 'none' | 'available' | 'expired';
@@ -77,13 +79,13 @@ export const ADVISOR_TOOLS: ToolSpec[] = [
   },
   {
     name: 'calculate_base_wage_orientation',
-    description: 'ORIENTATION only: hours x the base hourly rate Loonto holds (from the document or stated by the user). Give EITHER hours_total OR per_day_hours with days. The hours must be numbers the user wrote. Returns the amount plus what it excludes (premiums, holiday pay, tax, deductions - not gross or net pay). Refuses when the rate is unknown or the document rates conflict.',
+    description: 'ORIENTATION only: hours x the base hourly rate Loonto holds (from the document or stated by the user). Give EITHER hours_total (a weekly total the user stated, e.g. "56 hours") OR per_day_hours with days - only when the user stated BOTH the hours per day AND the number of days (e.g. "Monday to Sunday, 8 h a day"). Never derive per-day hours from a total or infer the number of days; if they were not stated, ask. Returns the amount plus what it excludes (premiums, holiday pay, tax, deductions - not gross or net pay). Refuses when the rate is unknown or the document rates conflict.',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {
         hours_total: { type: 'number', description: 'total hours the user stated for the week' },
         per_day_hours: { type: 'number', description: 'hours per day the user stated' },
-        days: { type: 'integer', minimum: 1, maximum: 7, description: 'number of working days (Monday to Sunday = 7)' },
+        days: { type: 'integer', minimum: 1, maximum: 7, description: 'number of working days the user stated (Monday to Sunday = 7)' },
       },
     },
   },
@@ -181,9 +183,7 @@ export function scenarioStateForModel(scenario: ScenarioV1, evaluation: Scenario
 // Execution
 // ---------------------------------------------------------------------------------------------
 
-function typedByUser(value: number, userMessages: readonly string[]): boolean {
-  return userMessages.some((m) => numbersInText(m).some((n) => Math.abs(n - value) < 1e-9));
-}
+const statedIn = (values: readonly number[], value: number) => values.some((v) => Math.abs(v - value) < 0.005);
 
 function rateFromScenario(scenario: ScenarioV1): { ok: true; rate: number; source: string } | { ok: false; reason: 'rate_conflict' | 'rate_unknown'; candidates?: number[] } {
   const node = getAt(scenario, 'pay.hourlyRate');
@@ -242,14 +242,17 @@ export function executeTool(name: string, rawArguments: string, ctx: ToolContext
       const parsed = orientationArgs.safeParse(args);
       if (!parsed.success) return { status: 'invalid_arguments', result: { ok: false, reason: 'invalid_arguments' } };
       const { hours_total: total, per_day_hours: perDay, days } = parsed.data;
+      // P0-1: every number of hours and of days must be one the user stated (or explicitly confirmed) - see hours-statements.ts.
+      const stated = statedInDialogue(ctx.dialogue);
       let hours: number;
       let hoursBasis: string;
       if (total !== undefined && perDay === undefined && days === undefined) {
-        if (!typedByUser(total, ctx.userMessages)) return { status: 'refused', result: { ok: false, reason: 'hours_not_stated_by_user' } };
+        if (!statedIn(stated.totals, total)) return { status: 'refused', result: { ok: false, reason: 'hours_total_not_stated_by_user', hint: 'use only a weekly total of hours the user stated, or ask for it' } };
         hours = total;
         hoursBasis = 'total_stated_by_user';
       } else if (total === undefined && perDay !== undefined && days !== undefined) {
-        if (!typedByUser(perDay, ctx.userMessages)) return { status: 'refused', result: { ok: false, reason: 'hours_not_stated_by_user' } };
+        if (!statedIn(stated.perDay, perDay)) return { status: 'refused', result: { ok: false, reason: 'per_day_hours_not_stated_by_user', hint: 'a weekly total is not a per-day schedule; use hours_total, or ask how many hours a day' } };
+        if (!stated.days.includes(days)) return { status: 'refused', result: { ok: false, reason: 'days_not_stated_by_user', hint: 'ask how many days a week the user works (Monday to Sunday = 7); do not assume it' } };
         hours = Math.round(perDay * 100 * days) / 100;
         hoursBasis = `per_day_${perDay}_x_${days}_days`;
       } else {
@@ -279,4 +282,37 @@ export function executeTool(name: string, rawArguments: string, ctx: ToolContext
     default:
       return { status: 'invalid_arguments', result: { error: 'unknown_tool' } };
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// P0-2: the claims behind every number a tool or a document supplies (claim-check.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** The document's printed figures, each with what it is (topic, key, component, period). */
+export function claimSourcesFromKnowledge(knowledge: DocumentKnowledge | null): ClaimSource[] {
+  if (!knowledge) return [];
+  return knowledge.facts.flatMap((f) => (typeof f.value === 'number' ? [{
+    value: f.value, kind: 'document_reading' as const, topic: f.topic, key: f.key,
+    component: COMPONENT_KEYS.has(f.key) ? componentOf(f.label) : null, period: safePeriod(f.periodLabel),
+  }] : []));
+}
+
+const sourceKind = (rateSource: unknown): ClaimSource['kind'] => (rateSource === 'document_reading' ? 'document_reading' : rateSource === 'user' || rateSource === 'correction' ? 'user_stated' : 'tool_value');
+
+/** What a tool result's numbers ARE: the orientation amount is indicative only; document facts stay document readings. */
+export function claimSourcesFromTool(name: string, result: unknown): ClaimSource[] {
+  if (!isRecord(result)) return [];
+  if (name === 'calculate_base_wage_orientation' && result.ok === true && typeof result.amount === 'number') {
+    const out: ClaimSource[] = [{ value: result.amount, kind: 'indicative_base_wage_only' }];
+    if (typeof result.hourly_rate === 'number') out.push({ value: result.hourly_rate, kind: sourceKind(result.rate_source), topic: 'hourly_rate', key: 'hourly_rate' });
+    if (typeof result.hours === 'number') out.push({ value: result.hours, kind: 'tool_value' });
+    return out;
+  }
+  if (name === 'get_document_facts' && Array.isArray(result.facts)) {
+    return result.facts.filter(isRecord).flatMap((f) => (typeof f.value === 'number' ? [{
+      value: f.value, kind: 'document_reading' as const, topic: typeof f.topic === 'string' ? f.topic : null, key: typeof f.key === 'string' ? f.key : null,
+      component: typeof f.component === 'string' ? f.component : null, period: typeof f.period === 'string' ? f.period : null,
+    }] : []));
+  }
+  return numbersInValue(result).map((value) => ({ value, kind: 'tool_value' as const }));
 }

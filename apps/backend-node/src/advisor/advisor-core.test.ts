@@ -25,7 +25,7 @@ import { evaluateScenario } from '../scenario/scenario-evaluate.js';
 const run = (messages: string[], steps: Parameters<typeof recordedModel>[0], documents?: NonNullable<Parameters<typeof toolContext>[0]>['documents']) => {
   const ctx = toolContext({ messages, ...(documents ? { documents } : {}) });
   const model = recordedModel(steps);
-  return { ctx, model, outcome: runAdvisorTurn({ locale: 'pl', message: messages[messages.length - 1] as string, history: [], earlierGroundedAmounts: [], today: '2026-10-21' }, ctx, model, advisorBudget()) };
+  return { ctx, model, outcome: runAdvisorTurn({ locale: 'pl', message: messages[messages.length - 1] as string, history: [], earlierClaims: [], today: '2026-10-21' }, ctx, model, advisorBudget()) };
 };
 
 const nightPayslip = () => payslipDocument([payslipBatch(rawPayslip({
@@ -142,7 +142,7 @@ test('AI-001C calculate_base_wage_orientation: rate from the trusted scenario, h
   const ok = executeTool('calculate_base_wage_orientation', JSON.stringify({ hours_total: 56 }), ctx).result as Record<string, unknown>;
   assert.deepEqual([ok.ok, ok.amount, ok.hourly_rate, ok.rate_source, ok.result_type], [true, 870.8, 15.55, 'document_reading', 'indicative_base_wage_only']);
   assert.equal(ctx.orientation?.amount, 870.8);
-  assert.deepEqual(executeTool('calculate_base_wage_orientation', JSON.stringify({ hours_total: 60 }), doc()).result, { ok: false, reason: 'hours_not_stated_by_user' }, 'the model cannot invent hours');
+  assert.equal((executeTool('calculate_base_wage_orientation', JSON.stringify({ hours_total: 60 }), doc()).result as { reason: string }).reason, 'hours_total_not_stated_by_user', 'the model cannot invent hours');
   const perDay = toolContext({ messages: ['Od poniedziałku do niedzieli po 8 h'], documents: [payslipDocument([week41Batch()])] });
   const schedule = executeTool('calculate_base_wage_orientation', JSON.stringify({ per_day_hours: 8, days: 7 }), perDay).result as Record<string, unknown>;
   assert.deepEqual([schedule.hours, schedule.amount, schedule.hours_basis], [56, 870.8, 'per_day_8_x_7_days']);
@@ -221,7 +221,7 @@ test('AI-001 instructions: model-led answer, money only from tools, 7 days = wee
   for (const rule of [
     /Answer the user's actual question first/,
     /Never write a money amount that is not in a tool result/,
-    /"7 days a week" \/ "every day" \/ "Monday to Sunday" includes Saturday and Sunday\. Never ask whether the weekend is included/,
+    /"7 days a week" \/ "Monday to Sunday" \/ "every day of the week" includes Saturday and Sunday\. Never ask whether the weekend is included/,
     /"56 hours over 7 days" does not say how many hours fell on each day - do not assume 8 per day/,
     /A bare percentage like "150%" is ambiguous/,
     /a night premium is never a Saturday or Sunday premium/,

@@ -1,5 +1,6 @@
 import type { AdvisorModel, ModelRequest, ModelResponse } from '../advisor/advisor-model.js';
 import type { ToolContext } from '../advisor/advisor-tools.js';
+import type { DialogueTurn } from '../advisor/hours-statements.js';
 import { emptyScenario } from '../conversation/conversation-turn.js';
 import { mergeTrustedContext, trustedContextFromProfile } from '../conversation/trusted-context.js';
 import { buildDocumentKnowledge } from '../document-context/knowledge.js';
@@ -47,9 +48,11 @@ export function payslipDocument(batches: Parameters<typeof mergePayslipBatches>[
   return { index: 0, documentId, label: 'payslip-1', role: 'payslip', effectiveDate: null, facts: mergePayslipBatches(batches) };
 }
 
-/** A tool context as the advisor route builds it - optionally with a server-held document context. */
-export function toolContext(options: { messages?: string[]; documents?: ProfileDocumentInput[]; documentStatus?: ToolContext['documentStatus'] } = {}): ToolContext {
-  const messages = options.messages ?? ['hej'];
+/** A tool context as the advisor route builds it - optionally with a server-held document context. `messages` are the
+ * user's messages; `dialogue` gives the whole conversation instead (the advisor's turns included). */
+export function toolContext(options: { messages?: string[]; dialogue?: DialogueTurn[]; documents?: ProfileDocumentInput[]; documentStatus?: ToolContext['documentStatus'] } = {}): ToolContext {
+  const dialogue: DialogueTurn[] = options.dialogue ?? (options.messages ?? ['hej']).map((text) => ({ role: 'user', text }));
+  const userTexts = dialogue.filter((t) => t.role === 'user').map((t) => t.text);
   let scenario = emptyScenario('advisor-test');
   let knowledge = null;
   if (options.documents) {
@@ -58,7 +61,7 @@ export function toolContext(options: { messages?: string[]; documents?: ProfileD
     knowledge = buildDocumentKnowledge(options.documents, profile);
   }
   return {
-    userMessages: messages, currentMessage: messages[messages.length - 1] as string, knowledge,
+    dialogue, currentMessage: userTexts[userTexts.length - 1] as string, knowledge,
     documentStatus: options.documentStatus ?? (options.documents ? 'available' : 'none'), scenario, rates: RATES_2026, orientation: null, navigation: [],
   };
 }

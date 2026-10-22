@@ -68,6 +68,13 @@ export function capabilitiesForModel() {
       gross_or_net_pay_calculation: 'not_available_yet',
       cao_or_legal_rule_lookup: 'not_available_yet',
     },
+    // AI-001 P0-3: what the advisor's knowledge rests on. There is no verified legal / CAO / tax source behind it yet.
+    knowledge_sources: {
+      verified_dutch_labour_law: 'none in this version',
+      cao_texts_or_rates: 'none in this version - Loonto does not know which CAO applies to the user or what it pays',
+      tax_tables_for_the_advisor: 'none - the advisor does not calculate tax or net pay',
+      general_explanations: 'allowed only as general, nonbinding information, never as the user\'s entitlement or a guarantee',
+    },
   };
 }
 

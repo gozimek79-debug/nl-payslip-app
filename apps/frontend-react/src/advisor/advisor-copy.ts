@@ -82,7 +82,7 @@ const pl: AdvisorCopy = {
   failures: {
     advisor_unavailable: 'AI doradca jest chwilowo niedostępny. Spróbuj ponownie za chwilę.',
     advisor_not_configured: 'AI doradca jest chwilowo niedostępny w tym środowisku — nie ma skonfigurowanego modelu. Darmowy kalkulator działa bez AI.',
-    answer_withheld: 'Doradca podał kwotę, której nie potrafimy potwierdzić źródłem, więc tej odpowiedzi nie pokazujemy. Spróbuj ponownie albo zapytaj inaczej.',
+    answer_withheld: 'Odpowiedź doradcy nie przeszła kontroli Loonto (kwota bez źródła albo opisana niezgodnie ze źródłem, albo uprawnienie podane jako pewne bez weryfikacji), więc jej nie pokazujemy. Spróbuj ponownie albo zapytaj inaczej.',
     conversation_invalid: 'Nie udało się wznowić rozmowy. Zacznij nową rozmowę.',
     document_context_invalid: 'Odczyt dokumentów nie jest już dostępny. Odczytaj dokumenty ponownie.',
     rate_limited: 'Za dużo pytań w krótkim czasie. Odczekaj kilka minut.',
@@ -167,7 +167,7 @@ const en: AdvisorCopy = {
   failures: {
     advisor_unavailable: 'The AI advisor is temporarily unavailable. Please try again shortly.',
     advisor_not_configured: 'The AI advisor is temporarily unavailable in this environment — no model is configured. The free calculator works without AI.',
-    answer_withheld: 'The advisor gave an amount we cannot back with a source, so this answer is not shown. Try again or ask differently.',
+    answer_withheld: 'The advisor\'s answer did not pass Loonto\'s check (an amount without a source or described differently from its source, or an entitlement stated as certain without verification), so it is not shown. Try again or ask differently.',
     conversation_invalid: 'The conversation could not be resumed. Start a new conversation.',
     document_context_invalid: 'The document reading is no longer available. Read the documents again.',
     rate_limited: 'Too many questions in a short time. Please wait a few minutes.',

@@ -30,9 +30,15 @@ export function parseAmountToken(token: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Every money-like amount written in a text (see the module comment). */
-export function moneyAmountsIn(text: string): number[] {
-  const out: number[] = [];
+export interface Mention {
+  value: number;
+  start: number;
+  end: number;
+}
+
+/** Every money-like amount written in a text (see the module comment), with its position. */
+export function moneyMentions(text: string): Mention[] {
+  const out: Mention[] = [];
   const numberRe = /\d{1,3}(?:[ . ]\d{3})+(?:,\d{1,2})?|\d+(?:[.,]\d+)?/g;
   for (const m of text.matchAll(numberRe)) {
     const raw = m[0];
@@ -44,10 +50,27 @@ export function moneyAmountsIn(text: string): number[] {
     const twoDecimals = /[.,]\d{2}$/.test(raw) && !/^\d{1,3}[.]\d{3}$/.test(raw);
     if (!nearCurrency && !twoDecimals) continue;
     if (/^\s*%/.test(after)) continue;
+    // A number of hours next to an amount ("870,80 € (56 h × ...") is still hours, not money.
+    if (/^\s*(?:h|godz|hours?|hrs?|uur)(?![\p{L}])/iu.test(after)) continue;
     // Part of a date or a longer token ("16.10.2026", "05-10-2026"), not an amount.
     if (/^[.\-/]\d/.test(after) || /\d[.\-/]$/.test(before)) continue;
     const value = parseAmountToken(raw);
-    if (value !== null) out.push(value);
+    if (value !== null) out.push({ value, start, end: start + raw.length });
+  }
+  return out;
+}
+
+/** Every money-like amount written in a text (see the module comment). */
+export function moneyAmountsIn(text: string): number[] {
+  return moneyMentions(text).map((m) => m.value);
+}
+
+/** Every percentage written in a text ("150%", "50 %", "25 procent", "25 percent"). */
+export function percentMentions(text: string): Mention[] {
+  const out: Mention[] = [];
+  for (const m of text.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:%|procent\p{L}*|percent\p{L}*)/giu)) {
+    const value = parseAmountToken(m[1] as string);
+    if (value !== null) out.push({ value, start: m.index ?? 0, end: (m.index ?? 0) + m[0].length });
   }
   return out;
 }

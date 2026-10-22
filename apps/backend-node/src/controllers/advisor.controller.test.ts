@@ -166,6 +166,33 @@ test('AI-001 HTTP: provider failure -> 503 advisor_unavailable; persistent ungro
   assert.equal(rows.size, before, 'no conversation is stored for a failed turn');
 });
 
+test('AI-001 P0-2 HTTP: an orientation shown in turn 1 is still an orientation in turn 2 - called "net" there, it is sent back for a rewrite', async () => {
+  use(recordedModel([
+    callTools(['update_scenario', { ops: [{ op: 'set', field: 'pay.hourlyRate', value: 15.55 }] }], ['calculate_base_wage_orientation', { hours_total: 56 }]),
+    say('Orientacyjnie 56 h × 15,55 €/h = 870,80 € — sama stawka podstawowa.'),
+    say('Tak, 870,80 € to Twoja kwota netto.'),
+    say('Netto nie umiem jeszcze policzyć; 870,80 € to tylko orientacja: stawka podstawowa × godziny.'),
+  ]));
+  const first = await turn({ message: 'Pracuję 7 dni w tygodniu, 56 godzin, stawka 15,55. Ile dostanę?', locale: 'pl' });
+  assert.equal(first.status, 200);
+  infoLines.length = 0;
+  const second = await turn({ message: 'Czyli tyle dostanę na rękę?', locale: 'pl', conversationRef: first.json.conversationRef }, first.cookie ?? undefined);
+  assert.equal(second.status, 200);
+  assert.equal(second.json.answer.text, 'Netto nie umiem jeszcze policzyć; 870,80 € to tylko orientacja: stawka podstawowa × godziny.');
+  assert.equal(second.json.meta.groundingRewrite, true);
+  assert.match(infoLines.join('\n'), /"checks":\["orientation_mislabelled"\]/, 'the log names the check, not the text');
+});
+
+test('AI-001 P0-2 HTTP: a conversation stored before the claim check (version 1, amounts without kinds) counts as expired', async () => {
+  use(recordedModel([say('ok')]));
+  const opened = await turn({ message: 'hej', locale: 'pl' });
+  const sessionHash = rows.get(opened.json.conversationRef)?.session_hash as string;
+  const { putRecord } = await import('../document-context/store.js');
+  const old = await putRecord(sessionHash, { kind: 'advisor', conversation: { version: 1, messages: [], userScenario: {}, documentContextRef: null, groundedAmounts: [870.8] } }) as string;
+  const r = await turn({ message: 'dalej', locale: 'pl', conversationRef: old }, opened.cookie ?? undefined);
+  assert.deepEqual([r.status, r.json.error_code], [409, 'conversation_invalid']);
+});
+
 test('AI-001 HTTP: strict request - no field for facts, sources or trust; bounded message', async () => {
   use(recordedModel([say('x')]));
   for (const body of [

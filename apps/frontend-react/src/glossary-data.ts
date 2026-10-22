@@ -241,7 +241,7 @@ export const GLOSSARY_TERMS: readonly GlossaryTerm[] = [
 ];
 
 export function normalizeGlossary(text: string): string {
-  return text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLocaleLowerCase().trim();
+  return text.normalize('NFD').replace(new RegExp('[\\u0300-\\u036f]', 'g'), '').toLocaleLowerCase().trim();
 }
 
 export function filterGlossary(query: string, category: GlossaryCategory | 'all' = 'all'): GlossaryTerm[] {

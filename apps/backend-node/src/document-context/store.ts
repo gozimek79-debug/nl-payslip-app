@@ -20,7 +20,9 @@ import { DOCUMENT_SESSION_MAX_AGE_SECONDS } from './session.js';
 
 export type StoredRecord =
   | { kind: 'batch'; documentKind: 'payslip' | 'contract'; batch: unknown }
-  | { kind: 'context'; profile: unknown; knowledge: unknown };
+  | { kind: 'context'; profile: unknown; knowledge: unknown }
+  /** AI-001: an AI Advisor conversation (bounded history, the user's own scenario values) - see advisor.controller.ts. */
+  | { kind: 'advisor'; conversation: unknown };
 
 const DDL = `CREATE TABLE IF NOT EXISTS document_contexts (
   ref text PRIMARY KEY,

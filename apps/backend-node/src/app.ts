@@ -14,6 +14,7 @@ import profileRouter from './controllers/profile.controller.js';
 import scenarioRouter from './controllers/scenario.controller.js';
 import conversationRouter from './controllers/conversation.controller.js';
 import proFactsRouter from './controllers/pro-facts.controller.js';
+import advisorRouter from './controllers/advisor.controller.js';
 import { checkDatabase } from './database.js';
 import { readingProviderStatus } from './ai-service/gemini-client.js';
 
@@ -62,6 +63,8 @@ app.use('/api/profile', profileRouter);
 app.use('/api/scenario', scenarioRouter);
 app.use('/api/scenario', conversationRouter);
 app.use('/api/pro', proFactsRouter);
+// AI-001: the model-led AI Advisor of Calculator PRO (a new versioned route; R1/R2 routes unchanged).
+app.use('/api/advisor', advisorRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Nie znaleziono zasobu' });

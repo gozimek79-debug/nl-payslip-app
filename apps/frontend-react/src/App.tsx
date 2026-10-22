@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, BookOpen, Calculator as CalculatorIcon, Clock, FileText, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, BookOpen, Bot, Calculator as CalculatorIcon, Clock, FileText, ShieldCheck } from 'lucide-react';
 import { TierACalculator } from './TierACalculator.tsx';
 import { TierBFlow } from './TierBFlow.tsx';
 import { ProDocuments } from './ProDocuments.tsx';
 import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
+import { AdvisorPro } from './advisor/AdvisorPro.tsx';
+import type { NavigationOffer } from './advisor/advisor-client.ts';
 import { translations, type Lang } from './translations.ts';
 
 /**
@@ -25,9 +27,13 @@ import { translations, type Lang } from './translations.ts';
  * payslip entry, showing a compact status line rather than TierCFlow's own full discrepancy panel
  * (deliberately out of this round's scope - see ProDocuments.tsx's own doc comment). Only PRO's
  * direct entry point changes; TierCFlow's component and route are untouched.
+ *
+ * AI-001: this shell is again the default application. `proMode: 'advisor'` (default) - PRO opens the model-led AI
+ * advisor (advisor/AdvisorPro.tsx), which links back to the previous PRO screen ('pro_documents' = ProDocuments);
+ * `proMode: 'documents'` (`/?legacy=1`) - the previous application exactly as it was, PRO = ProDocuments.
  */
 type Mode = 'kalkulator' | 'analiza' | 'slownik' | 'account';
-type KalkulatorTier = 'szybki' | 'z_umowy' | 'pro' | null;
+type KalkulatorTier = 'szybki' | 'z_umowy' | 'pro' | 'pro_documents' | null;
 type AnalizaModule = 'umowa' | 'paski' | null;
 type User = { id: string; email: string };
 type HistoryItem = { id: string; fileName: string; status: string; createdAt: string };
@@ -40,7 +46,7 @@ function readStoredLang(): Lang {
   return 'pl';
 }
 
-export function App() {
+export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents' } = {}) {
   const [lang, setLang] = useState<Lang>(readStoredLang);
   const t = translations[lang];
   const [mode, setMode] = useState<Mode>('kalkulator');
@@ -88,6 +94,18 @@ export function App() {
     setUser(null); setHistory([]); setAccountOpen(false); setMode('kalkulator'); setKalkulatorTier(null);
   }
 
+  /** Module targets the advisor may offer (server capability map) -> the shell's own sections. */
+  function navigateTo(target: NavigationOffer['target']) {
+    if (target === 'calculator_free') { setMode('kalkulator'); setKalkulatorTier('szybki'); }
+    else if (target === 'calculator_pro') { setMode('kalkulator'); setKalkulatorTier('pro'); }
+    else if (target === 'analysis_contract') { setMode('analiza'); setAnalizaModule('umowa'); }
+    else if (target === 'analysis_payslip') { setMode('analiza'); setAnalizaModule('paski'); }
+    else if (target === 'glossary') setMode('slownik');
+    else if (user) { setMode('account'); void loadHistory(); }
+    else setAccountOpen(true);
+    window.scrollTo?.({ top: 0 });
+  }
+
   async function deleteMyData() {
     await fetch('/api/auth/me/data', { method: 'DELETE' });
     setHistory([]);
@@ -112,19 +130,27 @@ export function App() {
     <main id="top">
       {mode === 'kalkulator' && kalkulatorTier === null && (
         <section className="flow-page">
-          <div className="flow-heading"><h1>{t.kalkulatorHome.title}</h1><p>{t.kalkulatorHome.lead}</p></div>
+          <div className="flow-heading"><h1>{t.kalkulatorHome.title}</h1><p>{proMode === 'advisor' ? t.kalkulatorHome.advisorLead : t.kalkulatorHome.lead}</p></div>
           <div className="tier-cards">
-            <button type="button" className="tier-card" onClick={() => setKalkulatorTier('szybki')}>
-              <CalculatorIcon size={22}/><h3>{t.kalkulatorHome.szybkiName}</h3><p className="tier-need">{t.kalkulatorHome.szybkiNeed}</p><small className="form-note">{t.kalkulatorHome.szybkiLimit}</small>
+            <button type="button" className="tier-card" data-module="calculator_free" onClick={() => setKalkulatorTier('szybki')}>
+              <CalculatorIcon size={22}/><h3>{proMode === 'advisor' ? t.kalkulatorHome.freeName : t.kalkulatorHome.szybkiName}</h3><p className="tier-need">{t.kalkulatorHome.szybkiNeed}</p><small className="form-note">{t.kalkulatorHome.szybkiLimit}</small>
+              {proMode === 'advisor' && <span className="tier-badge">{t.kalkulatorHome.freeBadge}</span>}
             </button>
             {/* 2.0a (audit "CONSOLIDATED ASSIGNMENT" v8): Tier B withdrawn by owner decision - its
                 one distinctive contribution (a contract stating the overtime threshold) did not
                 hold on the one real document available. Card hidden, nothing deleted - TierBFlow.tsx
                 and the 'z_umowy' route below still exist; the contract upload/extraction/pre-fill
                 logic is what "returns as part of PRO" per spec §4, not rebuilt from scratch. */}
-            <button type="button" className="tier-card" onClick={() => setKalkulatorTier('pro')}>
-              <ShieldCheck size={22}/><h3>{t.kalkulatorHome.proName}</h3><p className="tier-need">{t.kalkulatorHome.proNeed}</p><small className="form-note">{t.kalkulatorHome.proLimit}</small>
-            </button>
+            {proMode === 'advisor' ? (
+              <button type="button" className="tier-card" data-module="calculator_pro" onClick={() => setKalkulatorTier('pro')}>
+                <Bot size={22}/><h3>{t.kalkulatorHome.advisorName}</h3><p className="tier-need">{t.kalkulatorHome.advisorNeed}</p><small className="form-note">{t.kalkulatorHome.advisorLimit}</small>
+                <span className="tier-badge tier-badge-interim">{t.kalkulatorHome.advisorBadge}</span>
+              </button>
+            ) : (
+              <button type="button" className="tier-card" onClick={() => setKalkulatorTier('pro')}>
+                <ShieldCheck size={22}/><h3>{t.kalkulatorHome.proName}</h3><p className="tier-need">{t.kalkulatorHome.proNeed}</p><small className="form-note">{t.kalkulatorHome.proLimit}</small>
+              </button>
+            )}
           </div>
         </section>
       )}
@@ -143,6 +169,14 @@ export function App() {
       {mode === 'kalkulator' && kalkulatorTier === 'pro' && (
         <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
+          {proMode === 'advisor'
+            ? <AdvisorPro lang={lang} onNavigate={navigateTo} onOpenDocumentsPro={() => setKalkulatorTier('pro_documents')}/>
+            : <ProDocuments lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>}
+        </>
+      )}
+      {mode === 'kalkulator' && kalkulatorTier === 'pro_documents' && (
+        <>
+          <button className="back plain-button tier-back" onClick={() => setKalkulatorTier('pro')}><ArrowLeft size={17}/>{t.kalkulatorHome.backToAdvisor}</button>
           <ProDocuments lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>
         </>
       )}

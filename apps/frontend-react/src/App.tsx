@@ -5,6 +5,7 @@ import { TierBFlow } from './TierBFlow.tsx';
 import { ProDocuments } from './ProDocuments.tsx';
 import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
+import { Glossary } from './Glossary.tsx';
 import { AdvisorPro } from './advisor/AdvisorPro.tsx';
 import type { NavigationOffer } from './advisor/advisor-client.ts';
 import { translations, type Lang } from './translations.ts';
@@ -209,7 +210,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
       {mode === 'slownik' && (
         <section className="flow-page">
           <div className="flow-heading"><h1>{t.slownikHome.title}</h1><p>{t.slownikHome.lead}</p></div>
-          <div className="notice-card"><Clock/><div><h3>{t.comingSoon.title}</h3><p>{t.comingSoon.body}</p></div></div>
+          <Glossary lang={lang}/>
         </section>
       )}
       {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setMode('kalkulator'); setKalkulatorTier('pro'); }} onDeleteData={deleteMyData}/>}

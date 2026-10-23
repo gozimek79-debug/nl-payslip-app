@@ -333,15 +333,36 @@ button.danger:disabled{opacity:.6;cursor:not-allowed}
 .calc-toggle input{width:18px;height:18px;accent-color:var(--loonto-primary)}
 .calc-side-notice{position:sticky;top:100px}
 .calc-week-tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.week-tab{padding:8px 14px;border-radius:10px;border:1px solid rgba(20,37,31,.16);background:rgba(255,255,255,.7);color:var(--text-secondary);font-weight:700;font-size:13px;cursor:pointer}
+.week-tab{min-height:44px;padding:8px 14px;border-radius:10px;border:1px solid rgba(20,37,31,.16);background:rgba(255,255,255,.7);color:var(--text-secondary);font-weight:700;font-size:13px;cursor:pointer}
 .week-tab.active{background:var(--loonto-primary);border-color:var(--loonto-primary);color:#fff}
-.hour-grid-table{overflow-x:auto;margin-bottom:8px}
-.hour-grid-table table{border-collapse:collapse;width:100%;min-width:480px}
-.hour-grid-table th,.hour-grid-table td{padding:6px 8px;text-align:center;font-size:13px}
-.hour-grid-table thead th{color:var(--text-secondary);font-weight:700}
-.hour-grid-table tbody th{text-align:left;color:var(--text-secondary);font-weight:700;white-space:nowrap}
-.grid-hour-input{width:52px;padding:8px 4px;border:1px solid rgba(20,37,31,.16);border-radius:8px;background:rgba(255,255,255,.7);color:var(--text-primary);text-align:center;outline:0}
+/* Hour grid: a legend + 7 day groups. Wide form: day columns, row labels on the left. Narrow form (the
+   container query below, i.e. phones): one row per day under a label header. Tracks are minmax(0,1fr), so
+   the grid never makes the form wider than its card; every control is 44px tall. */
+.hour-grid{container:hour-grid/inline-size;margin-bottom:8px}
+.hour-grid-layout{display:grid;grid-template-columns:max-content repeat(7,minmax(0,1fr));gap:8px}
+.hour-grid-legend,.hour-grid-day{display:grid;grid-template-rows:20px repeat(3,44px);gap:6px;align-items:center;min-width:0}
+.hour-grid-legend span,.hour-grid-day-name{font-size:13px;font-weight:700;color:var(--text-secondary)}
+.hour-grid-legend span{white-space:nowrap}
+.hour-grid-day-name{text-align:center}
+.grid-hour-input{width:100%;min-width:0;height:44px;padding:8px 4px;border:1px solid rgba(20,37,31,.16);border-radius:8px;background:rgba(255,255,255,.7);color:var(--text-primary);text-align:center;outline:0}
 .grid-hour-input:focus{border-color:var(--loonto-primary);box-shadow:var(--focus-ring)}
+.grid-holiday-toggle{display:flex;align-items:center;justify-content:center;height:44px;cursor:pointer}
+.grid-holiday-toggle input{width:20px;height:20px;margin:0;accent-color:var(--loonto-primary);cursor:pointer}
+@container hour-grid (max-width:479px){
+  .hour-grid-layout{grid-template-columns:minmax(0,1fr);gap:6px}
+  .hour-grid-legend,.hour-grid-day{grid-template-rows:none;grid-template-columns:2.75em minmax(0,1fr) minmax(0,1fr) 48px;gap:6px}
+  .hour-grid-legend span{white-space:normal;overflow-wrap:anywhere;text-align:center;font-size:12px;line-height:1.2}
+  .hour-grid-day-name{text-align:left}
+}
+/* Phone widths: the form's grid item may shrink to the viewport, and its text/select controls are 44px tall. */
+.calc-page .review-grid>*{min-width:0}
+.calculator-form-card select{min-height:44px}
+.calculator-form-card .money-input{align-items:stretch}
+.calculator-form-card .money-input span{display:flex;align-items:center}
+.calculator-form-card .money-input input{min-height:44px}
+.calc-text-input{display:block;width:100%;min-width:0;min-height:44px;margin-top:7px;padding:12px;border:1px solid rgba(20,37,31,.16);border-radius:12px;background:rgba(255,255,255,.7);color:var(--text-primary);outline:0}
+.calc-text-input:focus{border-color:var(--loonto-primary);box-shadow:var(--focus-ring)}
+@media(max-width:380px){.calculator-form-card{padding:22px 16px}}
 .calc-reliability-note{font-style:italic}
 .contract-badge{font-style:italic;font-weight:600;color:var(--loonto-primary)}
 .calc-honest-limit{text-align:left;font-weight:600}

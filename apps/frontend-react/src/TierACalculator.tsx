@@ -567,44 +567,33 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
             </div>
           )}
 
-          <div className="hour-grid-table">
-            <table>
-              <thead>
-                <tr>
-                  <th></th>
-                  {DAY_KEYS.map(day => <th key={day}>{dayLabel(t, day)}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <th>{t.gridRegular}</th>
-                  {DAY_KEYS.map(day => (
-                    <td key={day}>
-                      <input inputMode="decimal" className="grid-hour-input" value={currentWeek[day].regular_hours}
-                        onChange={event => updateDay(activeWeek, day, { regular_hours: sanitizeDecimal(event.target.value) })}/>
-                    </td>
-                  ))}
-                </tr>
-                <tr>
-                  <th>{t.gridOvertime}</th>
-                  {DAY_KEYS.map(day => (
-                    <td key={day}>
-                      <input inputMode="decimal" className="grid-hour-input" value={currentWeek[day].overtime_hours}
-                        onChange={event => updateDay(activeWeek, day, { overtime_hours: sanitizeDecimal(event.target.value) })}/>
-                    </td>
-                  ))}
-                </tr>
-                <tr>
-                  <th>{t.gridHoliday}</th>
-                  {DAY_KEYS.map(day => (
-                    <td key={day}>
-                      <input type="checkbox" checked={currentWeek[day].is_public_holiday}
-                        onChange={event => updateDay(activeWeek, day, { is_public_holiday: event.target.checked })}/>
-                    </td>
-                  ))}
-                </tr>
-              </tbody>
-            </table>
+          {/* One group per day instead of a 7-column table, so the same markup can lay out two ways
+              (styles.css, container query on .hour-grid): side by side with the row labels on the left
+              when the form is wide, one row per day under a label header when it is phone-narrow - the
+              old table's min-width pushed the whole page sideways there. The visible labels are
+              aria-hidden; each control carries its own "day - row" name instead. */}
+          <div className="hour-grid">
+            <div className="hour-grid-layout">
+              <div className="hour-grid-legend" aria-hidden="true">
+                <span></span>
+                <span>{t.gridRegular}</span>
+                <span>{t.gridOvertime}</span>
+                <span>{t.gridHoliday}</span>
+              </div>
+              {DAY_KEYS.map(day => (
+                <div className="hour-grid-day" key={day}>
+                  <span className="hour-grid-day-name" aria-hidden="true">{dayLabel(t, day)}</span>
+                  <input inputMode="decimal" className="grid-hour-input" aria-label={`${dayLabel(t, day)} – ${t.gridRegular}`} value={currentWeek[day].regular_hours}
+                    onChange={event => updateDay(activeWeek, day, { regular_hours: sanitizeDecimal(event.target.value) })}/>
+                  <input inputMode="decimal" className="grid-hour-input" aria-label={`${dayLabel(t, day)} – ${t.gridOvertime}`} value={currentWeek[day].overtime_hours}
+                    onChange={event => updateDay(activeWeek, day, { overtime_hours: sanitizeDecimal(event.target.value) })}/>
+                  <label className="grid-holiday-toggle">
+                    <input type="checkbox" aria-label={`${dayLabel(t, day)} – ${t.gridHoliday}`} checked={currentWeek[day].is_public_holiday}
+                      onChange={event => updateDay(activeWeek, day, { is_public_holiday: event.target.checked })}/>
+                  </label>
+                </div>
+              ))}
+            </div>
           </div>
 
           <h3 className="calc-subheading">{t.overtimeThresholdTitle} {contractProvenance.threshold && <span className="form-note contract-badge">({contractProvenance.threshold})</span>}</h3>
@@ -636,7 +625,7 @@ export function TierACalculator({ lang, onNavigateToDictionary, tierMode = 'A', 
           {surchargeLines.map((line, index) => (
             <div className="fields-grid" key={index}>
               <label>{t.lineDescription}
-                <input value={line.description} onChange={event => updateSurchargeLine(index, { description: event.target.value })}/>
+                <input className="calc-text-input" value={line.description} onChange={event => updateSurchargeLine(index, { description: event.target.value })}/>
               </label>
               <label>{t.lineHours}
                 <div className="money-input"><span>h</span><input inputMode="decimal" value={line.hours} onChange={event => updateSurchargeLine(index, { hours: sanitizeDecimal(event.target.value) })}/></div>

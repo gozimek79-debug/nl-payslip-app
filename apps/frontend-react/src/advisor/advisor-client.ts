@@ -22,6 +22,24 @@ export interface NavigationOffer {
   status: 'available' | 'alpha' | 'coming_soon';
 }
 
+/** FIN-03: the structured result of Loonto's payroll engine for this turn (server-built; the model never writes it). */
+export interface CalculationView {
+  status: 'computed' | 'blocked' | 'unsupported' | 'invalid' | 'rates_unavailable';
+  resultType: 'calculated_engine_estimate';
+  period: 'week';
+  currency: 'EUR';
+  ratesSource: 'database' | 'static' | null;
+  ratesAsOf: string;
+  figures: { grossTotal: number; totalTax: number; wageNet: number; payoutAmount: number; hoursWorked: number } | null;
+  payoutRange: { low: number; high: number } | null;
+  inputs: Array<{ field: string; source: 'user_stated' | 'document_reading' | 'loonto_assumption' | 'other'; value?: unknown; options?: unknown[]; usedByEngine: boolean }>;
+  assumptionsUsed: string[];
+  warnings: string[];
+  missing: Array<{ field: string; reason: string; canOfferAssumption: boolean }>;
+  unsupported: string[];
+  invalid: string[];
+}
+
 export interface AdvisorTurnOk {
   status: 'ok';
   conversationRef: string | null;
@@ -30,6 +48,8 @@ export interface AdvisorTurnOk {
   meta: { provider: string; model: string; modelCalls: number; tools: Array<{ name: string; status: string }>; groundingRewrite: boolean; latencyMs: number };
   orientation: OrientationView | null;
   navigation: NavigationOffer[];
+  /** FIN-03: absent on an older server. */
+  calculation?: CalculationView | null;
   documentStatus: 'none' | 'available' | 'expired';
 }
 

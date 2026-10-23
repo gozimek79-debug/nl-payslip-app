@@ -7,7 +7,9 @@ import { moneyMentions, percentMentions, type Mention } from './grounding.js';
  *   - document_reading           a figure printed on the user's document (topic, component, period) - historical, unverified
  *   - user_stated                a number the user typed
  *   - tool_value                 any other number a tool returned (scenario state, capabilities)
- * There is no `verified_calculation` kind in AI-001: nothing the advisor can say is verified, guaranteed or final.
+ *   - calculated_engine_estimate FIN-03: a figure Loonto's canonical engine computed from the stated inputs (gross,
+ *                                tax, net wage, payout) - an ESTIMATE, never the employer's verified payout
+ * There is no `verified_calculation` kind: nothing the advisor can say is verified, guaranteed or final.
  *
  * The answer stays the model's own text. The check reads it sentence by sentence, assigns each label cue ("netto",
  * "brutto", "dodatek", "zweryfikowane") to the nearest amount, reads sentence-level cues (a forecast "dostaniesz", a
@@ -22,7 +24,7 @@ import { moneyMentions, percentMentions, type Mention } from './grounding.js';
  * model rewrites once); it is a guard rail on top of the instructions, not a substitute for them.
  */
 
-export type ClaimKind = 'indicative_base_wage_only' | 'document_reading' | 'user_stated' | 'tool_value';
+export type ClaimKind = 'indicative_base_wage_only' | 'document_reading' | 'user_stated' | 'tool_value' | 'calculated_engine_estimate';
 
 export interface ClaimSource {
   value: number;
@@ -47,7 +49,9 @@ export type ClaimIssueCode =
   | 'premium_without_source'
   | 'net_forecast'
   | 'premium_percent_without_source'
-  | 'unsupported_entitlement';
+  | 'unsupported_entitlement'
+  | 'estimate_presented_as_certain'
+  | 'calculation_mislabelled';
 
 export interface ClaimIssue {
   code: ClaimIssueCode;
@@ -74,6 +78,13 @@ const FORECAST = cue([
   `dostaniesz`, `zarobisz`, `otrzymasz`, `wyniesie`, `wypłacą`, `przelej\\p{L}*`, `będziesz (?:miał\\p{L}*|mieć|dostawać|zarabiać|otrzymywać)`,
   `dostał(?:byś|abyś)`, `zarobił(?:byś|abyś)`, `otrzymał(?:byś|abyś)`, `w przyszłym tygodniu`, `za ten tydzień dostaniesz`,
   `you(?:'ll| will| would) (?:get|earn|receive|be paid|take home)`, `you(?:'ll| will) have`, `next week`, `will be paid`,
+  `pracodawca (?:wypłaci|przeleje|zapłaci)`, `your employer (?:will|is going to) pay`,
+]);
+/** Sentence-level: the figure is presented as an estimate / Loonto's calculation (FIN-03). */
+const ESTIMATE = cue([
+  `szacun\\p{L}*`, `szacunkow\\p{L}*`, `oszacow\\p{L}*`, `około`, `ok\\.`, `mniej więcej`, `orientacyjn\\p{L}*`, `przybliż\\p{L}*`, `wylicz\\p{L}*`, `wyliczeni\\p{L}*`,
+  `według (?:loonto|wyliczenia|kalkulacji)`, `kalkulac\\p{L}*`, `wychodzi`, `wyszłoby`, `wyjdzie`, `loonto (?:liczy|wylicza|policzył\\p{L}*|szacuje)`,
+  `estimat\\p{L}*`, `approximately`, `approx\\.`, `about`, `around`, `roughly`, `calculat\\p{L}*`, `comes to`, `works out`, `according to (?:loonto|the calculation)`,
 ]);
 /** Sentence-level: the amount is a reading of a past document. */
 const HISTORICAL = cue([
@@ -159,6 +170,7 @@ const GROSS_KEYS = new Set(['gross_total', 'wage_line_amount']);
 const PERIOD_TOPICS = new Set(['gross', 'net', 'payout', 'reimbursement', 'deductions']);
 
 interface AmountContext {
+  estimate: boolean;
   netStrict: boolean;
   payout: boolean;
   gross: boolean;
@@ -190,11 +202,18 @@ function problemsFor(source: ClaimSource, c: AmountContext, sentence: string): C
     case 'tool_value':
       if (c.forecast && c.netStrict) out.push('net_forecast');
       break;
+    case 'calculated_engine_estimate':
+      // An engine figure may be what the user "will get" - as an ESTIMATE from the stated inputs, never as certain.
+      if (c.forecast && !c.estimate) out.push('estimate_presented_as_certain');
+      if (source.topic === 'gross' && (c.netStrict || c.payout)) out.push('calculation_mislabelled');
+      if ((source.topic === 'net' || source.topic === 'payout') && c.gross) out.push('calculation_mislabelled');
+      if (source.topic === 'tax' && (c.netStrict || c.gross || c.payout)) out.push('calculation_mislabelled');
+      break;
   }
   return out;
 }
 
-const PRIORITY: ClaimKind[] = ['indicative_base_wage_only', 'document_reading', 'user_stated', 'tool_value'];
+const PRIORITY: ClaimKind[] = ['calculated_engine_estimate', 'indicative_base_wage_only', 'document_reading', 'user_stated', 'tool_value'];
 
 /**
  * Checks a drafted answer against the registered sources. `allowedPercents` are percentages the user, a document or a
@@ -219,6 +238,7 @@ export function analyzeClaims(answer: string, sources: readonly ClaimSource[], a
     const anyPremium = liveHits(PREMIUM, sentence).length > 0;
     const verifiedCues = liveHits(VERIFIED, sentence);
     const forecast = liveHits(FORECAST, sentence).length > 0;
+    const estimate = hits(ESTIMATE, sentence).length > 0;
     const historical = hits(HISTORICAL, sentence).length > 0;
     const orientation = hits(ORIENTATION, sentence).length > 0;
 
@@ -229,6 +249,7 @@ export function analyzeClaims(answer: string, sources: readonly ClaimSource[], a
         continue;
       }
       const context: AmountContext = {
+        estimate,
         netStrict: assigned(netCues, amount, amounts, sentence), payout: assigned(payoutCues, amount, amounts, sentence), gross: assigned(grossCues, amount, amounts, sentence),
         premium: assigned(premiumCues, amount, amounts, sentence), verified: assigned(verifiedCues, amount, amounts, sentence), forecast, historical, orientation,
       };
@@ -288,6 +309,8 @@ export function rewriteInstruction(issues: readonly ClaimIssue[]): string {
       case 'premium_without_source': lines.add(`- No document line or rule shows ${v} EUR as a premium or bonus: do not call it one.`); break;
       case 'net_forecast': lines.add(`- Net / take-home pay cannot be forecast in this version: do not present ${v} EUR as the user's future net pay.`); break;
       case 'premium_percent_without_source': lines.add(`- No document, tool or user message gives a premium of ${i.value}%: do not state premium percentages; say it depends on the contract or CAO and ask the user if it matters.`); break;
+      case 'estimate_presented_as_certain': lines.add(`- ${v} EUR is Loonto's engine ESTIMATE from the stated inputs: present it as an estimate (e.g. "about", "according to Loonto's calculation"), never as what the employer will certainly pay.`); break;
+      case 'calculation_mislabelled': lines.add(`- ${v} EUR is the engine's ${i.source?.key ?? 'figure'}: call it exactly that (gross total / total tax / net wage / payout), not another figure.`); break;
       case 'unsupported_entitlement': lines.add('- Loonto has no verified labour-law, CAO or tax source in this version: give rules only as general, nonbinding information (e.g. "often", "depends on your contract or CAO"), never as an entitlement, a guarantee or the CAO that applies; suggest checking the contract or CAO.'); break;
     }
   }

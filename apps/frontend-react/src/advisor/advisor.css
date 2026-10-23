@@ -47,6 +47,25 @@
 .advisor-orientation-excl{margin-top:6px !important;font-weight:700}
 .advisor-orientation ul{margin:2px 0 0;padding-left:18px;font-size:14px;color:var(--text-secondary)}
 .advisor-orientation-note{margin-top:6px !important;font-weight:700;color:var(--text-primary) !important}
+.advisor-calc{margin-top:10px;padding:10px 12px;border-radius:12px;background:#fff;border:1.5px solid var(--loonto-primary);min-width:0}
+.advisor-calc p{margin:0;font-size:14px;line-height:1.45;color:var(--text-secondary);overflow-wrap:anywhere}
+.advisor-calc-title{font-weight:800;color:var(--loonto-primary-hover) !important}
+.advisor-calc-figures{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 12px;margin:8px 0 6px}
+.advisor-calc-figures div{min-width:0}
+.advisor-calc-figures dt{font-size:12px;color:var(--text-muted);font-weight:700}
+.advisor-calc-figures dd{margin:0;font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--text-primary);overflow-wrap:anywhere}
+.advisor-calc-figures [data-figure=payout] dd{color:var(--loonto-primary-hover)}
+.advisor-calc-range{font-weight:700}
+.advisor-calc-sub{margin-top:6px !important;font-weight:700;color:var(--text-primary) !important}
+.advisor-calc ul{margin:2px 0 0;padding-left:18px;font-size:14px;line-height:1.45;color:var(--text-secondary)}
+.advisor-calc-inputs li{overflow-wrap:anywhere}
+.advisor-calc-source{display:inline-block;padding:0 6px;border-radius:999px;background:#eef1ee;border:1px solid #d6ddd8;font-size:12px;font-weight:700;white-space:nowrap}
+.advisor-calc-source-loonto_assumption{background:var(--status-warning-bg);border-color:var(--status-warning-border);color:var(--status-warning)}
+.advisor-calc-source-document_reading{background:var(--status-info-bg);border-color:var(--status-info-border);color:var(--status-info)}
+.advisor-calc-note{margin-top:6px !important;font-size:13px !important}
+.advisor-calc-estimate{font-weight:700;color:var(--text-primary) !important}
+.advisor-calc.is-blocked{border:1px solid var(--status-warning-border);background:var(--status-warning-bg)}
+.advisor-calc.is-blocked .advisor-calc-title{color:var(--status-warning) !important}
 
 .advisor-nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .advisor-nav-chip{display:inline-flex;align-items:center;min-height:36px;padding:6px 12px;border-radius:999px;border:1.5px dashed #b9c4bd;background:#f1f3f1;color:var(--text-secondary);font-size:14px;font-weight:700}

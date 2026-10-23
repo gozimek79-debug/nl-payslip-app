@@ -225,3 +225,31 @@ test('FIN-02 hand-off: a payslip read in Payslip Analysis reaches the advisor by
   assert.deepEqual(backend.turnCalls()[0]?.body, { message: 'Za te 584 to co?', locale: 'pl', documentContextRef: 'ctx-from-analysis' });
   assert.match(ADVISOR_COPY.pl.info.document_from_analysis, /bez ponownego wysyłania pliku/);
 });
+
+test('FIN-03 store: the engine-result card is the server\'s structured result, kept as sent; a turn without one has none; nothing numeric is sent', async () => {
+  const { computedCalculation } = await import('./advisor-test-support.ts');
+  const calculation = computedCalculation();
+  const h = advisorHarness([okTurn('MODEL-ANSWER-1', { conversationRef: 'c1', calculation }), okTurn('MODEL-ANSWER-2', { conversationRef: 'c2' })]);
+  await h.store.send('40 godzin od poniedziałku do piątku po 16 €');
+  await h.store.send('dzięki');
+  const advisor = h.store.getState().thread.filter((i) => i.from === 'advisor');
+  assert.deepEqual(advisor.map((i) => i.calculation), [calculation, null]);
+  assert.deepEqual(advisorTexts(h.store.getState()), ['MODEL-ANSWER-1', 'MODEL-ANSWER-2'], 'the card never replaces or extends the model text');
+  assert.deepEqual(h.turnCalls()[1]?.body, { message: 'dzięki', locale: 'pl', conversationRef: 'c1' }, 'figures stay on the server - never echoed back');
+});
+
+test('FIN-03 copy: the card says estimate / not a confirmed payout; the scope notes no longer deny what the engine now does', async () => {
+  const { translations } = await import('../translations.ts');
+  for (const lang of ['pl', 'en'] as const) {
+    const c = ADVISOR_COPY[lang];
+    assert.match(c.calculation.estimateNote, lang === 'pl' ? /szacunek.*nie potwierdzona wypłata pracodawcy/ : /estimate.*not the employer's confirmed payout/);
+    assert.match(c.calculation.title, lang === 'pl' ? /szacunek za 1 tydzień/ : /estimate for 1 week/);
+    assert.match(c.scopeNote, lang === 'pl' ? /szacunek za 1 tydzień.*nie jest potwierdzona wypłata/ : /estimate for 1 week.*not a confirmed employer payout/);
+    assert.doesNotMatch(c.scopeNote, /nie oblicza|does not calculate/);
+    assert.match(c.calculation.rates('static', '2026-10-21'), lang === 'pl' ? /zapasowe/ : /fallback/);
+    assert.ok(c.tools.names.evaluate_payroll_scenario);
+    const limit = translations[lang].kalkulatorHome.advisorLimit;
+    assert.match(limit, lang === 'pl' ? /szacunek za 1 tydzień/ : /1-week estimate/, 'the PRO card states the new capability, bounded');
+    assert.doesNotMatch(limit, /nie oblicza|does not yet calculate/);
+  }
+});

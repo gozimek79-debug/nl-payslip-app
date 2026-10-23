@@ -50,6 +50,8 @@ interface StoredConversation {
   userScenario: ScenarioV1;
   documentContextRef: string | null;
   groundedClaims: ClaimSource[];
+  /** FIN-03: Loonto assumptions offered by an engine evaluation and not yet accepted - acceptable in a LATER turn only. */
+  offeredAssumptions?: string[];
 }
 
 const MAX_STORED_MESSAGES = 40;
@@ -122,6 +124,7 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
   const ctx: ToolContext = {
     dialogue: [...conversation.messages.map((m) => ({ role: m.role, text: m.text })), { role: 'user' as const, text: message }],
     currentMessage: message, knowledge, documentStatus, scenario, rates: fetched?.rates ?? null, orientation: null, navigation: [],
+    ratesSource: fetched?.source ?? null, today: new Date().toISOString().slice(0, 10), offeredAssumptions: conversation.offeredAssumptions ?? [], calculation: null,
   };
 
   const started = Date.now();
@@ -129,7 +132,7 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
   const latencyMs = Date.now() - started;
   console.info('advisor turn', JSON.stringify({
     outcome: outcome.status, reason: 'reason' in outcome ? outcome.reason : null, modelCalls: outcome.modelCalls, tools: outcome.toolCalls.map((t) => `${t.name}:${t.status}`),
-    latencyMs, documentStatus, ...(outcome.status === 'unavailable' ? {} : { checks: outcome.checks }),
+    latencyMs, documentStatus, ...(outcome.status === 'unavailable' ? {} : { checks: outcome.checks }), ...(ctx.calculation ? { calculation: ctx.calculation.status } : {}),
     ...(outcome.status === 'ok' ? { promptTokens: outcome.usage.promptTokens, completionTokens: outcome.usage.completionTokens, groundingRewrite: outcome.groundingRewrite } : {}),
   }));
 
@@ -142,6 +145,8 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
     userScenario: withoutVerifiedValues(ctx.scenario),
     documentContextRef: contextRef ?? null,
     groundedClaims: [...conversation.groundedClaims, ...outcome.claims].slice(-MAX_GROUNDED_CLAIMS),
+    // A new evaluation replaces the open offers; an accepted assumption is no longer on offer.
+    offeredAssumptions: (ctx.newlyOffered ?? conversation.offeredAssumptions ?? []).filter((f) => !(ctx.acceptedAssumptions ?? []).includes(f)),
   };
   const newRef = await putRecord(sessionHash, { kind: 'advisor', conversation: next });
 
@@ -153,6 +158,7 @@ router.post('/v1/turn', turnRateLimit, async (req, res) => {
     meta: { provider: model.provider, model: model.model, modelCalls: outcome.modelCalls, tools: outcome.toolCalls, groundingRewrite: outcome.groundingRewrite, latencyMs },
     orientation: ctx.orientation,
     navigation: ctx.navigation,
+    calculation: ctx.calculation ?? null,
     documentStatus,
   });
 });

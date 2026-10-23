@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { advisorHarness, okTurn } from './advisor-test-support.ts';
+import { advisorHarness, blockedCalculation, computedCalculation, okTurn } from './advisor-test-support.ts';
 
 /**
  * AI-001: the REAL module shell (App.tsx) and the REAL advisor screen rendered to markup (esbuild + react-dom/server, as
@@ -60,7 +60,7 @@ test('AI-001 shell: the default app is the module shell - Free and PRO (advisor,
   for (const label of ['Kalkulator', 'Analiza', 'Słownik', 'Zaloguj się', 'Darmowy kalkulator', 'Bezpłatny', 'Kalkulator PRO — doradca AI', 'Alpha']) assert.ok(t.includes(label), label);
   assert.match(pl, /data-module="calculator_free"/);
   assert.match(pl, /data-module="calculator_pro"/);
-  assert.match(t, /nie oblicza jeszcze wynagrodzenia brutto, netto ani podatku/, 'the PRO card promises nothing the advisor cannot do');
+  assert.match(t, /brutto, podatek i netto liczy silnik Loonto — tylko jako szacunek za 1 tydzień, gdy zna wszystkie dane/, 'the PRO card states what the advisor can do (FIN-03), and its bound');
   assert.ok(!/nie szacunku|not an estimate/.test(t), 'the old over-promise is not on the advisor card');
   assert.ok(!/<textarea|r3a-composer|advisor-thread/.test(pl), 'not a chat-only homepage');
 });
@@ -159,4 +159,36 @@ test('AI-001 advisor: a model failure mid-conversation -> the notice and a retry
   assert.match(markup, /data-failure="advisor_unavailable"/);
   assert.ok(textOf(markup).includes('AI doradca jest chwilowo niedostępny. Spróbuj ponownie za chwilę.'));
   assert.ok(buttonsText(markup).includes('Spróbuj ponownie'));
+});
+
+test('FIN-03 advisor: the engine-result card - figures only from the server result, period and sources named, missing inputs instead of figures', async () => {
+  const expect = {
+    pl: {
+      computed: ['Wyliczenie Loonto — szacunek za 1 tydzień', 'Brutto (wyliczone) €640,00', 'Podatek (wyliczony) €60,14', 'Netto (wyliczone) €558,94', 'Do wypłaty (wyliczone) €558,94',
+        'zwykłe godziny pon.–pt.: 40 h podane przez Ciebie', 'stawka godzinowa brutto: €16,00/h podane przez Ciebie', 'ulga podatkowa (loonheffingskorting): stosowana podane przez Ciebie',
+        'potrącenia: szacunek Loonto założenie Loonto', 'Założenia Loonto użyte w wyliczeniu', 'Tabele podatkowe: aktualne z bazy Loonto, stan na 2026-10-21', 'nie potwierdzona wypłata pracodawcy'],
+      blocked: ['Do wyliczenia brakuje:', 'dodatek za sobotę', 'potrącenia — Loonto może to oszacować, jeśli się zgodzisz.'],
+    },
+    en: {
+      computed: ['Loonto calculation — estimate for 1 week', '€640.00', '€60.14', '€558.94', 'regular Mon–Fri hours: 40 h stated by you', 'gross hourly rate: €16.00/h stated by you',
+        'deductions: Loonto estimate Loonto assumption', "Tax tables: current, from Loonto's database, as of 2026-10-21", "not the employer's confirmed payout"],
+      blocked: ['Saturday premium', 'deductions — '],
+    },
+  } as const;
+  for (const lang of ['pl', 'en'] as const) {
+    const h = advisorHarness([okTurn('MODEL-TEXT-A', { calculation: computedCalculation() }), okTurn('MODEL-TEXT-B', { calculation: blockedCalculation() }), okTurn('MODEL-TEXT-C')], { lang });
+    await h.store.checkAvailability();
+    for (const m of ['a', 'b', 'c']) await h.store.send(m);
+    const markup = renderAdvisor(h.store, lang);
+    const t = textOf(markup);
+    for (const m of ['MODEL-TEXT-A', 'MODEL-TEXT-B', 'MODEL-TEXT-C']) assert.ok(t.includes(m), 'the model text is shown as written, next to the card');
+    assert.equal([...markup.matchAll(/data-calc="/g)].length, 2, 'a card only where the server sent one');
+    const computed = textOf(markup.slice(markup.indexOf('data-calc="computed"'), markup.indexOf('data-calc="blocked"')));
+    const blocked = textOf(markup.slice(markup.indexOf('data-calc="blocked"'), markup.indexOf('MODEL-TEXT-C')));
+    assert.match(markup, /data-calc="computed" data-result-type="calculated_engine_estimate"/);
+    for (const part of expect[lang].computed) assert.ok(computed.includes(part), `${lang}: ${part}`);
+    for (const part of expect[lang].blocked) assert.ok(blocked.includes(part), `${lang}: ${part}`);
+    assert.doesNotMatch(blocked, /€\s?\d/, 'a blocked calculation shows no figure');
+    assert.doesNotMatch(computed, /zweryfikowan|verified|gwarant|guarantee/i, 'never presented as a verified payout');
+  }
 });

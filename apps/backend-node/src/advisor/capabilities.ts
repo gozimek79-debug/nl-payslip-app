@@ -33,8 +33,8 @@ export const APP_MODULES: readonly AppModule[] = [
   },
   {
     id: 'pro_advisor', group: 'calculator', status: 'alpha', target: 'calculator_pro', priceTier: 'pro', usesAi: true, requiresLogin: false,
-    purpose: 'Calculator PRO with this AI advisor: conversation about pay, reading the user\'s payslip or contract (Gemini reader), answering from the printed facts, and a base-wage orientation (hours x base hourly rate).',
-    limits: 'Private alpha. Cannot yet calculate gross pay, net / take-home pay, tax, premiums or holiday pay; the orientation excludes all of them.',
+    purpose: 'Calculator PRO with this AI advisor: conversation about pay, reading the user\'s payslip or contract (Gemini reader), answering from the printed facts, and - from the values the user states - a weekly estimate of gross pay, wage tax, net wage and payout by Loonto\'s payroll engine (the same engine as the free calculator).',
+    limits: 'Private alpha. The weekly calculation runs only when every input it needs is known (hours by category, hourly rate, loonheffingskorting, deductions or an accepted estimate of them, any premium percentages); it is an estimate, not the employer\'s verified payout. Not modelled: night / evening / shift premiums, vakantiegeld paid out now, monthly salaries, periods other than a week, CAO-specific rules.',
   },
   {
     id: 'contract_analysis', group: 'document_analysis', status: 'available', target: 'analysis_contract', priceTier: 'not_decided', usesAi: true, requiresLogin: false,
@@ -65,14 +65,14 @@ export function capabilitiesForModel() {
       read_uploaded_document: 'available (the user attaches it in this module; reading is an explicit user action)',
       answer_from_document_facts: 'available',
       base_wage_orientation: 'available - hours x base hourly rate only',
-      gross_or_net_pay_calculation: 'not_available_yet',
+      gross_or_net_pay_calculation: 'available as an engine ESTIMATE for one week when all inputs are known (evaluate_payroll_scenario); otherwise blocked with the missing inputs named',
       cao_or_legal_rule_lookup: 'not_available_yet',
     },
     // AI-001 P0-3: what the advisor's knowledge rests on. There is no verified legal / CAO / tax source behind it yet.
     knowledge_sources: {
       verified_dutch_labour_law: 'none in this version',
       cao_texts_or_rates: 'none in this version - Loonto does not know which CAO applies to the user or what it pays',
-      tax_tables_for_the_advisor: 'none - the advisor does not calculate tax or net pay',
+      tax_tables_for_the_advisor: 'Loonto\'s payroll engine uses the current Dutch wage-tax tables (database, or a static fallback that may be out of date - the result says which); the advisor itself never calculates tax',
       general_explanations: 'allowed only as general, nonbinding information, never as the user\'s entitlement or a guarantee',
     },
   };

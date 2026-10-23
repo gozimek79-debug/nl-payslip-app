@@ -18,7 +18,7 @@ const pl = {
     advisorLead: 'Darmowy kalkulator liczy sam, bez AI. Kalkulator PRO to doradca AI, z którym rozmawiasz własnymi słowami.',
     freeName: 'Darmowy kalkulator', freeBadge: 'Bezpłatny',
     advisorName: 'Kalkulator PRO — doradca AI', advisorNeed: 'Zapytaj o godziny, stawki, dodatki lub swoje dokumenty',
-    advisorLimit: 'Wersja testowa. Odpowiada model AI; nie oblicza jeszcze wynagrodzenia brutto, netto ani podatku.',
+    advisorLimit: 'Wersja testowa. Odpowiada model AI; brutto, podatek i netto liczy silnik Loonto — tylko jako szacunek za 1 tydzień, gdy zna wszystkie dane.',
     advisorBadge: 'Alpha', backToAdvisor: 'Wróć do doradcy PRO',
   },
   analizaHome: {
@@ -558,7 +558,7 @@ const en: typeof pl = {
     advisorLead: 'The free calculator works on its own, without AI. The PRO calculator is an AI advisor you talk to in your own words.',
     freeName: 'Free calculator', freeBadge: 'Free',
     advisorName: 'PRO calculator — AI advisor', advisorNeed: 'Ask about hours, rates, premiums or your documents',
-    advisorLimit: 'Test version. Answers come from an AI model; it does not yet calculate gross pay, net pay or tax.',
+    advisorLimit: 'Test version. Answers come from an AI model; gross pay, tax and net pay come from the Loonto engine — only as a 1-week estimate when every input is known.',
     advisorBadge: 'Alpha', backToAdvisor: 'Back to the PRO advisor',
   },
   analizaHome: {

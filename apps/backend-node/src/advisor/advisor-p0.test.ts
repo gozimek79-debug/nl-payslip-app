@@ -27,6 +27,9 @@ const orientation = (dialogue: DialogueTurn[], args: Record<string, unknown>) =>
 // P0-1 - days and hours as the user stated them
 // ---------------------------------------------------------------------------------------------
 
+/** The three P0-1 readings (FIN-03 added schedule spans and hourly rates alongside; advisor-fin03.test.ts covers those). */
+const p01 = ({ days, perDay, totals }: { days: number[]; perDay: number[]; totals: number[] }) => ({ days, perDay, totals });
+
 test('P0-1 statements: days, hours per day and weekly totals are read separately - never derived from one another', () => {
   const cases: Array<[string, { days: number[]; perDay: number[]; totals: number[] }]> = [
     ['Pracuję 7 dni w tygodniu, 56 godzin.', { days: [7], perDay: [], totals: [56] }],
@@ -44,7 +47,7 @@ test('P0-1 statements: days, hours per day and weekly totals are read separately
     ['Zacząłem 3 dni temu, 40 h', { days: [], perDay: [], totals: [40] }],
     ['6-dniowy tydzień, 48 h', { days: [6], perDay: [], totals: [48] }],
   ];
-  for (const [text, expected] of cases) assert.deepEqual(statementsIn(text), expected, text);
+  for (const [text, expected] of cases) assert.deepEqual(p01(statementsIn(text)), expected, text);
 });
 
 test('P0-1 orientation: a day count must be stated - "8 h a day" never becomes 8 x 7', () => {
@@ -80,7 +83,7 @@ test('P0-1 confirmation: a "tak" grounds the ONE day count the advisor asked abo
   assert.equal(orientation(asked('Od poniedziałku do piątku czy przez 7 dni?', 'tak'), { per_day_hours: 8, days: 7 }).reason, 'days_not_stated_by_user', 'two options named - "tak" confirms neither');
   const six = orientation(asked('Ile dni w tygodniu pracujesz?', '6'), { per_day_hours: 8, days: 6 });
   assert.deepEqual([six.ok, six.hours], [true, 48]);
-  assert.deepEqual(statedInDialogue([{ role: 'assistant', text: 'Ile godzin w tygodniu pracujesz?' }, { role: 'user', text: '5' }]), { days: [], perDay: [], totals: [5] }, 'an hours question is not a days question');
+  assert.deepEqual(p01(statedInDialogue([{ role: 'assistant', text: 'Ile godzin w tygodniu pracujesz?' }, { role: 'user', text: '5' }])), { days: [], perDay: [], totals: [5] }, 'an hours question is not a days question');
   assert.deepEqual(statedInDialogue([{ role: 'assistant', text: 'Pracujesz 7 dni?' }, { role: 'user', text: 'tak, ale nie wiem ile godzin' }]).days, [], 'only a plain "tak" confirms');
 });
 

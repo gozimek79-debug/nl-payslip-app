@@ -2,7 +2,7 @@ import type { ProDocumentType } from '../pro-documents-policy.ts';
 import type { DocumentReadOutcome, FactReaderKind } from '../document-facts-reader.ts';
 import { resolveProfile } from '../pro-profile-prefill.ts';
 import { addFile, checkFile, profileDocuments, readerKind, removeFile, toRead, type FileRejection, type R3BDocument } from '../r3b/r3b-documents.ts';
-import { fetchAvailability, postAdvisorTurn, type AdvisorFailure, type AdvisorLocale, type NavigationOffer, type OrientationView } from './advisor-client.ts';
+import { fetchAvailability, postAdvisorTurn, type AdvisorFailure, type AdvisorLocale, type CalculationView, type NavigationOffer, type OrientationView } from './advisor-client.ts';
 
 /**
  * AI-001 AI Advisor (Calculator PRO) - the state behind the screen, free of React so node tests drive it exactly as the
@@ -16,7 +16,7 @@ import { fetchAvailability, postAdvisorTurn, type AdvisorFailure, type AdvisorLo
 
 export type ThreadItem =
   | { id: number; from: 'user'; text: string }
-  | { id: number; from: 'advisor'; text: string; tools: Array<{ name: string; status: string }>; orientation: OrientationView | null; navigation: NavigationOffer[]; model: string }
+  | { id: number; from: 'advisor'; text: string; tools: Array<{ name: string; status: string }>; orientation: OrientationView | null; calculation: CalculationView | null; navigation: NavigationOffer[]; model: string }
   | { id: number; from: 'notice'; kind: 'error'; failure: AdvisorFailure }
   | { id: number; from: 'notice'; kind: 'info'; info: 'conversation_restarted' | 'document_expired' | 'document_read' | 'document_failed' | 'document_partial' | 'document_from_analysis' };
 
@@ -77,7 +77,7 @@ export function createAdvisorStore(deps: AdvisorDeps, lang: AdvisorLocale = 'pl'
     if (res.ok) {
       const r = res.result;
       patch({ conversationRef: r.conversationRef, busy: false, lastFailedMessage: null });
-      push({ from: 'advisor', text: r.answer.text, tools: r.meta.tools, orientation: r.orientation, navigation: r.navigation, model: r.meta.model });
+      push({ from: 'advisor', text: r.answer.text, tools: r.meta.tools, orientation: r.orientation, calculation: r.calculation ?? null, navigation: r.navigation, model: r.meta.model });
       return;
     }
     // The server no longer has this conversation / document (they expire after 2 hours): say so, start fresh, ask once more.

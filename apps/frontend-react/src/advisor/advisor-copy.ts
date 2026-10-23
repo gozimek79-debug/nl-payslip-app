@@ -42,6 +42,27 @@ export interface AdvisorCopy {
     note: string;
   };
   navigation: { title: string; targets: Record<NavigationOffer['target'], string>; status: Record<NavigationOffer['status'], string>; open: (label: string) => string };
+  /** FIN-03: the engine-result card (labels only - every figure comes from the server's engine result). */
+  calculation: {
+    title: string;
+    blockedTitle: string;
+    unsupportedTitle: string;
+    invalidTitle: string;
+    ratesUnavailable: string;
+    gross: string;
+    tax: string;
+    net: string;
+    payout: string;
+    range: (low: string, high: string) => string;
+    basedOn: string;
+    sources: Record<'user_stated' | 'document_reading' | 'loonto_assumption' | 'other', string>;
+    assumptions: string;
+    rates: (source: 'database' | 'static' | null, asOf: string) => string;
+    estimateNote: string;
+    missingAssumption: string;
+    unsupported: Record<string, string>;
+    choices: Record<string, string>;
+  };
   documents: {
     title: string;
     lead: string;
@@ -73,7 +94,7 @@ const pl: AdvisorCopy = {
   lead: 'Zapytaj o godziny, stawki, dodatki albo o swoje dokumenty. Odpowiedź pisze model AI.',
   alphaNote: 'Wersja testowa dostępna tylko dla właściciela. Używaj wyłącznie danych i dokumentów przykładowych.',
   privacyNote: 'Twoje wiadomości trafiają do modelu AI (Groq). Nie wpisuj imienia, numeru BSN, IBAN ani nazwy pracodawcy. Z dokumentów model dostaje tylko odczytane pozycje (np. „dodatek nocny”), bez danych osobowych i bez treści pliku.',
-  scopeNote: 'Doradca nie oblicza wynagrodzenia brutto, netto ani podatku. Kwoty pochodzą tylko z Twoich wiadomości, Twoich dokumentów lub orientacyjnego narzędzia Loonto.',
+  scopeNote: 'Brutto, podatek i netto liczy tylko silnik Loonto — jako szacunek za 1 tydzień, gdy zna wszystkie potrzebne dane. To nie jest potwierdzona wypłata pracodawcy. Inne kwoty pochodzą tylko z Twoich wiadomości, Twoich dokumentów lub orientacyjnego narzędzia Loonto.',
   threadLabel: 'Rozmowa z doradcą',
   advisorName: 'Doradca AI',
   youName: 'Ty',
@@ -108,7 +129,8 @@ const pl: AdvisorCopy = {
     label: 'Użyte narzędzia:',
     names: {
       get_app_capabilities: 'moduły Loonto', get_document_facts: 'Twoje dokumenty', get_scenario_state: 'stan rozmowy',
-      update_scenario: 'zapis Twoich danych', calculate_base_wage_orientation: 'orientacja: stawka × godziny', offer_navigation: 'przejście do modułu',
+      update_scenario: 'zapis Twoich danych', calculate_base_wage_orientation: 'orientacja: stawka × godziny', evaluate_payroll_scenario: 'wyliczenie Loonto',
+      offer_navigation: 'przejście do modułu',
     },
     refused: 'odmowa',
   },
@@ -131,6 +153,32 @@ const pl: AdvisorCopy = {
       gross_and_net_pay: 'wynagrodzenia brutto i netto',
     },
     note: 'To zwykłe mnożenie godzin przez stawkę — nie jest to Twoja wypłata.',
+  },
+  calculation: {
+    title: 'Wyliczenie Loonto — szacunek za 1 tydzień',
+    blockedTitle: 'Do wyliczenia brakuje:',
+    unsupportedTitle: 'Tego Loonto jeszcze nie liczy:',
+    invalidTitle: 'Tych danych nie da się policzyć:',
+    ratesUnavailable: 'Loonto nie ma teraz tabel podatkowych na dziś, więc niczego nie liczy.',
+    gross: 'Brutto (wyliczone)',
+    tax: 'Podatek (wyliczony)',
+    net: 'Netto (wyliczone)',
+    payout: 'Do wypłaty (wyliczone)',
+    range: (low, high) => `Zakres do wypłaty: ${low} – ${high} (część danych ma warianty lub jest szacunkiem).`,
+    basedOn: 'Na podstawie:',
+    sources: { user_stated: 'podane przez Ciebie', document_reading: 'odczyt z dokumentu', loonto_assumption: 'założenie Loonto', other: 'inne' },
+    assumptions: 'Założenia Loonto użyte w wyliczeniu — nie są to dane z Twojej umowy ani paska.',
+    rates: (source, asOf) => (source === 'static'
+      ? `Tabele podatkowe: zapasowe (mogą być nieaktualne), stan na ${asOf}.`
+      : `Tabele podatkowe: aktualne z bazy Loonto, stan na ${asOf}.`),
+    estimateNote: 'To szacunek z podanych danych — nie potwierdzona wypłata pracodawcy ani uprawnienie.',
+    missingAssumption: 'Loonto może to oszacować, jeśli się zgodzisz.',
+    unsupported: {
+      night_premium: 'dodatek nocny', evening_premium: 'dodatek wieczorny', shift_premium: 'dodatek zmianowy', surcharge_on_counted_hours: 'dodatek od już liczonych godzin',
+      percent_based_deduction: 'potrącenie procentowe', recurring_net_deduction: 'stałe potrącenie netto', recurring_net_addition: 'stały dodatek netto', vakantiegeld_paid_now: 'vakantiegeld wypłacany teraz',
+      et_exchange: 'regulacja ET', monthly_salary: 'pensja miesięczna', guaranteed_hours: 'gwarantowane godziny', non_weekly_period: 'okres inny niż tydzień', too_many_variants: 'zbyt wiele wariantów naraz',
+    },
+    choices: { applied: 'stosowana', not_applied: 'niestosowana', estimate: 'szacunek Loonto', enter: 'podane kwoty', accruing: 'naliczany', none: 'brak' },
   },
   navigation: {
     title: 'Moduły Loonto',
@@ -159,7 +207,7 @@ const en: AdvisorCopy = {
   lead: 'Ask about hours, rates, premiums or your documents. The answer is written by an AI model.',
   alphaNote: 'Test version for the owner only. Use sample data and sample documents only.',
   privacyNote: 'Your messages go to an AI model (Groq). Do not type your name, BSN, IBAN or employer name. From documents the model only receives the read items (e.g. "night premium"), without personal data and without the file content.',
-  scopeNote: 'The advisor does not calculate gross pay, net pay or tax. Amounts come only from your messages, your documents or a Loonto orientation tool.',
+  scopeNote: 'Gross pay, tax and net pay are calculated only by the Loonto engine — as an estimate for 1 week, when it has every input it needs. It is not a confirmed employer payout. Other amounts come only from your messages, your documents or a Loonto orientation tool.',
   threadLabel: 'Conversation with the advisor',
   advisorName: 'AI advisor',
   youName: 'You',
@@ -194,7 +242,8 @@ const en: AdvisorCopy = {
     label: 'Tools used:',
     names: {
       get_app_capabilities: 'Loonto modules', get_document_facts: 'your documents', get_scenario_state: 'conversation state',
-      update_scenario: 'saving your details', calculate_base_wage_orientation: 'orientation: rate × hours', offer_navigation: 'link to a module',
+      update_scenario: 'saving your details', calculate_base_wage_orientation: 'orientation: rate × hours', evaluate_payroll_scenario: 'Loonto calculation',
+      offer_navigation: 'link to a module',
     },
     refused: 'refused',
   },
@@ -217,6 +266,32 @@ const en: AdvisorCopy = {
       gross_and_net_pay: 'gross and net pay',
     },
     note: 'This is plain hours × rate — it is not your pay.',
+  },
+  calculation: {
+    title: 'Loonto calculation — estimate for 1 week',
+    blockedTitle: 'To calculate, Loonto still needs:',
+    unsupportedTitle: 'Loonto does not calculate this yet:',
+    invalidTitle: 'These values cannot be calculated:',
+    ratesUnavailable: 'Loonto has no tax tables for today, so it calculates nothing.',
+    gross: 'Gross (calculated)',
+    tax: 'Tax (calculated)',
+    net: 'Net wage (calculated)',
+    payout: 'Payout (calculated)',
+    range: (low, high) => `Payout range: ${low} – ${high} (some inputs have variants or are estimates).`,
+    basedOn: 'Based on:',
+    sources: { user_stated: 'stated by you', document_reading: 'read from a document', loonto_assumption: 'Loonto assumption', other: 'other' },
+    assumptions: 'Loonto assumptions used in the calculation — not data from your contract or payslip.',
+    rates: (source, asOf) => (source === 'static'
+      ? `Tax tables: fallback (may be out of date), as of ${asOf}.`
+      : `Tax tables: current, from Loonto's database, as of ${asOf}.`),
+    estimateNote: 'An estimate from the stated inputs — not the employer\'s confirmed payout and not an entitlement.',
+    missingAssumption: 'Loonto can estimate this if you agree.',
+    unsupported: {
+      night_premium: 'night premium', evening_premium: 'evening premium', shift_premium: 'shift premium', surcharge_on_counted_hours: 'premium on already counted hours',
+      percent_based_deduction: 'percentage deduction', recurring_net_deduction: 'recurring net deduction', recurring_net_addition: 'recurring net addition', vakantiegeld_paid_now: 'vakantiegeld paid out now',
+      et_exchange: 'ET arrangement', monthly_salary: 'monthly salary', guaranteed_hours: 'guaranteed hours', non_weekly_period: 'a period other than a week', too_many_variants: 'too many variants at once',
+    },
+    choices: { applied: 'applied', not_applied: 'not applied', estimate: 'Loonto estimate', enter: 'amounts given', accruing: 'accruing', none: 'none' },
   },
   navigation: {
     title: 'Loonto modules',

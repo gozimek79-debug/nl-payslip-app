@@ -4,15 +4,16 @@ import { scenarioPatchSchema, type ScenarioPatchV1 } from '../conversation/scena
 import { guardModelPatch } from '../conversation/support-guard.js';
 import { applyScenarioPatch } from '../conversation/patch-authority.js';
 import { evaluateScenario, type ScenarioEvaluationResult } from '../scenario/scenario-evaluate.js';
-import { SCENARIO_FIELD_PATHS, type ScenarioV1 } from '../scenario/scenario-types.js';
+import { SCENARIO_FIELD_PATHS, SCENARIO_FIELDS, type ScenarioFieldPath, type ScenarioV1 } from '../scenario/scenario-types.js';
 import { getAt, isRecord } from '../scenario/scenario-util.js';
 import type { PayslipComputationRates } from '../payroll-engine/payslip-model.js';
 import { capabilitiesForModel, moduleByTarget, NAVIGATION_TARGETS, type ModuleStatus, type NavigationTarget } from './capabilities.js';
 import { baseWageOrientation, MAX_HOURS_PER_DAY, type OrientationResult } from './base-wage-orientation.js';
 import { orientationToolEnabled } from './advisor-config.js';
 import { numbersInValue } from './grounding.js';
-import { statedInDialogue, type DialogueTurn } from './hours-statements.js';
+import { scheduleBuckets, statedInDialogue, type DialogueTurn } from './hours-statements.js';
 import type { ClaimSource } from './claim-check.js';
+import { CONSENT, choiceSupported, evaluatePayrollForAdvisor, type CalculationCard } from './payroll-evaluation.js';
 import type { ToolSpec } from './advisor-model.js';
 
 /**
@@ -32,12 +33,22 @@ export interface ToolContext {
   /** User values + the trusted document values merged in for this turn; changed only by update_scenario. */
   scenario: ScenarioV1;
   rates: PayslipComputationRates | null;
+  /** FIN-03: where the trusted rates came from (`fetchRates`), and the date they apply to. */
+  ratesSource?: 'database' | 'static' | null;
+  today?: string;
+  /** FIN-03: Loonto assumptions offered in an EARLIER turn of this conversation (server-held) - the only ones the user
+   * can accept, and only with their own "yes" in the current message. */
+  offeredAssumptions?: readonly string[];
   /** Filled by the tools during the turn. */
   orientation: (OrientationResult & { hoursBasis: string; rateSource: string }) | null;
   navigation: Array<{ target: NavigationTarget; status: ModuleStatus }>;
+  /** FIN-03: the last engine evaluation of this turn (the interface's result card), and the assumptions it offered. */
+  calculation?: CalculationCard | null;
+  newlyOffered?: string[];
+  acceptedAssumptions?: string[];
 }
 
-export const ADVISOR_TOOL_NAMES = ['get_app_capabilities', 'get_document_facts', 'get_scenario_state', 'update_scenario', 'calculate_base_wage_orientation', 'offer_navigation'] as const;
+export const ADVISOR_TOOL_NAMES = ['get_app_capabilities', 'get_document_facts', 'get_scenario_state', 'update_scenario', 'evaluate_payroll_scenario', 'calculate_base_wage_orientation', 'offer_navigation'] as const;
 export type AdvisorToolName = (typeof ADVISOR_TOOL_NAMES)[number];
 
 export const ADVISOR_TOOLS: ToolSpec[] = [
@@ -58,7 +69,7 @@ export const ADVISOR_TOOLS: ToolSpec[] = [
   },
   {
     name: 'update_scenario',
-    description: 'Record values the user stated in THIS message (e.g. weekday hours, Saturday hours, hourly rate, a premium percentage). Loonto accepts only values the user actually wrote; derived, inferred or assumed values and any source claims are rejected. Fields: work.regularWeekdayHours, work.saturdayHours, work.sundayHours, work.publicHolidayHours, work.overtimeHours, pay.hourlyRate, pay.saturdayPremiumPercent, pay.sundayPremiumPercent, pay.publicHolidayPremiumPercent, pay.overtime.tier1Percent, tax.loonheffingskorting (applied|not_applied).',
+    description: 'Record values the user stated in THIS message (e.g. weekday hours, Saturday hours, hourly rate, a premium percentage, whether the loonheffingskorting tax credit is applied, deduction amounts). Loonto accepts only values the user actually wrote; derived, inferred or assumed values and any source claims are rejected. A correction replaces the earlier value (set the field again). Fields: work.regularWeekdayHours (Mon-Fri hours), work.saturdayHours, work.sundayHours, work.publicHolidayHours, work.overtimeHours, pay.hourlyRate, pay.saturdayPremiumPercent, pay.sundayPremiumPercent, pay.publicHolidayPremiumPercent (premium ABOVE base: 50 = x1.5), pay.overtime.tier1Percent, tax.loonheffingskorting (applied|not_applied), deductions.mode (enter), deductions.entered.pension, deductions.entered.paww, deductions.entered.sectorPremium, extras.travelAllowance. accept_assumption {field}: ONLY for a field listed in offerable_assumptions of an evaluation in an EARLIER turn, and only when the user agreed in THIS message.',
     parameters: {
       type: 'object', additionalProperties: false, required: ['ops'],
       properties: {
@@ -67,7 +78,7 @@ export const ADVISOR_TOOLS: ToolSpec[] = [
           items: {
             type: 'object', required: ['op'],
             properties: {
-              op: { type: 'string', enum: ['set', 'set_unknown', 'remove', 'request_concept'] },
+              op: { type: 'string', enum: ['set', 'set_unknown', 'remove', 'request_concept', 'accept_assumption'] },
               field: { type: 'string' },
               value: { type: ['number', 'string'] },
               concept: { type: 'string', description: 'for request_concept: night_premium, shift_premium, ...' },
@@ -76,6 +87,11 @@ export const ADVISOR_TOOLS: ToolSpec[] = [
         },
       },
     },
+  },
+  {
+    name: 'evaluate_payroll_scenario',
+    description: 'Run Loonto\'s trusted payroll engine (Dutch weekly pay: gross, wage tax, net wage, payout) on the scenario Loonto holds for this conversation - the values recorded with update_scenario and the trusted document context. Takes no values: record the user\'s values first. Returns status computed (figures + every input with its source + assumptions used + range), blocked (exactly which inputs are missing; offerable Loonto assumptions), unsupported or invalid. The ONLY source of gross / tax / net / payout figures - always an ESTIMATE from the stated inputs, never the employer\'s verified payout.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'calculate_base_wage_orientation',
@@ -173,7 +189,7 @@ export function scenarioStateForModel(scenario: ScenarioV1, evaluation: Scenario
     stated,
     requirements,
     // Never an amount: a full calculation is not offered through the advisor in AI-001.
-    calculation_status: evaluation === null ? 'unknown' : evaluation.status === 'computed' ? 'all_inputs_present_but_full_calculation_not_offered_in_this_version' : evaluation.status,
+    calculation_status: evaluation === null ? 'unknown' : evaluation.status === 'computed' ? 'ready - call evaluate_payroll_scenario for the figures' : evaluation.status,
     unsupported_concepts: (scenario.requestedConcepts ?? []).map((c) => c.concept),
     document_context: documentStatus,
   };
@@ -184,6 +200,12 @@ export function scenarioStateForModel(scenario: ScenarioV1, evaluation: Scenario
 // ---------------------------------------------------------------------------------------------
 
 const statedIn = (values: readonly number[], value: number) => values.some((v) => Math.abs(v - value) < 0.005);
+const isScenarioField = (field: string): field is ScenarioFieldPath => Object.prototype.hasOwnProperty.call(SCENARIO_FIELDS, field);
+const SCHEDULE_FIELDS: Record<string, 'regularWeekdayHours' | 'saturdayHours' | 'sundayHours' | undefined> = {
+  'work.regularWeekdayHours': 'regularWeekdayHours', 'work.saturdayHours': 'saturdayHours', 'work.sundayHours': 'sundayHours',
+};
+/** An op that claims a source other than the user - the authority guard rejects it; never treated as derived. */
+const claimsSource = (op: object) => 'source' in op && (op as { source?: unknown }).source !== undefined && (op as { source?: unknown }).source !== 'user';
 
 function rateFromScenario(scenario: ScenarioV1): { ok: true; rate: number; source: string } | { ok: false; reason: 'rate_conflict' | 'rate_unknown'; candidates?: number[] } {
   const node = getAt(scenario, 'pay.hourlyRate');
@@ -228,14 +250,57 @@ export function executeTool(name: string, rawArguments: string, ctx: ToolContext
       const patchParse = scenarioPatchSchema.safeParse({ version: 1, ops: parsed.data.ops });
       if (!patchParse.success) return { status: 'invalid_arguments', result: { error: 'ops_not_in_scenario_patch_schema' } };
       const patch: ScenarioPatchV1 = patchParse.data;
+      const withheld: Array<{ field: string | null; reason: string }> = [];
+      const recorded: Array<Record<string, unknown>> = [];
+      // FIN-03: a Loonto assumption is accepted only if Loonto offered it in an EARLIER turn and the user agrees NOW.
+      const accepts = patch.ops.filter((op): op is Extract<typeof op, { op: 'accept_assumption' }> => op.op === 'accept_assumption');
+      for (const op of accepts) {
+        if (!(ctx.offeredAssumptions ?? []).includes(op.field)) { withheld.push({ field: op.field, reason: 'assumption_not_offered_earlier' }); continue; }
+        if (!CONSENT.test(ctx.currentMessage)) { withheld.push({ field: op.field, reason: 'no_user_consent_in_this_message' }); continue; }
+        const accepted = applyScenarioPatch(ctx.scenario, { version: 1, ops: [op] }, { offeredAssumption: op.field as ScenarioFieldPath });
+        if (accepted.status === 'applied') {
+          ctx.scenario = accepted.scenario;
+          recorded.push({ op: 'accept_assumption', field: op.field, source: 'loonto_assumption' });
+          (ctx.acceptedAssumptions ??= []).push(op.field);
+        } else withheld.push({ field: op.field, reason: accepted.status === 'rejected' ? accepted.issues[0]?.code ?? 'rejected' : 'not_applied' });
+      }
+      // FIN-03: a closed-choice value (tax credit, deductions mode, vakantiegeld) only when the user talked about it.
+      const ops = patch.ops.filter((op) => {
+        if (op.op === 'accept_assumption') return false;
+        if (op.op === 'set' && 'field' in op && isScenarioField(op.field) && SCENARIO_FIELDS[op.field].kind === 'choice' && !choiceSupported(op.field, op.value, ctx.currentMessage)) {
+          withheld.push({ field: op.field, reason: 'choice_not_stated_by_user' });
+          return false;
+        }
+        return true;
+      });
+      // FIN-03: hours buckets a STATED schedule determines (one per-day figure x one explicit day span) - the model's value
+      // must equal the derivation exactly; anything else goes to the R2 guard as before (a total is never split).
+      const stated = statedInDialogue(ctx.dialogue);
+      const schedule = scheduleBuckets(stated);
+      const derived = ops.filter((op) => {
+        if (op.op !== 'set' || !('field' in op) || claimsSource(op)) return false;
+        // A base hourly rate the user stated as such ("po 16 €", "16 € za godzinę") - see hours-statements.ts ratesIn.
+        if (op.field === 'pay.hourlyRate') return typeof op.value === 'number' && stated.rates.some((r) => Math.abs(r - (op.value as number)) < 0.005);
+        if (!schedule) return false;
+        const key = SCHEDULE_FIELDS[op.field];
+        const expected = key ? schedule[key] : undefined;
+        return typeof expected === 'number' && typeof op.value === 'number' && Math.abs(op.value - expected) < 0.005;
+      });
       // The R2 support guard: only values the user wrote in THIS message survive.
-      const guarded = guardModelPatch(patch, ctx.currentMessage, null);
-      const outcome = applyScenarioPatch(ctx.scenario, guarded.patch, { offeredAssumption: null });
-      const withheld = guarded.notes.map((n) => ({ field: n.field, reason: n.code }));
-      if (outcome.status === 'rejected') return { status: 'refused', result: { recorded: [], withheld, rejected: outcome.issues.map((i) => ({ field: i.field ?? null, reason: i.code })) } };
+      const guarded = guardModelPatch({ version: 1, ops: ops.filter((op) => !derived.includes(op)) }, ctx.currentMessage, null);
+      withheld.push(...guarded.notes.map((n) => ({ field: n.field, reason: n.code })));
+      const outcome = applyScenarioPatch(ctx.scenario, { version: 1, ops: [...guarded.patch.ops, ...derived] }, { offeredAssumption: null });
+      if (outcome.status === 'rejected') return { status: 'refused', result: { recorded, withheld, rejected: outcome.issues.map((i) => ({ field: i.field ?? null, reason: i.code })) } };
       if (outcome.status === 'applied') ctx.scenario = outcome.scenario;
-      const recorded = outcome.status === 'applied' ? outcome.applied.map((op) => ({ op: op.op, ...('field' in op ? { field: op.field } : {}), ...('concept' in op ? { concept: op.concept } : {}) })) : [];
+      if (outcome.status === 'applied') recorded.push(...outcome.applied.map((op) => ({ op: op.op, ...('field' in op ? { field: op.field } : {}), ...('concept' in op ? { concept: op.concept } : {}) })));
       return { status: 'ok', result: { recorded, withheld } };
+    }
+    case 'evaluate_payroll_scenario': {
+      if (!empty.safeParse(args).success) return { status: 'invalid_arguments', result: { error: 'no_arguments_expected - record values with update_scenario first' } };
+      const evaluation = evaluatePayrollForAdvisor(ctx.scenario, ctx.rates, ctx.ratesSource ?? null, ctx.today ?? new Date().toISOString().slice(0, 10));
+      ctx.calculation = evaluation.card;
+      ctx.newlyOffered = evaluation.offered;
+      return { status: 'ok', result: evaluation.result };
     }
     case 'calculate_base_wage_orientation': {
       if (!orientationToolEnabled()) return { status: 'refused', result: { ok: false, reason: 'tool_disabled' } };
@@ -306,6 +371,21 @@ export function claimSourcesFromTool(name: string, result: unknown): ClaimSource
     const out: ClaimSource[] = [{ value: result.amount, kind: 'indicative_base_wage_only' }];
     if (typeof result.hourly_rate === 'number') out.push({ value: result.hourly_rate, kind: sourceKind(result.rate_source), topic: 'hourly_rate', key: 'hourly_rate' });
     if (typeof result.hours === 'number') out.push({ value: result.hours, kind: 'tool_value' });
+    return out;
+  }
+  if (name === 'evaluate_payroll_scenario') {
+    const out: ClaimSource[] = [];
+    const figures = isRecord(result.figures) ? result.figures : null;
+    const keys: Array<[string, string]> = [['gross_total', 'gross'], ['total_tax', 'tax'], ['wage_net', 'net'], ['payout_amount', 'payout']];
+    if (figures) for (const [key, topic] of keys) if (typeof figures[key] === 'number') out.push({ value: figures[key] as number, kind: 'calculated_engine_estimate', topic, key });
+    if (figures && typeof figures.hours_worked === 'number') out.push({ value: figures.hours_worked, kind: 'tool_value' });
+    const range = isRecord(result.payout_range) ? result.payout_range : null;
+    if (range) for (const v of [range.low, range.high]) if (typeof v === 'number') out.push({ value: v, kind: 'calculated_engine_estimate', topic: 'payout', key: 'payout_range' });
+    const inputs = Array.isArray(result.inputs) ? result.inputs.filter(isRecord) : [];
+    for (const i of inputs) {
+      if (typeof i.value !== 'number') continue;
+      out.push(i.source === 'document_reading' ? { value: i.value, kind: 'document_reading', topic: i.field === 'pay.hourlyRate' ? 'hourly_rate' : null, key: String(i.field) } : { value: i.value, kind: i.source === 'user_stated' ? 'user_stated' : 'tool_value' });
+    }
     return out;
   }
   if (name === 'get_document_facts' && Array.isArray(result.facts)) {

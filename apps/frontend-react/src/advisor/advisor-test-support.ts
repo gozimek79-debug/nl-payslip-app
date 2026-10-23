@@ -66,3 +66,30 @@ export const resolvedWithContext = (ref = 'doc-context-ref') => ({
   profile: { fields: {} }, extractionTable: [], decisionResults: [], issues: [], readiness: null,
   documentContext: { ref, knowledge: { version: 1, facts: [] } },
 });
+
+/**
+ * FIN-03: RECORDED engine-result cards in the shape `/api/advisor/v1/turn` returns (`calculation`). The computed one has
+ * the figures the backend engine produced for synthetic case D (40 h Mon-Fri x 16 EUR, tax credit applied, deductions
+ * estimated by Loonto after the user agreed) - the interface only shows them, it never computes anything.
+ */
+export const computedCalculation = () => ({
+  status: 'computed', resultType: 'calculated_engine_estimate', period: 'week', currency: 'EUR', ratesSource: 'database', ratesAsOf: '2026-10-21',
+  figures: { grossTotal: 640, totalTax: 60.14, wageNet: 558.94, payoutAmount: 558.94, hoursWorked: 40 },
+  payoutRange: null,
+  inputs: [
+    { field: 'work.regularWeekdayHours', source: 'user_stated', value: 40, usedByEngine: true },
+    { field: 'pay.hourlyRate', source: 'user_stated', value: 16, usedByEngine: true },
+    { field: 'tax.loonheffingskorting', source: 'user_stated', value: 'applied', usedByEngine: true },
+    { field: 'deductions.mode', source: 'loonto_assumption', value: 'estimate', usedByEngine: true },
+  ],
+  assumptionsUsed: ['deductions.mode'], warnings: ['assumption_in_use', 'sector_premium_estimated'], missing: [], unsupported: [], invalid: [],
+});
+
+export const blockedCalculation = () => ({
+  status: 'blocked', resultType: 'calculated_engine_estimate', period: 'week', currency: 'EUR', ratesSource: 'database', ratesAsOf: '2026-10-21',
+  figures: null, payoutRange: null,
+  inputs: [{ field: 'pay.hourlyRate', source: 'user_stated', value: 16, usedByEngine: false }],
+  assumptionsUsed: [], warnings: [],
+  missing: [{ field: 'pay.saturdayPremiumPercent', reason: 'missing_required', canOfferAssumption: false }, { field: 'deductions.mode', reason: 'missing_required', canOfferAssumption: true }],
+  unsupported: [], invalid: [],
+});

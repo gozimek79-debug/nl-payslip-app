@@ -18,7 +18,14 @@ export interface HourStatements {
   days: number[];
   perDay: number[];
   totals: number[];
+  /** FIN-03: WHICH days, when the user said so: an explicit range ("od poniedziałku do piątku") or all seven days. */
+  spans: DaySpan[];
+  /** FIN-03: a base hourly rate the user stated as such ("po 16 €" after hours, "16 € za godzinę", "stawka 16 €"). */
+  rates: number[];
 }
+
+export type DaySpan = 'mon-fri' | 'mon-sat' | 'mon-sun';
+const SPAN_OF_RANGE: Record<string, DaySpan> = { '1-5': 'mon-fri', '1-6': 'mon-sat', '1-7': 'mon-sun' };
 
 export interface DialogueTurn {
   role: 'user' | 'assistant';
@@ -71,6 +78,7 @@ const uniq = (values: number[]) => [...new Set(values.map((v) => Math.round(v * 
 /** The statements a single text makes (user words, or the advisor's own question for the confirmation path). */
 export function statementsIn(text: string): HourStatements {
   const days: number[] = [];
+  const spans: DaySpan[] = [];
   const perDay: number[] = [];
   const totals: number[] = [];
 
@@ -85,9 +93,15 @@ export function statementsIn(text: string): HourStatements {
   for (const m of text.matchAll(RANGE)) {
     const a = weekday(m[1] as string);
     const b = weekday(m[2] as string);
-    if (a !== null && b !== null && b > a) days.push(b - a + 1);
+    if (a !== null && b !== null && b > a) {
+      days.push(b - a + 1);
+      const span = SPAN_OF_RANGE[`${a}-${b}`];
+      if (span) spans.push(span);
+    }
   }
   if (SEVEN_DAY_PHRASES.test(text)) days.push(7);
+  // All seven days of the week say WHICH days too (Monday to Sunday); "5 dni" does not say which five.
+  if (days.includes(7)) spans.push('mon-sun');
 
   // Hours per day: "po 8 h", "8 godzin dziennie", "dziennie po 8 h", "8 hours a day", "8h/day".
   const perDaySpans: Array<[number, number]> = [];
@@ -114,7 +128,44 @@ export function statementsIn(text: string): HourStatements {
     const v = num(m[1] as string);
     if (v !== null) totals.push(v);
   }
-  return { days: uniq(days), perDay: uniq(perDay), totals: uniq(totals) };
+  return { days: uniq(days), perDay: uniq(perDay), totals: uniq(totals), spans: [...new Set(spans)], rates: uniq(ratesIn(text)) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// FIN-03: a base hourly rate stated as such
+// ---------------------------------------------------------------------------------------------
+
+const MONEY_NUM = '(\\d{1,3}(?:[.,]\\d{1,2})?)';
+const EUR = '(?:€|eur(?![\\p{L}])|euro\\p{L}*)';
+const RATE_PATTERNS = [
+  // "40 godzin po 16 €" / "40 hours at 16 EUR": the Polish distributive "po" / English "at" after hours = per hour.
+  // The Polish distributive "po 16 €" / English "at €16" in a sentence that states hours = per hour. A currency is
+  // required ("40 godzin po 8 dziennie" is not a rate) and an amount per day / week / month is not an hourly rate.
+  new RegExp(`(?<![\\p{L}])(?:po|at)\\s+(?:${EUR}\\s*${MONEY_NUM}|${MONEY_NUM}\\s*${EUR})(?!\\s*(?:brutto\\s*)?(?:dziennie|na dzień|za dzień|tygodniowo|na tydzień|za tydzień|miesięcznie|na miesiąc|per day|a day|per week|a week|per month|a month))`, 'giu'),
+  new RegExp(`${MONEY_NUM}\\s*${EUR}\\s*(?:brutto\\s*|gross\\s*)?(?:\\/\\s*(?:h|godz\\p{L}*|hr|hour)(?![\\p{L}])|za\\s+godzin\\p{L}*|na\\s+godzin\\p{L}*|per\\s+hour|an\\s+hour|hourly)`, 'giu'),
+  new RegExp(`${EUR}\\s*${MONEY_NUM}\\s*(?:\\/\\s*(?:h|hr|hour)(?![\\p{L}])|per\\s+hour|an\\s+hour)`, 'giu'),
+  new RegExp(`(?:stawk\\p{L}*|rate|uurloon|hourly wage)(?:\\s+(?:godzinow\\p{L}*|brutto|gross|to|is|wynosi|of|:))*\\s*${EUR}?\\s*${MONEY_NUM}\\s*${EUR}`, 'giu'),
+];
+const HOURS_WORD = /(?<![\p{L}])(?:godzin\p{L}*|godz\.?|hours?|hrs?|uur|\d+\s*h)(?![\p{L}])/iu;
+/** Another pay component in the same sentence makes the rate ambiguous ("w sobotę 10 godzin po 20 €"). */
+const OTHER_COMPONENT = /(?<![\p{L}])(?:sobot\p{L}*|niedziel\p{L}*|weekend\p{L}*|saturday|sunday|święt\p{L}*|holiday|nadgodzin\p{L}*|overtime|dodat\p{L}*|premi\p{L}*|toeslag|bonus|dojazd\p{L}*|travel|zwrot\p{L}*|reiskost\p{L}*)/iu;
+
+export function ratesIn(text: string): number[] {
+  const out: number[] = [];
+  for (const sentence of text.split(/(?<=[.!?;])\s+|\n+/u)) {
+    const others = [...sentence.matchAll(new RegExp(OTHER_COMPONENT.source, 'giu'))].filter((m) => !/(?<![\p{L}])(?:bez|without|no|nie)\s+$/iu.test(sentence.slice(Math.max(0, (m.index ?? 0) - 8), m.index ?? 0)));
+    if (others.length > 0) continue;
+    const statesHours = HOURS_WORD.test(sentence);
+    for (const re of RATE_PATTERNS) {
+      if (re === RATE_PATTERNS[0] && !statesHours) continue;
+      re.lastIndex = 0;
+      for (const m of sentence.matchAll(re)) {
+        const v = num((m[1] ?? m[2]) as string);
+        if (v !== null && v >= 1 && v <= 200) out.push(v);
+      }
+    }
+  }
+  return out;
 }
 
 const AFFIRMATIVE = /^\s*(?:tak|tak jest|zgadza się|dokładnie|owszem|zgadza|yes|yeah|yep|correct|exactly|right|that's right|ja)\s*[!.,]*\s*$/iu;
@@ -125,13 +176,15 @@ const ASKS_HOURS = /godzin|(?<!\p{L})hours?(?!\p{L})/iu;
 
 /** Everything the user stated in the conversation, plus values they explicitly confirmed (see the module comment). */
 export function statedInDialogue(dialogue: readonly DialogueTurn[]): HourStatements {
-  const out: HourStatements = { days: [], perDay: [], totals: [] };
+  const out: HourStatements = { days: [], perDay: [], totals: [], spans: [], rates: [] };
   dialogue.forEach((turn, i) => {
     if (turn.role !== 'user') return;
     const own = statementsIn(turn.text);
     out.days.push(...own.days);
     out.perDay.push(...own.perDay);
     out.totals.push(...own.totals);
+    out.spans.push(...own.spans);
+    out.rates.push(...own.rates);
     const previous = dialogue[i - 1];
     if (!previous || previous.role !== 'assistant') return;
     if (AFFIRMATIVE.test(turn.text)) {
@@ -139,6 +192,8 @@ export function statedInDialogue(dialogue: readonly DialogueTurn[]): HourStateme
       if (asked.days.length === 1) out.days.push(asked.days[0] as number);
       if (asked.perDay.length === 1) out.perDay.push(asked.perDay[0] as number);
       if (asked.totals.length === 1) out.totals.push(asked.totals[0] as number);
+      if (asked.spans.length === 1) out.spans.push(asked.spans[0] as DaySpan);
+      if (asked.rates.length === 1) out.rates.push(asked.rates[0] as number);
       return;
     }
     const bare = BARE_NUMBER.exec(turn.text);
@@ -150,5 +205,25 @@ export function statedInDialogue(dialogue: readonly DialogueTurn[]): HourStateme
       else if (ASKS_HOURS.test(previous.text)) out.totals.push(v);
     }
   });
-  return { days: uniq(out.days), perDay: uniq(out.perDay), totals: uniq(out.totals) };
+  return { days: uniq(out.days), perDay: uniq(out.perDay), totals: uniq(out.totals), spans: [...new Set(out.spans)], rates: uniq(out.rates) };
+}
+
+/**
+ * FIN-03: the hours buckets a STATED schedule determines - one per-day figure and one explicit day span, nothing else
+ * ("od poniedziałku do niedzieli po 8 h" -> Mon-Fri 40, Saturday 8, Sunday 8). A weekly total is never split ("7 dni,
+ * 56 godzin" -> null: which days got how many hours is not stated), and two different per-day figures or spans are
+ * ambiguous (null). Arithmetic on stated numbers only: per-day x number of weekdays in the span.
+ */
+export function scheduleBuckets(stated: HourStatements): { regularWeekdayHours: number; saturdayHours?: number; sundayHours?: number } | null {
+  // A weekly total stated for Monday-Friday only IS the weekday bucket ("40 godzin od poniedziałku do piątku").
+  if (stated.perDay.length === 0 && stated.totals.length === 1 && stated.spans.length === 1 && stated.spans[0] === 'mon-fri') return { regularWeekdayHours: stated.totals[0] as number };
+  if (stated.perDay.length !== 1 || stated.spans.length !== 1) return null;
+  const perDay = stated.perDay[0] as number;
+  const weekday = Math.round(perDay * 5 * 100) / 100;
+  switch (stated.spans[0]) {
+    case 'mon-fri': return { regularWeekdayHours: weekday };
+    case 'mon-sat': return { regularWeekdayHours: weekday, saturdayHours: perDay };
+    case 'mon-sun': return { regularWeekdayHours: weekday, saturdayHours: perDay, sundayHours: perDay };
+    default: return null;
+  }
 }

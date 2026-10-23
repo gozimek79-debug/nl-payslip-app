@@ -3,7 +3,8 @@ import { AlertTriangle, Bot, Calculator, FileText, Info, RotateCcw, Send, Trash2
 import type { ProDocumentType } from '../pro-documents-policy.ts';
 import { browserReaderDeps, readDocumentFacts } from '../document-facts-reader.ts';
 import { ACCEPT_ATTRIBUTE, documentOrdinal } from '../r3b/r3b-documents.ts';
-import type { AdvisorLocale, NavigationOffer } from './advisor-client.ts';
+import { fieldLabel, formatValue, money, scenarioUnit } from '../r3b/r3b-copy.ts';
+import type { AdvisorLocale, CalculationView, NavigationOffer } from './advisor-client.ts';
 import { ADVISOR_COPY, orientationFigures, type AdvisorCopy } from './advisor-copy.ts';
 import { createAdvisorStore, type AdvisorDeps, type AdvisorState, type AdvisorStore, type ThreadItem } from './advisor-store.ts';
 import { textBlocks } from './advisor-text.ts';
@@ -143,6 +144,7 @@ function ThreadEntry({ item, state, store, copy, lang, last, onNavigate }: { ite
             ? <ul key={i}>{block.items.map((line, j) => <li key={j}>{line}</li>)}</ul>
             : <ol key={i}>{block.items.map((line, j) => <li key={j}>{line}</li>)}</ol>))}
         {item.orientation && <Orientation item={item} lang={lang} copy={copy} />}
+        {item.calculation && <Calculation calc={item.calculation} lang={lang} copy={copy} />}
         {item.navigation.length > 0 && <Navigation offers={item.navigation} copy={copy} onNavigate={onNavigate} />}
         {used.length > 0 && (
           <p className="advisor-tools"><span>{copy.tools.label}</span> {used.map((t, i) => <span key={i} className={`advisor-tool advisor-tool-${t.status}`}>{copy.tools.names[t.name] ?? t.name}{t.status === 'refused' ? ` (${copy.tools.refused})` : ''}</span>)}</p>
@@ -150,6 +152,57 @@ function ThreadEntry({ item, state, store, copy, lang, last, onNavigate }: { ite
         <p className="advisor-model">{copy.modelLabel(item.model)}</p>
       </div>
     </li>
+  );
+}
+
+/**
+ * FIN-03: the engine-result card - built ONLY from the server's structured engine result (never from the model's text).
+ * Figures are Loonto's estimate for one week; each input shows where it came from; assumptions and the tax-table source
+ * are said; a blocked / unsupported calculation names what is missing instead of showing any figure.
+ */
+function Calculation({ calc, lang, copy }: { calc: CalculationView; lang: AdvisorLocale; copy: AdvisorCopy }) {
+  const c = copy.calculation;
+  const value = (field: string, v: unknown, options?: unknown[]) => {
+    if (options) return options.map((o) => c.choices[String(o)] ?? String(o)).join(' / ');
+    if (typeof v === 'number') return formatValue(scenarioUnit(field), v, lang);
+    if (typeof v === 'string') return c.choices[v] ?? v;
+    if (v && typeof v === 'object' && typeof (v as { low?: unknown }).low === 'number' && typeof (v as { high?: unknown }).high === 'number') {
+      const r = v as { low: number; high: number };
+      return `${formatValue(scenarioUnit(field), r.low, lang)} – ${formatValue(scenarioUnit(field), r.high, lang)}`;
+    }
+    return '';
+  };
+  if (calc.status === 'rates_unavailable') return <div className="advisor-calc is-blocked" data-calc="rates_unavailable"><p>{c.ratesUnavailable}</p></div>;
+  if (calc.status !== 'computed' || !calc.figures) {
+    const title = calc.status === 'blocked' ? c.blockedTitle : calc.status === 'unsupported' ? c.unsupportedTitle : c.invalidTitle;
+    const items = calc.status === 'blocked' ? calc.missing.map((m) => `${fieldLabel(m.field, lang)}${m.canOfferAssumption ? ` — ${c.missingAssumption}` : ''}`)
+      : calc.status === 'unsupported' ? calc.unsupported.map((u) => c.unsupported[u] ?? u) : calc.invalid.map((i) => fieldLabel(i.split(':')[0] ?? i, lang));
+    return (
+      <div className="advisor-calc is-blocked" data-calc={calc.status}>
+        <p className="advisor-calc-title">{title}</p>
+        <ul>{[...new Set(items)].map((t) => <li key={t}>{t}</li>)}</ul>
+      </div>
+    );
+  }
+  const f = calc.figures;
+  const rows: Array<[string, number, string]> = [[c.gross, f.grossTotal, 'gross'], [c.tax, f.totalTax, 'tax'], [c.net, f.wageNet, 'net'], [c.payout, f.payoutAmount, 'payout']];
+  return (
+    <div className="advisor-calc" data-calc="computed" data-result-type={calc.resultType}>
+      <p className="advisor-calc-title">{c.title}</p>
+      <dl className="advisor-calc-figures">
+        {rows.map(([label, amount, kind]) => <div key={kind} data-figure={kind}><dt>{label}</dt><dd>{money(amount, lang)}</dd></div>)}
+      </dl>
+      {calc.payoutRange && <p className="advisor-calc-range">{c.range(money(calc.payoutRange.low, lang), money(calc.payoutRange.high, lang))}</p>}
+      <p className="advisor-calc-sub">{c.basedOn}</p>
+      <ul className="advisor-calc-inputs">
+        {calc.inputs.filter((i) => i.usedByEngine || i.source === 'loonto_assumption').map((i) => (
+          <li key={i.field} data-source={i.source}><span>{fieldLabel(i.field, lang)}: {value(i.field, i.value, i.options)}</span> <span className={`advisor-calc-source advisor-calc-source-${i.source}`}>{c.sources[i.source]}</span></li>
+        ))}
+      </ul>
+      {calc.assumptionsUsed.length > 0 && <p className="advisor-calc-note">{c.assumptions}</p>}
+      <p className="advisor-calc-note">{c.rates(calc.ratesSource, calc.ratesAsOf)}</p>
+      <p className="advisor-calc-note advisor-calc-estimate">{c.estimateNote}</p>
+    </div>
   );
 }
 

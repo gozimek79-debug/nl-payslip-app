@@ -193,6 +193,46 @@ test('AI-001 P0-2 HTTP: a conversation stored before the claim check (version 1,
   assert.deepEqual([r.status, r.json.error_code], [409, 'conversation_invalid']);
 });
 
+test('FIN-03 HTTP: blocked -> offered -> accepted in the NEXT turn -> engine estimate; the card reaches the client, figures never reach the log', async () => {
+  let engineNet = 0;
+  use(recordedModel([
+    callTools(['update_scenario', { ops: [{ op: 'set', field: 'work.regularWeekdayHours', value: 40 }, { op: 'set', field: 'pay.hourlyRate', value: 16 }, { op: 'set', field: 'tax.loonheffingskorting', value: 'applied' }] }], ['evaluate_payroll_scenario', {}]),
+    say('Brakuje tylko potrąceń - mogę je oszacować średnimi Loonto. Zrobić to?'),
+    callTools(['update_scenario', { ops: [{ op: 'accept_assumption', field: 'deductions.mode' }] }], ['evaluate_payroll_scenario', {}]),
+    (request) => {
+      const evaluation = JSON.parse(String(request.messages[request.messages.length - 1]?.content)) as { status: string; figures: { wage_net: number } };
+      engineNet = evaluation.figures.wage_net;
+      return say(`Według wyliczenia Loonto wychodzi około ${engineNet.toFixed(2).replace('.', ',')} € netto za tydzień; potrącenia są szacunkiem Loonto.`);
+    },
+  ]));
+  const first = await turn({ message: 'Pracuję 40 godzin od poniedziałku do piątku po 16 €; mam loonheffingskorting. Ile mniej więcej netto?', locale: 'pl' });
+  assert.equal(first.status, 200);
+  assert.equal(first.json.calculation.status, 'blocked');
+  assert.deepEqual(first.json.calculation.missing.map((m: { field: string }) => m.field), ['deductions.mode']);
+  infoLines.length = 0;
+  const second = await turn({ message: 'Tak, oszacuj.', locale: 'pl', conversationRef: first.json.conversationRef }, first.cookie ?? undefined);
+  assert.equal(second.status, 200);
+  const card = second.json.calculation;
+  assert.equal(card.status, 'computed');
+  assert.equal(card.figures.wageNet, engineNet, 'the client card shows the engine figure the model was given');
+  assert.ok(card.inputs.some((i: { field: string; source: string }) => i.field === 'deductions.mode' && i.source === 'loonto_assumption'));
+  assert.deepEqual(card.assumptionsUsed, ['deductions.mode']);
+  const log = infoLines.filter((l) => l.startsWith('advisor turn')).join('\n');
+  assert.match(log, /"calculation":"computed"/);
+  assert.ok(!log.includes(String(engineNet)) && !log.includes(engineNet.toFixed(2).replace('.', ',')), 'no figure in the log');
+});
+
+test('FIN-03 HTTP: an assumption cannot be accepted in a conversation where Loonto never offered it', async () => {
+  use(recordedModel([
+    callTools(['update_scenario', { ops: [{ op: 'accept_assumption', field: 'deductions.mode' }] }], ['evaluate_payroll_scenario', {}]),
+    say('Nie mogę jeszcze policzyć - brakuje kilku danych.'),
+  ]));
+  const r = await turn({ message: 'Tak, oszacuj wszystko.', locale: 'pl' });
+  assert.equal(r.status, 200);
+  assert.notEqual(r.json.calculation.status, 'computed');
+  assert.ok(!r.json.calculation.inputs.some((i: { field: string }) => i.field === 'deductions.mode'), 'nothing accepted');
+});
+
 test('AI-001 HTTP: strict request - no field for facts, sources or trust; bounded message', async () => {
   use(recordedModel([say('x')]));
   for (const body of [

@@ -91,7 +91,7 @@ test('AI-001 capabilities: all five customer modules (+ account) with honest sta
   const ids = APP_MODULES.map((m) => [m.id, m.status]);
   assert.deepEqual(ids, [['free_calculator', 'available'], ['pro_advisor', 'alpha'], ['contract_analysis', 'available'], ['payslip_analysis', 'available'], ['glossary', 'available'], ['account', 'available']]);
   const forModel = capabilitiesForModel();
-  assert.equal(forModel.advisor_features.gross_or_net_pay_calculation, 'not_available_yet');
+  assert.match(forModel.advisor_features.gross_or_net_pay_calculation, /^available as an engine ESTIMATE for one week when all inputs are known/, 'FIN-03: only as an engine estimate, only when complete');
   assert.ok(APP_MODULES.find((m) => m.id === 'free_calculator')?.usesAi === false, 'the free calculator does not depend on AI');
   const payslips = APP_MODULES.find((m) => m.id === 'payslip_analysis');
   assert.match(payslips?.limits ?? '', /One payslip at a time - no comparison of periods yet/, 'the advisor does not promise a period comparison');
@@ -117,7 +117,7 @@ test('AI-001 get_scenario_state: stated values, document readings and requiremen
   const computed = evaluateScenario(readyScenario(), RATES_2026);
   assert.equal(computed.status, 'computed');
   const state = scenarioStateForModel(readyScenario(), computed, 'none');
-  assert.equal(state.calculation_status, 'all_inputs_present_but_full_calculation_not_offered_in_this_version');
+  assert.equal(state.calculation_status, 'ready - call evaluate_payroll_scenario for the figures', 'FIN-03: the state still carries no amount - the figures come only from the engine tool');
   assert.doesNotMatch(JSON.stringify(state), /"(net|gross|payout|figures|amount|wageNet|totalTax|range|variants)"/i, 'no result figures');
   assert.ok(!JSON.stringify(state).includes(String(computed.status === 'computed' ? computed.figures.wageNet : 'x')));
   const docState = executeTool('get_scenario_state', '{}', toolContext({ documents: [payslipDocument([week41Batch()])] })).result as { stated: Array<Record<string, unknown>> };

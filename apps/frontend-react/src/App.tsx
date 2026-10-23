@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, BookOpen, Bot, Calculator as CalculatorIcon, Clock, FileText, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, BookOpen, Bot, Calculator as CalculatorIcon, FileText, ShieldCheck } from 'lucide-react';
 import { TierACalculator } from './TierACalculator.tsx';
 import { TierBFlow } from './TierBFlow.tsx';
 import { ProDocuments } from './ProDocuments.tsx';
@@ -7,6 +7,7 @@ import { AccountPage } from './AccountPage.tsx';
 import { ContractAnalysis } from './ContractAnalysis.tsx';
 import { Glossary } from './Glossary.tsx';
 import { AdvisorPro } from './advisor/AdvisorPro.tsx';
+import { PayslipAnalysis } from './payslip-analysis/PayslipAnalysis.tsx';
 import type { NavigationOffer } from './advisor/advisor-client.ts';
 import { translations, type Lang } from './translations.ts';
 
@@ -53,6 +54,8 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
   const [mode, setMode] = useState<Mode>('kalkulator');
   const [kalkulatorTier, setKalkulatorTier] = useState<KalkulatorTier>(null);
   const [analizaModule, setAnalizaModule] = useState<AnalizaModule>(null);
+  /** FIN-02: a payslip read in Payslip Analysis, handed to the PRO advisor by its server-held reference (same session). */
+  const [advisorDocumentRef, setAdvisorDocumentRef] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
@@ -98,7 +101,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
   /** Module targets the advisor may offer (server capability map) -> the shell's own sections. */
   function navigateTo(target: NavigationOffer['target']) {
     if (target === 'calculator_free') { setMode('kalkulator'); setKalkulatorTier('szybki'); }
-    else if (target === 'calculator_pro') { setMode('kalkulator'); setKalkulatorTier('pro'); }
+    else if (target === 'calculator_pro') { setAdvisorDocumentRef(null); setMode('kalkulator'); setKalkulatorTier('pro'); }
     else if (target === 'analysis_contract') { setMode('analiza'); setAnalizaModule('umowa'); }
     else if (target === 'analysis_payslip') { setMode('analiza'); setAnalizaModule('paski'); }
     else if (target === 'glossary') setMode('slownik');
@@ -143,7 +146,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
                 and the 'z_umowy' route below still exist; the contract upload/extraction/pre-fill
                 logic is what "returns as part of PRO" per spec §4, not rebuilt from scratch. */}
             {proMode === 'advisor' ? (
-              <button type="button" className="tier-card" data-module="calculator_pro" onClick={() => setKalkulatorTier('pro')}>
+              <button type="button" className="tier-card" data-module="calculator_pro" onClick={() => { setAdvisorDocumentRef(null); setKalkulatorTier('pro'); }}>
                 <Bot size={22}/><h3>{t.kalkulatorHome.advisorName}</h3><p className="tier-need">{t.kalkulatorHome.advisorNeed}</p><small className="form-note">{t.kalkulatorHome.advisorLimit}</small>
                 <span className="tier-badge tier-badge-interim">{t.kalkulatorHome.advisorBadge}</span>
               </button>
@@ -171,7 +174,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
         <>
           <button className="back plain-button tier-back" onClick={() => setKalkulatorTier(null)}><ArrowLeft size={17}/>{t.kalkulatorHome.back}</button>
           {proMode === 'advisor'
-            ? <AdvisorPro lang={lang} onNavigate={navigateTo} onOpenDocumentsPro={() => setKalkulatorTier('pro_documents')}/>
+            ? <AdvisorPro lang={lang} onNavigate={navigateTo} onOpenDocumentsPro={() => setKalkulatorTier('pro_documents')} initialDocumentContextRef={advisorDocumentRef}/>
             : <ProDocuments lang={lang} onNavigateToDictionary={() => setMode('slownik')}/>}
         </>
       )}
@@ -188,9 +191,8 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
             <button type="button" className="tier-card" onClick={() => setAnalizaModule('umowa')}>
               <FileText size={22}/><h3>{t.analizaHome.umowaName}</h3><p className="tier-need">{t.analizaHome.umowaNeed}</p>
             </button>
-            <button type="button" className="tier-card tier-card-disabled" onClick={() => setAnalizaModule('paski')}>
+            <button type="button" className="tier-card" data-module="analysis_payslip" onClick={() => setAnalizaModule('paski')}>
               <ShieldCheck size={22}/><h3>{t.analizaHome.paskiName}</h3><p className="tier-need">{t.analizaHome.paskiNeed}</p>
-              <span className="tier-badge"><Clock size={12}/> {t.kalkulatorHome.comingSoon}</span>
             </button>
           </div>
         </section>
@@ -204,7 +206,8 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
       {mode === 'analiza' && analizaModule === 'paski' && (
         <section className="flow-page">
           <button className="back plain-button tier-back" onClick={() => setAnalizaModule(null)}><ArrowLeft size={17}/>{t.analizaHome.back}</button>
-          <div className="notice-card"><Clock/><div><h3>{t.comingSoon.title}</h3><p>{t.comingSoon.body}</p></div></div>
+          {/* FIN-02: the working Payslip Analysis. The PRO hand-off exists only where PRO is the advisor (not ?legacy=1). */}
+          <PayslipAnalysis lang={lang} onAskAdvisor={proMode === 'advisor' ? (ref) => { setAdvisorDocumentRef(ref); setMode('kalkulator'); setKalkulatorTier('pro'); window.scrollTo?.({ top: 0 }); } : undefined}/>
         </section>
       )}
       {mode === 'slownik' && (
@@ -213,7 +216,7 @@ export function App({ proMode = 'advisor' }: { proMode?: 'advisor' | 'documents'
           <Glossary lang={lang}/>
         </section>
       )}
-      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setMode('kalkulator'); setKalkulatorTier('pro'); }} onDeleteData={deleteMyData}/>}
+      {mode === 'account' && user && <AccountPage lang={lang} user={user} history={history} onBack={() => { setMode('kalkulator'); setKalkulatorTier(null); }} onLogout={() => void logout()} onStartAnalysis={() => { setAdvisorDocumentRef(null); setMode('kalkulator'); setKalkulatorTier('pro'); }} onDeleteData={deleteMyData}/>}
     </main>
   </div>;
 }

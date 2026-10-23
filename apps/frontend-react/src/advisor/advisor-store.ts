@@ -18,7 +18,7 @@ export type ThreadItem =
   | { id: number; from: 'user'; text: string }
   | { id: number; from: 'advisor'; text: string; tools: Array<{ name: string; status: string }>; orientation: OrientationView | null; navigation: NavigationOffer[]; model: string }
   | { id: number; from: 'notice'; kind: 'error'; failure: AdvisorFailure }
-  | { id: number; from: 'notice'; kind: 'info'; info: 'conversation_restarted' | 'document_expired' | 'document_read' | 'document_failed' | 'document_partial' };
+  | { id: number; from: 'notice'; kind: 'info'; info: 'conversation_restarted' | 'document_expired' | 'document_read' | 'document_failed' | 'document_partial' | 'document_from_analysis' };
 
 export interface AdvisorState {
   lang: AdvisorLocale;
@@ -53,12 +53,20 @@ export function initialAdvisorState(lang: AdvisorLocale = 'pl'): AdvisorState {
 
 export type AdvisorStore = ReturnType<typeof createAdvisorStore>;
 
-export function createAdvisorStore(deps: AdvisorDeps, lang: AdvisorLocale = 'pl') {
+/**
+ * FIN-02: `documentContextRef` - a document context another module (Payslip Analysis) already built for THIS browser
+ * session. Only the opaque server reference is passed; the server checks it against the session on every turn.
+ */
+export function createAdvisorStore(deps: AdvisorDeps, lang: AdvisorLocale = 'pl', initial: { documentContextRef?: string | null } = {}) {
   let state = initialAdvisorState(lang);
   const listeners = new Set<() => void>();
   const set = (next: AdvisorState) => { state = next; for (const l of listeners) l(); };
   const patch = (p: Partial<AdvisorState>) => set({ ...state, ...p });
   const push = (item: DistributiveOmit<ThreadItem, 'id'>) => set({ ...state, thread: [...state.thread, { ...item, id: state.nextId } as ThreadItem], nextId: state.nextId + 1 });
+  if (initial.documentContextRef) {
+    state = { ...state, documentContextRef: initial.documentContextRef };
+    push({ from: 'notice', kind: 'info', info: 'document_from_analysis' });
+  }
 
   async function exchange(message: string, retried: boolean): Promise<void> {
     const res = await postAdvisorTurn({
